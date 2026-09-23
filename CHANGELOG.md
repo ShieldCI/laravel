@@ -47,13 +47,13 @@
 - `php-side-filtering` reports High rather than Critical, since Critical is reserved for security exposure, data loss, or an app that cannot serve requests (#349)
 - `shield:analyze` exits 1 when an analyzer could not complete; add the analyzer id to `dont_report` in `config/shieldci.php` to waive one (#351)
 - Requires `guzzlehttp/guzzle ^7.0|^8.0` (was `^7.0`), so installing on a Laravel 13 app no longer fails or downgrades the app's guzzle (#359)
-- A malformed config value is now a suppressible finding rather than an analysis error, and a missing prerequisite reports skipped, across `cache-driver`, `queue-driver`, `session-driver`, `mysql-single-server`, `view-caching`, `config-caching`, `collection-call` and `phpstan` (#362)
+- A malformed config value is now a suppressible finding rather than an analysis error, and a missing prerequisite reports skipped, across `cache-driver`, `queue-driver`, `session-driver`, `mysql-single-server-optimization`, `view-caching`, `config-caching`, `collection-call-optimization` and `phpstan` (#362)
 - Requires `shieldci/analyzers-core ^2.3` (was `^2.1`) for the config-location helpers the unpublished-config fixes now resolve through (#373)
 
 ### Fixed
 - `logic-in-blade` flags `file_get_contents()` as an API call only when the argument spells out a remote target, so `{!! file_get_contents(public_path('img/logo.svg')) !!}` is no longer reported (#341)
 - `phpstan` reports an error instead of a clean pass when a run does not finish, such as an internal error or a configured path that does not exist (#342)
-- `collection-call` works in an installed package at all: its shipped config included Larastan by a path resolving inside `vendor/shieldci/laravel/vendor`, so PHPStan aborted and the analyzer reported a pass on every real install (#345)
+- `collection-call-optimization` works in an installed package at all: its shipped config included Larastan by a path resolving inside `vendor/shieldci/laravel/vendor`, so PHPStan aborted and the analyzer reported a pass on every real install (#345)
 - `phpstan` no longer reports the Larastan 2.9.0 env-call finding twice, once under Other PHPStan Issues and once through `env-call-outside-config` (#350)
 - `phpstan` no longer reads the unmatched ignore patterns in a project's own `phpstan.neon` as an analysis that did not complete (#354)
 - `cache-driver` assesses the driver when `config/cache.php` has not been published, instead of erroring out on a stock Laravel 11+ skeleton (#356)
@@ -116,35 +116,35 @@
 
 ## v1.12.5
 
-### Fixed
-- `shield:analyze` no longer exhausts the PHP memory limit on multi-megabyte codebases — analyzers type-hinting the concrete `AstParser` each held a private parser whose AST cache was never cleared between analyzers (#302)
-- Analyzers that created method-local `AstParser` instances (`XssAnalyzer` built one per analyzed file) now reuse the shared parser, avoiding redundant re-parsing and unmanaged AST caches (#303)
-
 ### Changed
-- `shieldci.memory_limit` now acts as a floor, so it no longer lowers a higher ambient limit such as Vapor's native runtime default or an unlimited CLI (#302)
+- `shieldci.memory_limit` acts as a floor, so it no longer lowers a higher ambient limit such as Vapor's runtime default or an unlimited CLI (#302)
+
+### Fixed
+- `shield:analyze` no longer exhausts the PHP memory limit on a multi-megabyte codebase, where an analyzer type-hinting the concrete parser received a private instance whose cache was never cleared between analyzers (#302)
+- Analyzers that built a parser per file, as `xss-vulnerabilities` did, reuse the shared one, removing redundant re-parsing and unmanaged caches (#303)
 
 ## v1.12.4
 
 ### Fixed
 - `eloquent-n-plus-one` no longer flags a loop-dependent query whose chain takes a pessimistic row lock, such as `StoreItem::lockForUpdate()->whereKey($id)->firstOrFail()` inside a `foreach` (#297)
-- `eloquent-n-plus-one` no longer flags a loop-dependent query followed by an unconditional `return`/`throw` (or a `break` when a single loop encloses it), since it runs at most once per call (#298)
-- `mass-assignment` no longer flags an `update()`/`create()`/`fill()` argument that is an array literal whose keys are all string literals, such as `$entry->update(['days' => $collection->all()])` (#299)
-- `php-side-filtering` no longer flags an argument-less `filter()`/`reject()` after an Eloquent fetch (e.g. `get()->map(...)->filter()`), which has no predicate to push into a `WHERE` clause (#300)
+- `eloquent-n-plus-one` no longer flags a loop-dependent query followed by an unconditional `return` or `throw`, or a `break` when a single loop encloses it, since it runs at most once per call (#298)
+- `mass-assignment-vulnerabilities` no longer flags an `update()`, `create()` or `fill()` argument that is an array literal whose keys are all string literals, such as `$entry->update(['days' => $collection->all()])` (#299)
+- `php-side-filtering` no longer flags an argument-less `filter()` or `reject()` after an Eloquent fetch, which has no predicate to push into a `WHERE` clause (#300)
 
 ## v1.12.3
 
 ### Fixed
-- `shieldci.memory_limit` is now passed to the PHPStan analyzer's subprocess via `--memory-limit`, so analyzing a large project no longer exhausts the ambient PHP memory limit while PHPStan builds ASTs (#295)
+- `shieldci.memory_limit` reaches the PHPStan subprocess through `--memory-limit`, so analyzing a large project no longer exhausts the ambient limit while PHPStan builds its trees (#295)
 
 ## v1.12.2
 
 ### Fixed
-- `fillable-foreign-key` no longer flags a model that defines no local `$fillable`/`$guarded` or builds `$fillable` dynamically, so a model inheriting its mass-assignment config from a parent (including a vendor base class the AST cannot follow into) is not reported (#293)
+- `fillable-foreign-key` no longer flags a model that declares no local `$fillable` or `$guarded` or builds `$fillable` dynamically, so one inheriting its mass-assignment configuration from a parent, including a vendor base the AST cannot follow into, is not reported (#293)
 
 ## v1.12.1
 
 ### Fixed
-- `app-key-security` no longer flags a valid base64 `APP_KEY` containing `//` as malformed (#291)
+- `app-key-security` no longer reports a valid base64 `APP_KEY` containing `//` as malformed (#291)
 
 ## v1.12.0
 
@@ -154,527 +154,535 @@
 ## v1.11.0
 
 ### Added
-- `eloquent-n-plus-one` now analyzes Blade templates, carrying each variable's model type and eager-loaded relations over from the controller that renders the view, so a relation lazily accessed inside a `@foreach` is reported on the Blade line and names the controller to eager-load it in (#279)
+- `eloquent-n-plus-one` analyzes Blade templates, carrying each variable's model type and eager-loaded relations over from the controller that renders the view, so a relation lazily accessed inside a `@foreach` is reported on the Blade line and names the controller to eager-load it in (#279)
 
 ### Fixed
-- `eloquent-n-plus-one` no longer reports an accessor on a model that defines no relationships as an N+1, so reading an accessor such as `$user->full_name` inside a loop is not flagged (#279)
+- `eloquent-n-plus-one` no longer reports an accessor on a model that defines no relationships, so reading `$user->full_name` inside a loop is not flagged (#279)
 
 ## v1.10.2
 
-### Fixed
-- `blade-nested-foreach` now flags only a nested `@foreach` that scans an unrelated collection to match each outer item, so iterating a group's own members, a lookup keyed by the outer item, or a relation no longer reports a bogus O(n²) finding (#276)
-
 ### Added
-- `logic-in-blade` accepts a `max_foreach_depth` option (default 2) (#276)
+- `logic-in-blade` accepts a `max_foreach_depth` option, default 2 (#276)
+
+### Fixed
+- `blade-nested-foreach` flags only a nested `@foreach` that scans an unrelated collection to match each outer item, so iterating a group's own members, a lookup keyed by the outer item, or a relation no longer reports a bogus quadratic finding (#276)
 
 ## v1.10.1
 
 ### Fixed
-- `EloquentModelDetector` now resolves an `extends` chain's parent by class name instead of collapsing the parent's whole file to a single verdict, so a class whose parent shares a file with a sibling or anonymous `class ... extends Model` is no longer detected as an Eloquent model — which produced false `MassAssignmentAnalyzer` and `FillableForeignKeyAnalyzer` findings and wrongly suppressed `ServiceContainerResolutionAnalyzer` ones (#274)
+- `EloquentModelDetector` resolves an `extends` chain by parent class name rather than collapsing the parent's whole file to one verdict, so a class whose parent shares a file with an anonymous `class ... extends Model` is no longer read as a model (#274)
+- `mass-assignment-vulnerabilities` and `fillable-foreign-key` therefore stop reporting that class, and `service-container-resolution` stops being wrongly suppressed on it (#274)
 
 ## v1.10.0
 
-### Fixed
-- `ServiceContainerResolutionAnalyzer` recognizes `MorphPivot` as an Eloquent base, so a model extending it is no longer flagged for manual container resolution — it was the only model detector in the package that omitted `MorphPivot` (#269)
-- `FatModelAnalyzer` now requires a `Models` namespace segment before treating a parent whose name ends in `Model` as a custom base model, so `*ViewModel`/`*ReadModel`/`*DomainModel` subclasses are no longer analyzed as fat models; genuine bases such as `App\Models\BaseModel` and modular `Modules\*\Models` bases still count (#270)
-- Model detection is now unified behind a shared `EloquentModelDetector` across the model-aware analyzers (service-container resolution, fillable foreign keys, mass assignment, fat models, mixed query builder), replacing ten divergent private checks that disagreed on several class shapes; detection now consistently recognizes models extending a project or vendor base (Spatie, Cashier, Sanctum), aliased Eloquent imports (`use Model as Eloquent`), and modular `*\Models\*` namespaces, and no longer treats a parentless class merely sitting in `App\Models` as a model (#271)
-
 ### Changed
-- `EloquentModelHelper` (Eloquent mass-assignment config parsing) moved into the package under `ShieldCI\Support` from the framework-agnostic `analyzers-core`, where Laravel-specific knowledge did not belong; no behavior change (#272)
+- `EloquentModelHelper`, which parses Eloquent mass-assignment configuration, moved into this package under `ShieldCI\Support` from the framework-agnostic `analyzers-core`, where Laravel-specific knowledge did not belong; behaviour is unchanged (#272)
+
+### Fixed
+- Model detection is unified behind a shared `EloquentModelDetector` across the model-aware analyzers, replacing ten private checks that disagreed on several class shapes (#271)
+- Detection recognises a model extending a project or vendor base, an aliased Eloquent import and a modular `*\Models\*` namespace, and no longer treats a parentless class merely sitting in `App\Models` as a model (#271)
+- `service-container-resolution` recognises `MorphPivot` as an Eloquent base, so a model extending it is no longer flagged for manual container resolution; it was the only detector in the package omitting it (#269)
+- `fat-model` requires a `Models` namespace segment before treating a parent whose name ends in `Model` as a custom base, so a `*ViewModel` or `*ReadModel` subclass is no longer analysed as a fat model; a genuine base such as `App\Models\BaseModel` still counts (#270)
 
 ## v1.9.6
 
 ### Fixed
-- `MixedQueryBuilderEloquentAnalyzer` no longer flags a read-only class that mixes `DB::table()` with Eloquent when it explicitly manages global scopes via `withoutGlobalScope()`/`withoutGlobalScopes()` and performs no query-builder writes — a deliberate cross-tenant analytics pattern where the scope bypass is intentional and signalled; query-builder writes (which bypass model events/casts) still flag, and classes that never call `withoutGlobalScope()` are unaffected (#262)
-- `PhpSideFilteringAnalyzer` no longer flags `filter()`/`reject()` whose predicate reads a JSON/array-cast attribute sub-key (e.g. `$q->config['required']`) or a `data_get()`/`Arr::get()` nested lookup — these have no portable SQL equivalent (JSON path operators differ across SQLite and MySQL) so the predicate cannot be pushed into the query; mirrors the existing authorization-predicate skip, and `filter()`/`reject()` on plain columns still flag (#263)
-- `EloquentNPlusOneAnalyzer` no longer flags the generate-until-unique idiom (`while (Model::where('code', $code)->exists()) { $code = ...; }`) as N+1 — an `exists()`/`doesntExist()` query in a `while`/`do-while` condition whose probed variable is reassigned in the loop body is a bounded uniqueness search, not a per-row query; queries in the loop body, non-existence terminals, and per-item existence checks inside a `foreach` still flag (#264)
+- `mixed-query-builder-eloquent` no longer flags a read-only class mixing `DB::table()` with Eloquent when it manages global scopes explicitly through `withoutGlobalScope()` and performs no query-builder writes, a deliberate cross-tenant pattern where the bypass is signalled; writes still flag (#262)
+- `php-side-filtering` no longer flags a `filter()` or `reject()` predicate reading a JSON or array-cast sub-key, or a `data_get()` lookup, which have no portable SQL equivalent and so cannot be pushed into the query; a predicate on a plain column still flags (#263)
+- `eloquent-n-plus-one` no longer flags the generate-until-unique idiom, an `exists()` query in a `while` condition whose probed variable is reassigned in the body being a bounded search rather than a per-row query (#264)
 
 ## v1.9.5
 
 ### Fixed
-- `MissingDatabaseTransactionsAnalyzer` no longer flags writes in a private/protected helper that is protected by a caller's `DB::transaction()` only transitively — transaction-delegation now resolves through the whole intra-class call graph, not just one hop (#260)
+- `missing-database-transactions` resolves transaction delegation through the whole intra-class call graph rather than one hop, so a private helper protected by a caller's `DB::transaction()` only transitively is no longer flagged (#260)
 
 ## v1.9.4
 
 ### Fixed
-- `CookieSecurityAnalyzer`: completes the v1.9.3 `web`-group fix, which still misfired during a full `shield:analyze` run — group detection now reads the HTTP kernel's middleware groups instead of the router's, which the analyzer suite resets mid-run (#259)
+- `cookie` reads middleware groups from the HTTP kernel rather than the router, completing the v1.9.3 fix, which still misfired during a full `shield:analyze` run because the analyzer suite resets the router mid-run (#259)
 
 ## v1.9.3
 
 ### Fixed
-- `CookieSecurityAnalyzer` no longer reports EncryptCookies as "not registered" when it's in the Laravel 11+ default `web` middleware group (#258)
+- `cookie` no longer reports `EncryptCookies` as unregistered when it sits in the Laravel 11+ default `web` middleware group (#258)
 
 ## v1.9.2
 
 ### Fixed
-- `ChunkMissingAnalyzer` now downgrades single-parent relationship-accessor reads (`$model->relation()->get()`) from a failure to a warning, since one parent's child set is far more often bounded than a table-wide `Model::`/`DB::table()` scan (#256)
+- `chunk-missing` reports a single-parent relationship read such as `$model->relation()->get()` as a warning rather than a failure, one parent's child set being far more often bounded than a table-wide scan (#256)
 
 ## v1.9.1
 
 ### Fixed
-- `EloquentNPlusOneAnalyzer` no longer flags loops of `updateOrCreate`/`firstOrCreate`/`upsert` — deliberate per-row writes rather than accidental read N+1 — nor `database/seeders`, migrations, or factories, where looping upserts is the idiomatic idempotent-seeding pattern (#252)
-- `MissingDocBlockAnalyzer` no longer flags framework-contract methods (Mailable, FormRequest, queued Job/Listener, Middleware, Eloquent `Scope`, `ValidationRule`, `Responsable`, Console Command, Notification, `JsonResource`, Filament — each gated to its base class/interface so identically-named plain-class methods stay flagged), trivially self-documenting methods (single statement, or typed assignments feeding one return), or controller methods (every public method is a route action); recommendations now name only the tags a method actually needs (#253)
-- `ServiceContainerResolutionAnalyzer` no longer false-positives on `app()`/container use in framework-fixed contexts it previously missed — Eloquent global `Scope` classes, model-event closures (including trait `boot{Trait}()` methods), and middleware detected by the `App\Http\Middleware` namespace or a `handle(Request, Closure)` signature — and downgrades `FormRequest::authorize()`/`rules()` to Low since method injection there is possible via `$container->call()`; bindings stay flagged at High (#254)
+- `eloquent-n-plus-one` no longer flags a loop of `updateOrCreate`, `firstOrCreate` or `upsert`, which are deliberate per-row writes rather than an accidental read, nor seeders, migrations and factories, where looping upserts is the idiomatic pattern (#252)
+- `missing-docblock` no longer flags a framework-contract method such as a Mailable, FormRequest, Middleware or Console Command override, each gated to its own base class so an identically named plain method is still flagged (#253)
+- `missing-docblock` also skips a trivially self-documenting method and any controller method, every public one being a route action, and recommends only the tags a method actually needs (#253)
+- `service-container-resolution` no longer flags container use in a framework-fixed context it had missed, namely an Eloquent `Scope` class, a model-event closure and middleware, and reports `FormRequest::authorize()` and `rules()` as Low, method injection being possible there; a binding stays High (#254)
 
 ## v1.9.0
 
-### Fixed
-- `MassAssignmentAnalyzer` no longer crashes (an error result that wiped out all its findings) on skipped destructuring slots like `[, , $x] = ...` — whose `List_` items contain literal nulls — or on first-class-callable syntax such as `Model::create(...)`; the AST walker now guards against null nodes and non-`Arg` arguments (#247)
-- `PasswordSecurityAnalyzer` no longer reports a false `missing_password_rehash` on Laravel 11+, where `Auth::attempt()` auto-rehashes via `config('hashing.rehash_on_login')` (default `true`) — an unpublished `config/hashing.php` is now treated as default-enabled. Explicit `rehash_on_login = false`, and unset config on Laravel 9/10, still flag as before (#248)
-- `ChunkMissingAnalyzer` no longer flags `foreach` loops over a tiny seeded reference-catalogue table — a fixed, bounded table cannot cause the memory blow-up chunking guards against (#249)
-
 ### Added
-- `SeededTableScanner` and `ModelTableResolver` (`ShieldCI\Support`) — shared helpers that identify seeder-only reference/catalogue tables and resolve a model's table (honouring explicit `$table` overrides), so analyzers can exempt bounded catalogue reads from large-dataset hints (#249)
+- `SeededTableScanner` and `ModelTableResolver` (`ShieldCI\Support`) identify seeder-only reference tables and resolve a model's table, honouring an explicit `$table`, so an analyzer can exempt a bounded catalogue read from a large-dataset hint (#249)
+
+### Fixed
+- `mass-assignment-vulnerabilities` no longer errors out and loses every finding on a skipped destructuring slot such as `[, , $x] = ...`, whose list items are literal nulls, or on first-class callable syntax such as `Model::create(...)` (#247)
+- `password-security` no longer reports a missing password rehash on Laravel 11+, where `Auth::attempt()` rehashes automatically and an unpublished `config/hashing.php` means enabled; an explicit `rehash_on_login = false`, and unset config on Laravel 9 and 10, still flag (#248)
+- `chunk-missing` no longer flags a `foreach` over a small seeded reference table, which cannot cause the memory growth chunking guards against (#249)
 
 ## v1.8.8
 
 ### Fixed
-- `MassAssignmentAnalyzer` and `FillableForeignKeyAnalyzer` no longer false-positive on models that declare mass-assignment config via the Laravel 12+ `#[Fillable]`/`#[Guarded]`/`#[Unguarded]` attributes (used by the official starter kits) — both now read the config from properties or attributes via `EloquentModelHelper` (#242)
-- `CsrfAnalyzer` no longer reports false "missing CSRF protection" for route files `require`d inside a `->group(Closure)` — e.g. `Route::domain()->middleware('web')->group(fn () => require ...)`, the Laravel 11+ skeleton form — which `BootstrapRouteParser` previously treated as unprotected (#243)
-- `LoginThrottlingAnalyzer` no longer reports false "login route lacks rate limiting" when throttling is defined in a FormRequest — it now scans `app/Http/Requests` and recognizes the starter-kit `LoginRequest::ensureIsNotRateLimited()` pattern (#244)
-- `DebugLogAnalyzer` no longer pins runtime-injected log channels (e.g. `laravel-cloud-socket`, `nightwatch`) to a bogus `config/logging.php` location with an unactionable "edit config/logging.php" recommendation — it now drops the location and names the real lever (platform env var / service provider `boot()`) (#245)
+- `mass-assignment-vulnerabilities` and `fillable-foreign-key` read mass-assignment configuration from the Laravel 12+ `#[Fillable]`, `#[Guarded]` and `#[Unguarded]` attributes used by the official starter kits, not only from properties (#242)
+- `csrf-protection` no longer reports missing protection for a route file required inside a `->group(Closure)`, the Laravel 11+ skeleton form (#243)
+- `login-throttling` no longer reports a missing rate limit when throttling lives in a FormRequest, recognising the starter-kit `LoginRequest::ensureIsNotRateLimited()` pattern (#244)
+- `debug-log-level` drops the location and names the real lever, a platform environment variable or a service provider, for a runtime-injected log channel rather than pinning it to a `config/logging.php` line that does not describe it (#245)
 
 ## v1.8.7
 
-### Fixed
-- `OpcacheAnalyzer` no longer pins issues to commented `php.ini` lines — when a directive has no active line, the issue now carries no line/snippet instead of falling back to line 1, which made PHP defaults look like misconfigured active settings (#240)
-- `OpcacheAnalyzer` `memory_consumption` check now converts the byte value from `opcache_get_configuration()` to MB before comparing — it previously compared bytes against an MB threshold and never fired (#240)
-
 ### Added
-- `OpcacheAnalyzer` now scans `conf.d` drop-ins (`php_ini_scanned_files()`), pinning a directive tuned in e.g. `conf.d/10-opcache.ini` to the correct file and line (#240)
+- `opcache-enabled` scans `conf.d` drop-ins, pinning a directive tuned in a file such as `conf.d/10-opcache.ini` to that file and line (#240)
+
+### Fixed
+- `opcache-enabled` reports no line rather than falling back to line 1 when a directive has no active `php.ini` entry, which had made PHP defaults look like misconfigured active settings (#240)
+- `opcache-enabled` converts `memory_consumption` to megabytes before comparing it against the threshold, having compared bytes against a megabyte value and so never fired (#240)
 
 ## v1.8.6
 
 ### Fixed
-- `ComposerValidationAnalyzer` no longer reports a false Critical "composer.json validation failed" finding when the `composer` binary is absent (slimmed CI containers, or steps that restore `vendor/` without installing composer) — a missing binary made `composer validate` exit 127, indistinguishable from a real schema error; the subprocess is now skipped when composer cannot be run, while JSON syntax is still validated independently (#238)
+- `composer-validation` no longer reports a Critical validation failure when the `composer` binary is absent, as in a slimmed CI container, where `composer validate` exited 127 indistinguishably from a real schema error; JSON syntax is still validated (#238)
 
 ## v1.8.5
 
 ### Fixed
-- Suppressed High/Critical issues no longer leave a result mislabeled "failed" — when inline `@shieldci-ignore`, an `ignore_errors` rule, or a baseline match removes the last High/Critical issue and only Low/Medium issues remain, the result now downgrades to "warning" (and "passed" when all issues are suppressed); suppression only removes issues, so status can only improve. Exit codes and score are unchanged
+- A result no longer reads "failed" when suppression removed its last High or Critical issue: it downgrades to warning, or to passed when every issue was suppressed. Exit codes and score are unchanged (#236)
 
 ## v1.8.4
 
 ### Fixed
-- `ConfigOutsideConfigAnalyzer` no longer false-positives on long descriptive identifiers (e.g. camelCase array keys) reported as "Possible hardcoded API key or secret" — the heuristics now skip strings in identifier positions (array-access keys, array-literal keys, and `compact()` arguments) since these can never hold a credential; array values continue to be scanned (#235)
+- `config-outside-config` no longer reports a long descriptive identifier as a possible hardcoded secret, skipping strings in identifier positions such as an array key or a `compact()` argument, which can never hold a credential; array values are still scanned (#235)
 
 ## v1.8.3
 
 ### Changed
-- `FillableForeignKeyAnalyzer` now reports only curated ownership/impersonation keys (`user_id`, `owner_id`, … extensible via `dangerous_patterns`) — the generic `*_id` branch produced evidence-free false positives and is removed, and the duplicate `$guarded = []` finding is dropped in favour of `MassAssignmentAnalyzer` (#232)
+- `fillable-foreign-key` reports only curated ownership and impersonation keys such as `user_id` and `owner_id`, extensible through `dangerous_patterns`; the generic `*_id` branch produced evidence-free findings and is removed, and the duplicate `$guarded = []` finding is left to `mass-assignment-vulnerabilities` (#232)
 
 ### Fixed
-- `MassAssignmentAnalyzer` now also analyses `Authenticatable`, `Pivot`, and `MorphPivot` models, not just `extends Model` / `App\Models` — so `$guarded = []` on a legacy `App\User` or a pivot outside `App\Models` is no longer missed (#233)
+- `mass-assignment-vulnerabilities` also analyses `Authenticatable`, `Pivot` and `MorphPivot` models, so `$guarded = []` on a legacy `App\User` or a pivot outside `App\Models` is no longer missed (#233)
 
 ## v1.8.2
 
 ### Fixed
-- `CacheHeaderAnalyzer` no longer false-positives on Laravel Vapor — Vapor serves compiled assets from a CDN with platform-managed cache headers rather than from `APP_URL`, so probing `APP_URL` is unactionable; the analyzer now skips on Vapor/serverless, mirroring the existing Laravel Cloud skip (#231)
+- `asset-cache-headers` skips on Laravel Vapor, which serves compiled assets from a CDN with platform-managed headers rather than from `APP_URL`, mirroring the existing Laravel Cloud skip (#231)
 
 ## v1.8.1
 
 ### Fixed
-- `MethodLengthAnalyzer` and `MissingDatabaseTransactionsAnalyzer` no longer false-positive on Filament 4 projects — `MethodLengthAnalyzer` now skips declarative fluent-builder methods (`form()`/`table()`/`panel()`, migration `up()`) whose length reflects configuration size rather than branching (gated behind `code-quality.method-length.ignore_fluent_chains`, default `true`) and adopts the `ClassifiesFiles` trait so it stops flagging seeders/migrations; `MissingDatabaseTransactionsAnalyzer` now scopes write counting per callback closure (so sibling `Action::make()->action(fn …)` handlers aren't summed together), attributes closure-only findings to the closure's declaration line, and ignores Filament filter `->toggle()` chains rooted at `::make()` as UI toggles rather than relationship writes (#220)
-- `FilePermissionsAnalyzer` no longer flags world-readable `.env` (`644`) as Critical on developer machines — sensitive-file permission checks (world-readable, exceeds-max, group-writable) now run only in staging/production via `getEnvironment()`, consistent with `DebugModeAnalyzer`; world-writable `.env` remains Critical in every environment (#221)
-- `AuthenticationAnalyzer` now honours `public_routes` config in two previously-missed cases — `isPublicRoute()` matches slash-insensitively with `fnmatch()` globs (so `/welcome/*` matches `welcome/{employee}`), and a route group is suppressed when every nested route is explicitly public instead of being flagged unconditionally (#222)
-- `ServiceContainerResolutionAnalyzer` no longer false-positives where `app()` has no DI surface to migrate to — global helper functions, container-as-factory calls (`app(Class::class, [$params])`, `makeWith`), and Filament static methods (`table()`/`form()`) and action closures are now suppressed; bindings and bare `app(X::class)` in services/controllers stay flagged (#223)
-- `PhpSideFilteringAnalyzer` no longer reports duplicate findings for the same `filter()` call in a longer chain (detection is now anchored to the filtering node rather than re-firing on downstream calls like `->each()`), and no longer flags `filter()`/`reject()` closures that filter by authorization checks (`$user->can(...)`, `Gate::allows()`, `hasRole()`) since these have no SQL `where`-clause equivalent (#224)
-- `PasswordSecurityAnalyzer` recommendation for `missing_password_defaults` now names a service provider's `boot()` method as the canonical location (dropping the incorrect `bootstrap/app.php` suggestion for Laravel 11/12) and lists only the requirements the analyzer actually enforces (`min(>=8)`, `mixedCase()`, `uncompromised()`) rather than over-promising numbers/symbols (#225)
-- `LogicInBladeAnalyzer` no longer flags published vendor templates — `getBladeFiles()` now skips any path containing `/vendor/`, so framework-authored files like `resources/views/vendor/notifications/email.blade.php` are excluded; logic in the developer's own templates is still flagged (#226)
-- `shield:analyze --analyzer=X --report` / `--category=Y --report` no longer transmits a partial report to the platform as if it were a full project scan — scoped runs (detected via `isScopedRun()`) now skip the API upload with a warning, and the streaming report card is suppressed for single-analyzer runs; failure notifications and `--ci` runs are unaffected (#227)
-- `MissingDocBlockAnalyzer` no longer produces documentation noise on framework-fixed methods — Filament UI classes skip `form`/`table`/`infolist`/`panel` and the `can*` authorization family, and scaffolding files (migrations, factories, seeders) are skipped entirely; suppression is class-context + method-name based so it survives Filament v3→v4 signature churn (#228)
-- `ViewCachingAnalyzer` no longer false-positives with "stale view cache" findings on Laravel Vapor — the build pipeline resets Blade mtimes during packaging and the Lambda filesystem is read-only, making the mtime comparison unreliable and the `php artisan view:cache` recommendation unactionable; the analyzer now skips via `PlatformDetector::isLaravelVapor()` with a clear skip reason (#229)
+- `method-length` no longer flags a Filament 4 project, skipping a declarative fluent-builder method such as `form()` or `table()`, whose length reflects configuration rather than branching (#220)
+- `missing-database-transactions` counts writes per callback closure, so sibling Filament action handlers are no longer summed together (#220)
+- `file-permissions` reports a world-readable `.env` only in staging and production, so mode 644 on a developer machine is no longer Critical; a world-writable `.env` stays Critical everywhere (#221)
+- `authentication-authorization` matches `public_routes` slash-insensitively with glob patterns, so `/welcome/*` covers `welcome/{employee}`, and suppresses a route group whose every nested route is explicitly public (#222)
+- `service-container-resolution` no longer flags `app()` where no dependency injection is available to migrate to, such as a global helper function, a container-as-factory call or a Filament action closure; a binding is still flagged (#223)
+- `php-side-filtering` reports one finding per `filter()` call rather than re-firing on downstream calls such as `->each()`, and no longer flags a closure filtering by an authorization check, which has no SQL equivalent (#224)
+- `password-security` names a service provider's `boot()` method for `missing_password_defaults`, dropping the wrong `bootstrap/app.php` suggestion, and lists only the requirements it actually enforces (#225)
+- `logic-in-blade` skips any path containing `/vendor/`, so a published vendor template is no longer flagged; the developer's own templates still are (#226)
+- `shield:analyze --analyzer=X --report` and `--category=Y --report` skip the API upload with a warning rather than transmitting a partial scan as a full one; failure notifications and `--ci` runs are unaffected (#227)
+- `missing-docblock` skips a Filament UI method and the `can*` authorization family, and skips migrations, factories and seeders entirely (#228)
+- `view-caching` skips on Laravel Vapor, whose build resets Blade modification times and whose filesystem is read-only, making the comparison unreliable and `php artisan view:cache` unactionable (#229)
 
 ## v1.8.0
 
 ### Added
-- Platform integration config keys in `config/shieldci.php`: `token` (`SHIELDCI_TOKEN`), `project_id` (`SHIELDCI_PROJECT_ID`), `api_url` (`SHIELDCI_API_URL`), and `report.send_to_api` (`SHIELDCI_SEND_TO_API`) — send results to the ShieldCI dashboard via `shield:analyze --report`; the package works fully offline without credentials (#202)
-- `pro_package_version` included in API payloads and JSON output when `shieldci/laravel-pro` is installed (#202)
+- Platform integration keys in `config/shieldci.php`: `token`, `project_id`, `api_url` and `report.send_to_api`, each with a `SHIELDCI_*` environment variable, send results to the ShieldCI dashboard through `shield:analyze --report`; the package still works fully offline without credentials (#202)
+- API payloads and JSON output carry `pro_package_version` when `shieldci/laravel-pro` is installed (#202)
 
 ## v1.7.26
 
 ### Fixed
-- `LogicInBladeAnalyzer` no longer false-positives with "Unclosed @php block detected" on single-statement `@php($expr)` directives — the structural pass matched `@php\b` for both the block form (`@php ... @endphp`) and the self-closing parenthesised form (`@php($var = value)`), entering block-tracking mode for the latter and never finding a matching `@endphp`; single-statement directives are now detected via `@php\s*\(` and skipped before block tracking begins (#214)
-- `PasswordSecurityAnalyzer` no longer false-positives on Filament `dehydrateStateUsing` closures — the closure's return value is a transformed state string for the form, not a plaintext password being stored; the analyzer now suppresses findings when the enclosing method is `dehydrateStateUsing` (#213)
+- `logic-in-blade` no longer reports "Unclosed @php block detected" for the single-statement form `@php($var = value)`, which it had treated as opening a block that no `@endphp` would ever close (#214)
+- `password-security` no longer flags a Filament `dehydrateStateUsing` closure, whose return value is transformed form state rather than a plaintext password being stored (#213)
 
 ## v1.7.25
 
 ### Fixed
-- `shield:analyze` no longer exhausts PHP memory when pro analyzers are installed — pro analyzers create private `AstParser` instances that bypass the container, making them invisible to the existing `clearParserCache()` singleton call; `runAll()`, `run()`, and `AnalyzeCommand` now call `clearAstParserCache()` via `method_exists()` after each `analyze()` invocation
+- `shield:analyze` no longer exhausts PHP memory when the pro analyzers are installed, which create private parsers the container cannot see and the existing cache clear therefore missed
 
 ## v1.7.24
 
 ### Changed
-- Recommendation strings in `ConfigCachingAnalyzer`, `SessionDriverAnalyzer`, `QueueDriverAnalyzer`, `DebugLogAnalyzer`, `AppKeyAnalyzer`, `LogicInBladeAnalyzer`, and `XssAnalyzer` tightened — internal repetition removed (clauses that restated the same point in different words), and cross-detection duplicates differentiated so each detected pattern names its specific context rather than sharing a generic category-level string
+- Recommendations in `config-caching`, `session-driver`, `queue-driver`, `debug-log-level`, `app-key-security`, `logic-in-blade` and `xss-vulnerabilities` drop clauses that restated the same point, and each detected pattern now names its own context rather than sharing one category-level string
 
 ## v1.7.23
 
 ### Changed
-- All recommendation strings across all 73 analyzers are now pure prose — PHP function calls (e.g. `Hash::make()`, `bcrypt()`), method chains (`->method()`), static access (`Class::method()`), PHP variable syntax (`$var`), array key-value literals (`'key' => value`), and inline code blocks have been removed; every recommendation now states the why and the what to do in plain language without embedding PHP syntax
-- `DetectsLaravelVersion` trait extracted to `src/Concerns/DetectsLaravelVersion.php` — replaces duplicated `class_exists(Illuminate\Foundation\Configuration\Middleware::class)` inline checks across `AuthenticationAnalyzer`, `LoginThrottlingAnalyzer`, and `UnusedGlobalMiddlewareAnalyzer` with `version_compare(app()->version(), '11.0.0', '>=')`, which is authoritative across all environments and requires no PHPStan suppression annotations
-- `AuthenticationAnalyzer` and `LoginThrottlingAnalyzer` now emit version-aware recommendations via the trait — Laravel 11+ users see guidance referencing `bootstrap/app.php`; Laravel 9/10 users see guidance referencing `app/Http/Kernel.php`
+- Every recommendation across the 73 analyzers is plain prose, with PHP syntax such as `Hash::make()`, `->method()`, `$var` and inline code removed, so each states why and what to do without embedding code
+- `authentication-authorization` and `login-throttling` give version-aware recommendations, naming `bootstrap/app.php` on Laravel 11+ and `app/Http/Kernel.php` on Laravel 9 and 10
 
 ## v1.7.22
 
 ### Fixed
-- `shield:analyze` no longer exhausts the PHP memory limit on large projects — `AstParser` is a singleton whose internal file cache accumulated parsed AST trees across all 73 analyzers without being cleared; `AnalyzerManager` now calls `clearParserCache()` after each `analyze()` invocation, which also eliminates false positives in `SilentFailureAnalyzer` and `MissingDatabaseTransactionsAnalyzer` caused by `resolveNames()` mutating cached `Node` objects in-place between analyzers
+- `shield:analyze` no longer exhausts the PHP memory limit on a large project: the shared parser accumulated every file parsed across all 73 analyzers, and its cache is now cleared after each one
+- Clearing that cache also removes false positives in `silent-failure` and `missing-database-transactions`, caused by name resolution mutating a cached tree between analyzers
 
 ## v1.7.21
 
 ### Changed
-- `AnalyzerManager` now instantiates each analyzer class exactly once per run — `getAnalyzers()` and `getSkippedAnalyzers()` share a cached instance pool instead of independently resolving all 73 classes; all seven `shieldci.*` config keys are read once and reused; repeated calls to either method within the same invocation return immediately from memory
-- `AnalyzeCommand` now emits a warning instead of calling `set_time_limit()` on Lambda/Vapor — `set_time_limit()` is a no-op on AWS Lambda and the call was silently ignored; the warning directs users to configure the Lambda function timeout directly or use `--ci` to reduce analyzer scope
-- `VulnerableDependencyAnalyzer` and `FrontendVulnerableDependencyAnalyzer` now set `$runInCI = false` — these analyzers make an external HTTP call (`api.osv.dev`) and spawn a subprocess (`npm audit`) respectively; both are excluded from `--ci` runs where dedicated pipeline steps already handle dependency scanning
+- `vulnerable-dependencies` and `frontend-vulnerable-dependencies` set `runInCI = false`, one calling an external API and the other spawning `npm audit`, work a pipeline usually has its own step for
+- `shield:analyze` warns rather than calling `set_time_limit()` on Lambda, where the call is silently ignored, and points at the function timeout or `--ci` instead
+- `AnalyzerManager` instantiates each analyzer once per run, sharing one pool between `getAnalyzers()` and `getSkippedAnalyzers()` rather than resolving all 73 classes twice
 
 ## v1.7.20
 
 ### Fixed
-- `MassAssignmentAnalyzer` no longer false-positives on models that inherit mass assignment protection from a parent class — subclasses of vendor models (e.g. `PersonalAccessToken extends Laravel\Sanctum\PersonalAccessToken`) were flagged as missing `$fillable`/`$guarded` because only the current class's own properties were checked; the analyzer now walks the parent class file via Composer's classmap before emitting the finding
+- `mass-assignment-vulnerabilities` no longer flags a model inheriting mass-assignment protection from a parent, such as one extending `Laravel\Sanctum\PersonalAccessToken`, walking the parent class through Composer's classmap before reporting
 
 ## v1.7.19
 
 ### Fixed
-- `LicenseAnalyzer` no longer flags `shieldci/*` packages — the tool's own packages ship without a public SPDX license declaration, causing the analyzer to emit missing-license or non-standard-license findings against itself
+- `license-compliance` no longer flags `shieldci/*` packages, which ship without a public SPDX declaration and so reported the tool against itself
 
 ## v1.7.18
 
 ### Fixed
-- `ChunkMissingAnalyzer` no longer false-positives on `DB::query()->fromSub(...)` derived-table queries — `fromSub`, `joinSub`, `leftJoinSub`, and `rightJoinSub` in the method chain now exempt the call; result bounds are encoded in the subquery structure, not a terminal method like `limit()`; plain `DB::table()->get()` continues to be flagged
-- `ChunkMissingAnalyzer` no longer false-positives on queries that pass `DB::raw()` inside `select([...])` — a correlated subquery in the select list signals explicit, bounded SQL that does not need chunking
+- `chunk-missing` no longer flags a derived-table query using `fromSub`, `joinSub`, `leftJoinSub` or `rightJoinSub`, whose bounds live in the subquery rather than a terminal method such as `limit()`; a plain `DB::table()->get()` is still flagged
+- `chunk-missing` no longer flags a query passing `DB::raw()` inside `select([...])`, a correlated subquery in the select list signalling deliberate, bounded SQL
 
 ## v1.7.17
 
 ### Fixed
-- `PHPStanAnalyzer` and `AnalyzeCommand` now honour `SHIELDCI_TIMEOUT` when set as an environment variable — `env()` returns strings, so `is_int('600')` was silently falling back to the default; both callsites now apply the same `is_numeric()` cast already used in `Reporter`
+- `phpstan` and `shield:analyze` honour `SHIELDCI_TIMEOUT` set as an environment variable, where `env()` returns a string and the integer check silently fell back to the default
 
 ## v1.7.16
 
 ### Fixed
-- `UpToDateDependencyAnalyzer` no longer false-positives on live Vapor Lambda deployments — Composer is not installed in Lambda containers; `shouldRun()` now returns `false` on serverless runtimes so the check is skipped entirely
-- `UpToDateDependencyAnalyzer` metadata `composer_version_check` now reflects `--ignore-platform-reqs` when it is passed to the dry-run
+- `up-to-date-dependencies` skips on serverless runtimes, where Composer is not installed in the Lambda container
+- `up-to-date-dependencies` reports `composer_version_check` metadata that reflects `--ignore-platform-reqs` when the dry run used it
 
 ## v1.7.15
 
 ### Fixed
-- `UpToDateDependencyAnalyzer` no longer false-positives on Laravel Vapor, serverless, and Laravel Cloud — `composer.lock` is generated on the developer's machine but the dry-run executes on a different OS with different PHP extensions, causing Composer to report platform-specific packages as needing updates; `--ignore-platform-reqs` is now passed to the dry-run on these platforms so only version-constraint differences are evaluated; real outdated dependencies continue to be detected correctly
+- `up-to-date-dependencies` passes `--ignore-platform-reqs` on Vapor, serverless and Laravel Cloud, where the dry run executes on a different OS than the one that wrote `composer.lock` and so reported platform-specific packages as needing updates; genuinely outdated dependencies are still found
 
 ## v1.7.14
 
 ### Fixed
-- `PHPStanAnalyzer` no longer times out on Laravel Vapor / AWS Lambda — `PHPStanRunner` now emits `parallel.maximumNumberOfProcesses: 1` in the generated NEON config when `PlatformDetector::isServerless()` is true; PHPStan 2.x spawns up to 32 worker processes by default and each one cold-loads PHPStan + Larastan from Lambda's read-only filesystem, exhausting memory and I/O before analysis completes; `tmpDir` is now always written to `sys_get_temp_dir() . '/phpstan'` so PHPStan's result cache does not attempt writes to the read-only `/var/task` tree; the PHPStan subprocess timeout now reads from `shieldci.timeout` (default 300 s) so it can be set below Vapor's `cli-timeout`, giving the catch block time to return a clean error result before Lambda terminates the container
+- `phpstan` no longer times out on AWS Lambda: the generated config limits PHPStan to one process, where 32 workers each cold-loading from a read-only filesystem exhausted memory first, writes `tmpDir` to the system temp directory, and takes its subprocess timeout from `shieldci.timeout` so it can be set below Vapor's own
 
 ## v1.7.13
 
 ### Fixed
-- `XssAnalyzer` HTTP header checks (live CSP verification) now only run in production/staging — previously ran in all non-CI environments, causing false positives for developers using Docker, Valet `.test` domains, or ngrok tunnels; `analyzeHttpHeaders()` now gates on `isHttpCheckEnvironment()` consistent with `shieldci.environment_mapping` (#193)
-- `EnvHttpAccessibilityAnalyzer` HTTP accessibility checks now only run in production/staging — previously ran in all non-CI environments, causing spurious Critical alerts when a local web server (Docker, Valet) serves `.env` files at a dev URL; `shouldRun()` now gates on `isHttpCheckEnvironment()` (#194)
-- `HSTSHeaderAnalyzer` no longer false-positives when `URL::forceHttps(false)` is called — any `forceHttps()` call was treated as HTTPS enforcement regardless of its argument; the fix inspects the first argument and skips calls where it is a literal `false`; no-argument and variable-argument calls continue to be treated as HTTPS-only (#195)
+- `xss-vulnerabilities` runs its live CSP check only in production and staging, which had produced false positives for developers on Docker, Valet or an ngrok tunnel (#193)
+- `env-http-accessibility` runs only in production and staging, which had raised spurious Critical alerts where a local web server serves `.env` at a development URL (#194)
+- `hsts-header` reads the argument to `forceHttps()`, so a literal `URL::forceHttps(false)` no longer counts as HTTPS enforcement; a call with no argument or a variable one still does (#195)
 
 ## v1.7.12
 
 ### Fixed
-- `SilentFailureAnalyzer` no longer false-positives on empty catch blocks that contain an explanatory comment — previously the comment text had to match a hardcoded keyword list; `isIntentionalIgnoreComment()` is removed and `hasExplanatoryComment()` now passes on any comment with non-empty content, treating its presence as sufficient evidence of a deliberate choice; bare `//` markers with no text continue to be flagged
+- `silent-failure` no longer flags an empty catch block carrying an explanatory comment of any wording, the comment's presence being evidence of a deliberate choice; a bare `//` with no text is still flagged
 
 ## v1.7.11
 
 ### Fixed
-- `CsrfAnalyzer`, `XssAnalyzer`, `FilePermissionsAnalyzer`, and `FillableForeignKeyAnalyzer` no longer embed severity as a text prefix in issue message strings (e.g. `"Critical: All routes excluded..."` → `"All routes excluded..."`) — severity is already expressed via the typed `Severity` enum on each issue and rendered separately by the output layer; embedding it again as a prefix created redundancy and risked the text label drifting out of sync with the enum value; 22 prefixes removed; `FilePermissionsAnalyzer` also renames `"Critical file"` to `"Sensitive file"` where the word described the file sensitivity tier rather than the finding's severity level — that check carries `Severity::Medium`, making `"Critical file"` a misleading mismatch (#190)
-- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on third-party static `::create()` calls — non-Eloquent classes that expose a factory method of the same name were incorrectly counted as database write operations; static write-method calls are now validated against Eloquent model ancestry via PHP reflection (full inheritance chain including vendor parents), an AST parent-chain registry built from project files (up to 3 levels), and namespace heuristics as a fallback (#191)
+- `csrf-protection`, `xss-vulnerabilities`, `file-permissions` and `fillable-foreign-key` no longer prefix an issue message with its severity, as in "Critical: All routes excluded", which duplicated what the output layer already renders and could drift from it; 22 prefixes are removed (#190)
+- `file-permissions` renames "Critical file" to "Sensitive file", that check carrying Medium, so the wording no longer contradicts the severity (#190)
+- `missing-database-transactions` no longer counts a third-party static `::create()` as a database write, validating the class against Eloquent ancestry by reflection and an AST parent chain rather than the method name alone (#191)
 
 ## v1.7.10
 
 ### Fixed
-- `FrontendVulnerableDependencyAnalyzer` now correctly reports vulnerability titles when running against projects using npm v7+ — npm audit v2 format stores advisory details (`title`, `url`, `severity`, `range`, `cves`) inside each vulnerability's `via` array as objects rather than at the top level; the analyzer was passing the raw vulnerability object to `createFrontendVulnerabilityIssue()` which found no `title` key and fell back to "Known security vulnerability"; `parseNpmAuditResults()` now iterates `via` entries and merges each advisory object with the parent vulnerability before creating the issue, so titles such as "ip-address has XSS in Address6 HTML-emitting methods" are correctly surfaced; `via` entries that are strings (transitive dependencies — packages affected only because they depend on a vulnerable package) are no longer reported as separate issues, eliminating the duplicate "Known security vulnerability" entries for packages like `express-rate-limit` that carry no direct advisory
-- `Reporter::streamResult()` now shows the individual issue message for single issues at file-only locations (no line number) — previously, issue messages were only rendered below the location line when multiple issues shared the same location; for lock files such as `package-lock.json` and `yarn.lock` the location alone ("At package-lock.json") carries no meaningful context, and the message is the only identifier of which package is affected; the condition is now `count > 1 || location->line === null`, so file:line locations (e.g. `app/Http/Controllers/Foo.php:42`) continue to display without a redundant message indent for single issues, while file-only locations always show the `→ message` line
+- `frontend-vulnerable-dependencies` reports a real advisory title such as "ip-address has XSS in Address6 HTML-emitting methods" on npm 7+, whose audit format moves the details into each vulnerability's `via` array, where the analyzer had found no title and fallen back to "Known security vulnerability"
+- `frontend-vulnerable-dependencies` no longer reports a transitive `via` entry as its own issue, which had duplicated findings for packages carrying no advisory of their own
+- `Reporter` shows the issue message for a single finding at a file-only location, such as one in `package-lock.json`, where the location alone names no package
 
 ## v1.7.9
 
 ### Fixed
-- `HSTSHeaderAnalyzer` no longer false-negatives when a middleware file contains a comment referencing HSTS (e.g. `// HSTS configuration`) without actually setting the header — only the presence of `Strict-Transport-Security` in file content is treated as evidence the header is set; previously any mention of the string `HSTS` suppressed the missing-header finding
-- `HSTSHeaderAnalyzer` no longer false-negatives when a security package such as `bepsvpt/secure-headers` appears only in `require-dev` — `composer.json` is now decoded and only the `require` section is checked; a dev-only package provides no HSTS protection in production
+- `hsts-header` treats only a real `Strict-Transport-Security` header as evidence the header is set, so a comment merely mentioning HSTS no longer suppresses the finding (#187)
+- `hsts-header` reads only the `require` section of `composer.json`, so a security package such as `bepsvpt/secure-headers` present only in `require-dev` no longer counts as production protection (#187)
 
 ## v1.7.8
 
 ### Fixed
-- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on private methods exclusively called from within a `DB::transaction()` closure — the analyzer now runs a pre-scan pass over each file to identify which `$this->method()` calls occur inside transaction closures versus outside them; methods called only from within a transaction closure are treated as already protected when their writes are counted, so the "delegate pattern" (an orchestrating method that wraps all work in `DB::transaction()` by calling private helpers) no longer produces spurious findings; methods called from both inside and outside a transaction continue to be flagged as before (#186)
+- `missing-database-transactions` no longer flags a private method called only from inside a `DB::transaction()` closure, so the delegate pattern of an orchestrating method wrapping private helpers is read correctly; a method called from both inside and outside a transaction is still flagged (#186)
 
 ## v1.7.7
 
 ### Fixed
-- `CacheHeaderAnalyzer` no longer runs on Laravel Cloud — Cloud manages asset cache headers at the CDN level with no configuration mechanism available to the application, making any finding unactionable; the analyzer now skips with a clear reason rather than reporting a false positive (#185)
+- `asset-cache-headers` skips on Laravel Cloud, which manages asset cache headers at the CDN with no lever available to the application (#185)
 
 ## v1.7.6
 
-### Fixed
-- `XssDetectionAnalyzer` no longer false-positives on `style-src 'unsafe-inline'` in Content Security Policy headers — CSP directives are now parsed individually rather than matched against the full header string, so `style-src 'unsafe-inline'` is only flagged when it appears as its own directive; previously, a valid `default-src 'none'; style-src 'unsafe-inline'` policy was incorrectly passing because `'unsafe-inline'` was found anywhere in the string without checking which directive it belonged to (#183)
-
 ### Changed
-- `EnvFileSecurityAnalyzer` no longer checks `.env` file permissions — `FilePermissionsAnalyzer` already owns this responsibility with a more thorough bitwise, multi-stage implementation; running both analyzers was producing two separate findings for the same problem; `EnvFileSecurityAnalyzer` continues to check for `.env` in public directories, real credentials in `.env.example`, and `.gitignore` / git-tracking hygiene (#184)
+- `env-file` no longer checks `.env` permissions, which `file-permissions` already owns with a more thorough implementation, so one problem stopped producing two findings; it still checks for `.env` in public directories, real credentials in `.env.example` and git hygiene (#184)
+
+### Fixed
+- `xss-vulnerabilities` parses Content-Security-Policy directives individually, so `style-src 'unsafe-inline'` is flagged only in its own directive and a sound policy such as `default-src 'none'; style-src 'unsafe-inline'` no longer passes by matching the string anywhere in the header (#183)
 
 ## v1.7.5
 
 ### Fixed
-- `OpcacheAnalyzer` and `PHPIniAnalyzer` no longer false-positive on Laravel Cloud — Cloud only documents `memory_limit` as configurable via `ini_set()`; all OPcache sub-checks are suppressed on Cloud, and `PHPIniAnalyzer` now also suppresses its `PHP_INI_ALL` checks (`display_errors`, `log_errors`, etc.) on Cloud rather than checking them; on Docker both analyzers continue to suppress only `PHP_INI_SYSTEM` directives (controlled by the base image) while keeping `PHP_INI_ALL` checks active (#182)
-- `CacheHeaderAnalyzer` no longer reports "missing Cache-Control headers" on Laravel Cloud — Cloud always applies a default `Cache-Control` header to asset responses, so the message now correctly reads "short-lived cache headers"; the finding and middleware recommendation are unchanged since long-lived caching of versioned assets is fully supported and safe given Cloud's deployment-triggered CDN purge (#182)
-
+- `opcache-enabled` and `php-ini` no longer report unactionable findings on Laravel Cloud, which documents only `memory_limit` as settable; on Docker both still check the directives an application can change (#182)
+- `asset-cache-headers` reports short-lived cache headers rather than missing ones on Laravel Cloud, which always applies a default `Cache-Control` to asset responses; the recommendation is unchanged, long-lived caching of versioned assets being safe given Cloud's deploy-triggered purge (#182)
 
 ## v1.7.4
 
 ### Fixed
-- `AuthenticationAnalyzer` no longer false-positives when `Auth::user()->`, `auth()->user()->`, or `$request->user()->` appears inside a heredoc, nowdoc, or string literal — `checkUnsafeAuthUsage()` now uses `collectStringLines()` from `analyzers-core` to build a set of 1-indexed line numbers that fall inside string literals and skips those lines before applying the three `preg_match` checks, so documentation blocks or inline string examples referencing the pattern are not reported as unsafe auth usage (#180)
-- `UpToDateDependencyAnalyzer` no longer false-positives when `composer install --no-dev` was previously run — the analyzer reads `vendor/composer/installed.json` (Composer 2.x) to detect whether dev packages are installed and scopes the `composer install --dry-run` call with `--no-dev` when they are absent; all updates detected in that mode are classified as production-only, eliminating the false "Production and development dependencies are not up-to-date" warning for projects that intentionally exclude dev packages (#181)
+- `authentication-authorization` no longer reports unsafe auth usage for `Auth::user()`, `auth()->user()` or `$request->user()` written inside a heredoc, nowdoc or string literal, such as a documentation block quoting the pattern (#180)
+- `up-to-date-dependencies` no longer reports "Production and development dependencies are not up-to-date" for a project installed with `--no-dev`, reading `vendor/composer/installed.json` to scope the dry run and classify what it finds as production-only (#181)
 
 ## v1.7.3
 
 ### Fixed
-- Five analyzers no longer false-positive inside Docker containers — `FilePermissionsAnalyzer` and `DirectoryWritePermissionsAnalyzer` skip entirely on Docker because file ownership is controlled by the image and host volume mounts, making `chmod` recommendations unactionable and `is_writable()` results unreliable; `MysqlSingleServerAnalyzer` skips on Docker because MySQL runs in a separate container and inter-container communication correctly uses TCP, making Unix socket recommendations inapplicable; `EnvFileSecurityAnalyzer` skips only its `checkEnvPermissions()` sub-check on Docker while continuing to check for `.env` in public directories, sensitive data in `.env.example`, and `.gitignore` hygiene; `PHPIniAnalyzer` no longer flags `allow_url_fopen`, `allow_url_include`, or `expose_php` on Docker — these are PHP_INI_SYSTEM directives set by the Docker base image and cannot be overridden at the application level, mirroring the existing Laravel Cloud suppression; `display_errors`, `log_errors`, and `ignore_repeated_errors` remain actionable and are still checked; Docker detection is added to the shared `DetectsDeploymentPlatform` trait via `isDocker()` backed by `PlatformDetector::isDocker()`, and all affected analyzers support `setDeploymentPlatform('docker')` for unit testing without a real Docker environment (#179)
+- `file-permissions` and `directory-write-permissions` skip on Docker, where the image and host volume mounts own file ownership, making a `chmod` recommendation unactionable (#179)
+- `mysql-single-server-optimization` skips on Docker, where MySQL runs in its own container and TCP is the correct transport rather than a Unix socket (#179)
+- `env-file` skips only its permission check on Docker and still looks for `.env` in public directories and in git (#179)
+- `php-ini` stops flagging `allow_url_fopen`, `allow_url_include` and `expose_php` on Docker, which the base image sets; `display_errors`, `log_errors` and `ignore_repeated_errors` are still checked (#179)
 
 ## v1.7.2
 
 ### Fixed
-- Seven analyzers no longer false-positive on Laravel Cloud — `EnvFileAnalyzer`, `EnvVariableAnalyzer`, `EnvFileSecurityAnalyzer`, and `EnvExampleAnalyzer` now skip entirely on Cloud because the platform writes a managed `.env` (permissions are fixed at 644 and cannot be changed by the application) and auto-injects `NIGHTWATCH_*`, `LOG_*`, and `REDIS_*` variables directly into the container rather than via `.env.example`; `DirectoryWritePermissionsAnalyzer` skips on Cloud because `php artisan storage:link` is explicitly listed as unnecessary (symlinks do not persist post-deploy); `FilePermissionsAnalyzer` removes only the `.env` entry from its paths-to-check on Cloud while continuing to check all directories; `PHPIniAnalyzer` no longer flags `allow_url_fopen`, `allow_url_include`, or `expose_php` on Cloud — these directives cannot be overridden in a Cloud container; `display_errors` and `log_errors` remain actionable and are still checked; detection uses the sole signal `LARAVEL_CLOUD=1`, which Cloud sets on all compute types (web, worker, scheduled task) (#178)
+- `env-file-exists`, `env-variables-complete`, `env-file` and `env-example-documented` skip on Laravel Cloud, which writes a managed `.env` at fixed permissions and injects its own variables into the container (#178)
+- `directory-write-permissions` skips on Laravel Cloud, which lists `php artisan storage:link` as unnecessary because symlinks do not survive a deploy (#178)
+- `file-permissions` drops only its `.env` entry on Laravel Cloud and still checks every directory (#178)
+- `php-ini` stops flagging `allow_url_fopen`, `allow_url_include` and `expose_php` on Laravel Cloud, which a container cannot override; `display_errors` and `log_errors` are still checked (#178)
 
 ## v1.7.1
 
 ### Added
-- `AnalyzeCommand` now emits a warning when `APP_ENV` is set to a non-standard value (e.g. `production-eu`) and no matching entry exists in `shieldci.environment_mapping` — prevents silent skips of environment-scoped analyzers without any developer feedback (#174)
+- `shield:analyze` warns when `APP_ENV` holds a non-standard value such as `production-eu` that `shieldci.environment_mapping` does not cover, rather than silently skipping every environment-scoped analyzer (#174)
 
 ### Fixed
-- `DebugModeAnalyzer` no longer false-positives on non-standard environment names (e.g. `test`, `dev`, `qa`, `sandbox`) — the allowlist `['local', 'development', 'testing']` is replaced with a blocklist approach that only flags `APP_DEBUG=true` when `APP_ENV` is explicitly `production` or `staging`; any other name is treated as non-production (#175)
+- `debug-mode` flags `APP_DEBUG=true` only when `APP_ENV` is `production` or `staging`, so a name such as `dev`, `qa` or `sandbox` is treated as non-production rather than unrecognised (#175)
 
 ## v1.7.0
 
 ### Changed
-- `MessageHelper` and `InlineSuppressionParser` moved to `analyzers-core` — callers now import from `ShieldCI\AnalyzersCore\Support`; the copies in `src/Support/` are deleted
-- `InspectsCode::parseConfigArray()` delegates to `ConfigFileHelper::parseConfigArray()` in `analyzers-core` — removes ~60 lines of duplicated AST parsing logic
-- `UnguardedModelsAnalyzer` replaces the inline `NodeTraverser` + `NameResolver` boilerplate with `$this->parser->resolveNames()` from `ParserInterface`
+- `MessageHelper` and `InlineSuppressionParser` moved to `analyzers-core`, so callers import them from `ShieldCI\AnalyzersCore\Support` and the copies under `src/Support/` are gone
 
 ## v1.6.10
 
 ### Changed
-- `Issue::$code` field removed; issue-type string identifiers (e.g. `'missing-env'`, `'http_only'`, `'phpstan'`) are now stored in `metadata['code']` — follows the `analyzers-core` update that dropped the legacy `?string $code` property; `createIssue()` and `createIssueWithSnippet()` call sites across all analyzer categories are updated accordingly; `ParsesPHPStanResults` and `ParsesPHPStanAnalysis` abstract method signatures no longer accept a `$code` parameter (#169)
+- `Issue::$code` is removed and the issue-type identifier, such as `'missing-env'` or `'phpstan'`, now lives in `metadata['code']`, following the `analyzers-core` change that dropped the property (#169)
 
 ### Fixed
-- `ConfigCachingAnalyzer` no longer false-positives on Laravel Vapor — on Vapor, config is always cached by the platform during bootstrap regardless of `APP_ENV`, so flagging cached config in dev environments was incorrect; the analyzer now skips on serverless using the shared `DetectsDeploymentPlatform` trait (consistent with `EnvFileSecurityAnalyzer` and `EnvFileAnalyzer`) instead of a hand-rolled `$_ENV` check, enabling proper test overrides via `setDeploymentPlatform()` (#170)
-- `PHPIniAnalyzer` no longer false-positives when a boolean ini setting is explicitly set to `Off` — PHP's `ini_get()` returns `''` for directives set to `Off`/`No`/`False`/`0`, which was previously reported as an ambiguous empty value; the analyzer now reads the raw text from the source ini file and classifies explicit boolean keywords correctly; genuinely empty values (e.g. `allow_url_fopen =`) still trigger the ambiguous warning; fixes false positives on Vapor/serverless where `allow_url_fopen = Off` and `expose_php = Off` are set in `/var/task/php/conf.d/php.ini` (#171)
+- `config-caching` no longer flags cached config on Laravel Vapor, where the platform caches during bootstrap whatever `APP_ENV` says (#170)
+- `php-ini` reads a boolean directive set to `Off` as explicitly disabled rather than ambiguously empty, `ini_get()` returning `''` for both; a genuinely empty value such as `allow_url_fopen =` still warns (#171)
 
 ## v1.6.9
 
 ### Fixed
-- `SessionDriverAnalyzer::shouldRun()` now mirrors the `CustomErrorPageAnalyzer` pattern — adds a `statelessOverride` property and setter for clean unit testing without a real router or kernel, wraps `shouldRun()` in a `try/catch` for `ReflectionException` so unusual DI configurations gracefully default to running the analyzer instead of surfacing an unhandled exception, and aligns the skip-reason message with the shared wording used by `CustomErrorPageAnalyzer`
-- `FilePermissionsAnalyzer` no longer false-positives on Laravel Vapor — `config/*.php` files are removed from the default checked-file list because AWS Lambda extracts deployment zips with execute bits set (mode `0555`), causing the bitmask check to flag them as overly permissive even though they are not writable; `.env.production` and `.env.prod` are also removed since Vapor injects environment variables directly via Lambda and these files never exist in a Vapor deployment
-- `XssAnalyzer` no longer runs a live CSP header check on API-only (stateless) Laravel applications — `analyzeHttpHeaders()` now exits early when `appIsStateless()` returns `true`; `findLoginRoute()` previously fell back to the root URL and never returned `null`, so every stateless API got a false positive about a missing `Content-Security-Policy` header
-- `ComposerValidationAnalyzer` no longer spawns a `composer validate` subprocess on serverless runtimes (AWS Lambda / Vapor) — the `composer` binary is absent in Lambda deployments where only the pre-built `vendor/` directory is present; JSON syntax is still validated via pure PHP (`json_decode`); the guard uses `PlatformDetector::isServerless()` rather than `isLaravelVapor()` so that Vapor projects analyzed locally or in CI (where composer is available) still run the full validation
-- `PHPIniAnalyzer` no longer checks `log_errors` and `display_startup_errors` on Vapor/serverless — on Lambda, stderr is captured automatically by CloudWatch so PHP's file-based `log_errors` setting is irrelevant; `display_startup_errors` information-disclosure risk is also inapplicable since PHP startup errors go to internal logs rather than HTTP responses; `allow_url_fopen` is still checked as the SSRF risk applies regardless of platform
-- `RouteCachingAnalyzer` no longer false-positives on Laravel Vapor — the Vapor CLI explicitly blocks `php artisan route:cache` during the build process because the Lambda filesystem is read-only at runtime; the analyzer now skips with a clear message when `PlatformDetector` identifies a serverless environment
-- `SessionDriverAnalyzer` migrated to use the shared `AnalyzesMiddleware` trait — the previous private implementation was missing the `isVendorRoute()` filter introduced in the trait, which could produce false positives on Vapor/serverless setups where vendor packages inject web-group routes; the trait's two-pass stateless check is now the single canonical implementation
-- `DirectoryWritePermissionsAnalyzer` no longer false-positives on Laravel Vapor — AWS Lambda mounts the deployment package as read-only and `is_writable()` returns `false` for `bootstrap/cache` even though Vapor overlays writable paths via `/tmp` bind mounts at runtime; the entire analyzer now skips on Vapor/serverless using `PlatformDetector`
-- `EnvFileAnalyzer`, `EnvExampleAnalyzer`, `EnvVariableAnalyzer`, `EnvFileSecurityAnalyzer`, `FrontendVulnerableDependencyAnalyzer`, and `MinificationAnalyzer` now skip on Vapor/serverless — Vapor removes `.env`, `.env.example`, `webpack.mix.js`, and frontend lock files from deployments so all six analyzers that check for these files would always produce false positives on Lambda; a shared `DetectsDeploymentPlatform` trait (refactored from the inline implementation in `DirectoryWritePermissionsAnalyzer`) provides the single `isServerlessPlatform()` guard used by all affected analyzers
-- `StableDependencyAnalyzer` no longer false-positives when `prefer-stable: true` is already set in `composer.json` — running `composer update --prefer-stable` dry-run when the project already opts into stable versions only surfaces available stable-to-stable upgrades, not genuine instability; the dry-run is now skipped entirely in this case; `checkComposerLock()` still validates any genuinely unstable installed versions
+- `file-permissions` no longer flags `config/*.php` on Laravel Vapor, where Lambda extracts the deployment zip with execute bits set although the files are not writable; `.env.production` and `.env.prod` are dropped from the list too, never existing on Vapor
+- `xss-vulnerabilities` runs no live CSP header check on an API-only app, which previously always reported a missing `Content-Security-Policy` because the login-route lookup fell back to the root URL
+- `composer-validation` spawns no `composer validate` subprocess on a serverless runtime, where the binary is absent; JSON syntax is still validated in pure PHP, and a Vapor project analyzed locally or in CI still runs the full check
+- `php-ini` checks neither `log_errors` nor `display_startup_errors` on serverless, where CloudWatch captures stderr and startup errors never reach an HTTP response; `allow_url_fopen` is still checked
+- `route-caching` no longer flags Laravel Vapor, whose CLI blocks `php artisan route:cache` because the Lambda filesystem is read-only at runtime
+- `session-driver` adopts the shared `AnalyzesMiddleware` trait, gaining the vendor-route filter it lacked, which had produced false positives where a vendor package injects web-group routes
+- `session-driver` defaults to running rather than surfacing an unhandled exception when an unusual container configuration makes reflection fail
+- `directory-write-permissions` no longer flags Laravel Vapor, where `bootstrap/cache` reads as unwritable although Vapor overlays writable paths from `/tmp` at runtime
+- `env-file-exists`, `env-example-documented`, `env-variables-complete`, `env-file`, `frontend-vulnerable-dependencies` and `asset-minification` skip on serverless, where Vapor strips `.env`, `.env.example`, `webpack.mix.js` and frontend lock files from the deployment
+- `stable-dependencies` runs no `--prefer-stable` dry run when `composer.json` already sets `prefer-stable`, where it surfaced ordinary upgrades rather than instability; the lock file is still checked for genuinely unstable versions
 
 ## v1.6.8
 
 ### Fixed
-- `QueueDriverAnalyzer` no longer false-positives on the `database` queue driver in CI — `assessDatabaseDriver()` now calls `isTestingEnvironment()` before emitting the Low-severity warning, matching the guard already present in `assessSyncDriver()`; `$runInCI = false` is also added so the analyzer is skipped entirely when `--ci` is passed
-- `SessionDriverAnalyzer`, `EnvExampleAnalyzer`, and `EnvVariableAnalyzer` now set `$runInCI = false` — these analyzers inspect runtime environment conditions (session driver, `.env` file presence) that are intentionally different in CI runners; they are skipped when `--ci` is passed
+- `queue-driver` no longer warns about the `database` driver in a testing environment, matching the guard the `sync` driver check already had, and sets `runInCI = false`
+- `session-driver`, `env-example-documented` and `env-variables-complete` set `runInCI = false`, since each reads a runtime condition that CI runners deliberately differ on
 
 ## v1.6.7
 
 ### Fixed
-- `MissingDatabaseTransactionsAnalyzer` no longer counts writes in both branches of a plain if/else toward the transaction threshold — only `max(if_writes, else_writes)` is committed since both branches can never co-execute; guard-clause ifs with an else are also handled correctly; inner frames propagate their effective write count into the enclosing frame before being discarded
-- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on multi-level property chain calls (e.g. `$this->stripe->customers->update()`) — these are external service client calls, not query builder writes; `isNonDbFacadeChain` now returns `true` for chains rooted at two or more levels of property access
-- `MissingDocBlockAnalyzer` no longer requires `@return` for PHP 8 union types composed entirely of concrete classes (e.g. `Response|JsonResponse`) — union types now recurse into member types and `@return` is only required when at least one member is a generic type (`array`, `mixed`, `callable`, `iterable`, `object`) that needs shape documentation; this resolves an unsolvable conflict with Laravel Pint's `no_superfluous_phpdoc_tags` rule
-- `DirectoryWritePermissionsAnalyzer` no longer false-positives on API-only apps for the storage symlink check — `public/storage → storage/app/public` is web-specific infrastructure; directory write permission checks still run unconditionally
-- `CustomErrorPageAnalyzer` no longer false-positives on API-only apps — `AnalyzesMiddleware::appIsStateless()` upgraded to a two-pass approach that handles three edge cases: a defined-but-unused `web` group (expanded routes no longer trigger a stateful classification), vendor-injected web routes (Vapor registers CSRF routes under `web` even in API-only apps; detected via `ReflectionClass` since `class_exists` returns `false` for interfaces), and `getGlobalMiddleware()` now prefers the public `Kernel::getGlobalMiddleware()` method before falling back to reflection
-- `EnvFileSecurityAnalyzer` no longer flags Stripe test keys and sandbox tokens in `.env.example` as accidentally committed secrets — `sk_test_`, `pk_test_`, `rk_test_`, `whsec_test_`, `sandbox`, and `test_` prefixes are added to `$placeholderKeywords`; these tokens are designed to be shareable and cannot access production resources
-- `FrontendVulnerableDependencyAnalyzer` no longer false-positives with a "No lock file found" warning on projects with an empty `package.json` — the analyzer now checks for at least one declared dependency before running
-- `CsrfAnalyzer` broad `routes/*/api.php` filename heuristic replaced with AST-based `RouteServiceProvider` provider-dir scanning — `BootstrapRouteParser` now scans all `app/Providers/*.php` files using the same `Route::middleware()->group(base_path())` chain-walking logic used for `bootstrap/app.php`; all returned paths go through `realpath()` for consistent cross-platform path comparison
-- `LoginThrottlingAnalyzer` path comparison now applies `realpath()` normalization — `BootstrapRouteParser` returns resolved paths consistently, preventing `in_array` mismatches on macOS where `/tmp → /private/tmp`
+- `missing-database-transactions` counts only the larger branch of a plain if/else toward the threshold, since both branches can never run together
+- `missing-database-transactions` no longer flags a multi-level property chain such as `$this->stripe->customers->update()`, which calls an external service client rather than the query builder
+- `missing-docblock` requires `@return` on a PHP 8 union type only when a member is generic, such as `array` or `mixed`, so a union of concrete classes like `Response|JsonResponse` no longer conflicts with Pint's `no_superfluous_phpdoc_tags`
+- `directory-write-permissions` no longer reports a missing storage symlink on an API-only app, that link being web-specific; write permission checks still run everywhere
+- `custom-error-pages` no longer flags an API-only app, since the stateless check now reads a defined-but-unused `web` group and vendor-injected web routes correctly
+- `env-file` no longer reports a Stripe test key or sandbox token in `.env.example` as a committed secret, those tokens being shareable by design
+- `frontend-vulnerable-dependencies` no longer warns "No lock file found" for a project whose `package.json` declares no dependencies
+- `csrf-protection` finds API route files by scanning `app/Providers/*.php` for route-group registrations rather than guessing from a `routes/*/api.php` filename
+- `login-throttling` resolves paths through `realpath()` before comparing them, which had mismatched on macOS where `/tmp` resolves to `/private/tmp`
 
 ## v1.6.6
 
 ### Fixed
-- `CsrfAnalyzer::getRouteFiles()` now delegates to `getPhpFiles()` instead of a hand-rolled `DirectoryIterator` — configured `excludePatterns` are respected and route files in subdirectories (e.g. `routes/api/`) are now picked up
-- `HorizonSuggestionAnalyzerTest` — added `assertNotNull($this->app)` guards before `basePath()` calls to resolve PHPStan Level 9 `Application|null` errors
+- `csrf-protection` finds route files through `getPhpFiles()`, so configured exclude patterns are respected and a route file in a subdirectory such as `routes/api/` is picked up
 
 ## v1.6.5
 
 ### Added
-- Laravel 13 support — `illuminate/*` constraints widened to `^9.0|^10.0|^11.0|^12.0|^13.0`; `orchestra/testbench` widened to `^7.0|^8.0|^9.0|^10.0|^11.0`; CI matrix now tests PHP 8.2–8.4 against Laravel 12 and 13
+- Laravel 13 support: `illuminate/*` widened to `^9.0|^10.0|^11.0|^12.0|^13.0` and `orchestra/testbench` to `^7.0|^8.0|^9.0|^10.0|^11.0`, with CI covering Laravel 10 on PHP 8.1 to 8.3, Laravel 11 on 8.2 to 8.4, Laravel 12 on 8.2 to 8.5 and Laravel 13 on 8.3 to 8.5
 
 ## v1.6.4
 
 ### Fixed
-- `configuration` field no longer arrives as `[]` in API payloads and JSON output — `AnalysisReport` is a `readonly` value object that is reconstructed at four sites in `AnalyzeCommand` (the `suppressedIssues` inject in `handle()`, `filterAgainstIgnoreErrors()`, `filterAgainstInlineSuppressions()`, and `filterAgainstBaseline()`); each site was omitting `configuration:`, causing it to silently default to `[]`; all four sites now forward `configuration: $report->configuration`
+- The `configuration` field reaches API payloads and JSON output with its real contents rather than `[]`, which four reconstructions of the readonly `AnalysisReport` in `AnalyzeCommand` had been dropping
 
 ## v1.6.3
 
 ### Changed
-- `MissingDatabaseTransactionsAnalyzer`, `MixedQueryBuilderEloquentAnalyzer`, `PhpSideFilteringAnalyzer`, `SilentFailureAnalyzer`, and `ServiceContainerResolutionAnalyzer` now include code snippets in their issues — each issue shows the offending line with surrounding context via `createIssueWithSnippet()`
+- `missing-database-transactions`, `mixed-query-builder-eloquent`, `php-side-filtering`, `silent-failure` and `service-container-resolution` show the offending line with surrounding context on each issue
 
 ## v1.6.2
 
 ### Added
-- `shield:analyze --format=json` now shows a progress bar on STDERR while analyzers run — the bar displays the current analyzer name and advances per-analyzer; it only renders when STDERR is a TTY so piped or redirected STDERR stays clean
+- `shield:analyze --format=json` shows a progress bar on stderr naming the running analyzer, rendered only when stderr is a TTY so a piped run stays clean
 
 ### Changed
-- All status messages (e.g. "Running all 73 analyzers...") are now written to STDERR instead of STDOUT — `--format=json` output piped to `jq` or redirected to a file is no longer corrupted by interleaved text
-- `--output` now suppresses STDOUT — when a file path is provided (via `--output` or `shieldci.report.output_file` config), the report is written to the file only and a `"Report saved to: ..."` confirmation is shown; the full report is no longer also dumped to the console
+- Status messages go to stderr rather than stdout, so `--format=json` piped to `jq` is no longer corrupted by interleaved text
+- `--output` suppresses stdout, writing the report to the file and printing only a confirmation, rather than also dumping the report to the console
 
 ## v1.6.1
 
 ### Fixed
-- Suppressed issues note no longer has a blank line between it and the analyzer status line — the note is now embedded directly into the streamed output so it appears immediately below the status with no gap
+- The suppressed-issues note sits directly under its analyzer status line rather than a blank line below it
 
 ## v1.6.0
 
 ### Added
-- JSON output and API payload now include a top-level `configuration` key capturing the effective analysis configuration at the time of the run; values reflect runtime mutations (e.g. `--ci` toggling `ci_mode`) so the snapshot always represents what was actually used, not the static config file
-- Suppressed issues are now tracked and included in JSON output and API payloads — when an issue is suppressed via `@shieldci-ignore` inline comment, `ignore_errors` config rule, or `--baseline`, it appears in a `suppressed_issues` array inside the corresponding analyzer result with full detail (message, location, severity, recommendation) plus a `suppression` block identifying the type (`inline`, `config`, or `baseline`) and the specific rule that matched; the top-level `summary` now includes a `suppressed_issues` breakdown by type; console output shows a brief count hint per analyzer when issues were suppressed (e.g. "Passed (2 issues suppressed)")
+- JSON output and the API payload carry a top-level `configuration` key holding the configuration the run actually used, including runtime changes such as `--ci` turning on `ci_mode`
+- A suppressed issue is now reported rather than silently dropped, appearing in a `suppressed_issues` array on its analyzer result with full detail and a block naming its type, `inline`, `config` or `baseline`, and the rule that matched
+- The run summary breaks suppressed counts down by type, and the console notes them per analyzer, as in "Passed (2 issues suppressed)"
 
 ## v1.5.19
 
 ### Fixed
-- `shield:analyze --analyzer=<id>` no longer errors with "Analyzer(s) not found" when the requested analyzer exists but is skipped (e.g. `runInCI = false` with `--ci`, or environment-conditional analyzers like `HSTSHeaderAnalyzer`) — `validateOptions()` now distinguishes between truly unknown IDs (error) and skipped IDs (yellow warning); skipped results are included in the output and streamed correctly in both streaming and non-streaming paths; the "Running analyzer: X" header now resolves the analyzer's display name from skipped metadata instead of falling back to the raw ID
+- `shield:analyze --analyzer=<id>` no longer errors with "Analyzer(s) not found" when the named analyzer exists but was skipped, whether for `runInCI = false` under `--ci` or an environment condition as in `hsts-header`; an unknown id still errors, a skipped one warns and appears in the output under its display name
 
 ## v1.5.18
 
 ### Fixed
-- Dependency analyzers no longer attach code snippets or line numbers to issues pointing at lock files (`composer.lock`, `package-lock.json`, `yarn.lock`) — lock files are machine-generated and not user-editable; line 1 of `composer.lock` is the `_readme` metadata header, and any line is a fragment of deeply-nested JSON with no actionable context; `code` is now `null` and `Location` carries no line number for lock file issues across `StableDependencyAnalyzer`, `UpToDateDependencyAnalyzer`, `VulnerableDependencyAnalyzer`, `LicenseAnalyzer`, and `FrontendVulnerableDependencyAnalyzer`; `composer.json` snippets are unchanged (flat structure, one key per line, readable)
+- `stable-dependencies`, `up-to-date-dependencies`, `vulnerable-dependencies`, `license-compliance` and `frontend-vulnerable-dependencies` attach no code snippet or line number to an issue pointing at `composer.lock`, `package-lock.json` or `yarn.lock`, which are generated rather than hand-edited; `composer.json` snippets are unchanged
 
 ## v1.5.17
 
 ### Fixed
-- `NamingConventionAnalyzer` no longer checks the string value of `protected $table` for plural snake_case — a developer who explicitly sets `$table` is intentionally overriding Laravel's default (DB prefix, legacy schema, multi-tenancy, etc.) and the analyzer must not second-guess that choice; PSR naming conventions govern PHP identifiers, not string literals; the property name `table` is valid camelCase and is the only check that applies
+- `naming-convention` no longer checks the string value of `protected $table` for plural snake_case, since a developer setting it explicitly is overriding Laravel's default on purpose and PSR conventions govern identifiers rather than string literals
 
 ## v1.5.16
 
 ### Changed
-- Score now excludes skipped analyzers from the denominator — `score()` in `AnalysisReport`, per-category percentages in `Reporter::generateReportCard()`, and per-category percentages in `AnalyzeCommand::outputReportCard()` all use `total - skipped` as the denominator; a project where all applicable checks pass now scores 100% in CI regardless of how many analyzers were skipped due to `runInCI = false`
-- Report card: "Not Applicable" row moved to the last position and percentage columns removed — the row is purely informational context, not a scored metric
+- Score excludes skipped analyzers from the denominator, so a project whose applicable checks all pass scores 100% in CI however many analyzers `runInCI = false` skipped
+- The report card moves its "Not Applicable" row last and drops its percentage columns, the row being context rather than a scored metric
 
 ## v1.5.15
 
-### Fixed
-- `Reporter::hyperlink()` no longer wraps URLs in OSC 8 terminal escape sequences in CI environments and unsupported terminals — log viewers that don't implement OSC 8 were consuming the display text as part of the control sequence, rendering the documentation URL invisible; `hyperlink()` now falls back to plain text when `CI` is set or when no known capable terminal (`TERM_PROGRAM`, `VTE_VERSION`, `WT_SESSION`) is detected
-
 ### Changed
-- `EnvFileSecurityAnalyzer` now sets `runInCI = false` — the analyzer checks for the presence and permissions of `.env` files, which are intentionally absent in CI runners that inject secrets via environment variables rather than files; skipped when `--ci` is passed
+- `env-file` sets `runInCI = false`, since it checks for `.env` files that CI runners intentionally omit in favour of injected environment variables
+
+### Fixed
+- `Reporter::hyperlink()` writes plain text instead of an OSC 8 escape sequence when `CI` is set or no capable terminal is detected, since a log viewer that does not implement OSC 8 swallowed the URL and rendered it invisible
 
 ## v1.5.14
 
 ### Changed
-- `EnvFileAnalyzer`, `FilePermissionsAnalyzer`, `CachePrefixAnalyzer`, and `DirectoryWritePermissionsAnalyzer` now set `runInCI = false` — these analyzers check conditions that depend on CI runner environment setup (`.env` presence/permissions, filesystem permission bits, shared cache server prefix, storage symlinks) rather than developer-controlled code, so they are not meaningful in CI and are skipped when `--ci` is passed
+- `env-file-exists`, `file-permissions`, `cache-prefix-configuration` and `directory-write-permissions` set `runInCI = false`, since each reads a condition the CI runner's setup dictates rather than the developer's code
 
 ## v1.5.13
 
 ### Fixed
-- `MixedQueryBuilderEloquentAnalyzer` now reports the Query Builder call line for mixed Eloquent/QB issues instead of the Eloquent call line — the QB call is the actual offending statement and is the correct anchor for inline suppression and code navigation
-- `ServiceContainerResolutionAnalyzer` no longer false-positives on Eloquent models (instantiated via `newInstance()`/`new static()`; constructor DI is impractical), `ShouldQueue` classes (the serialization lifecycle bypasses `__construct`; `app()` in `via()` is canonical), and service providers (all resolution inside service providers is suppressed — `boot()` and its private helpers are bootstrap infrastructure); issue locations now use relative paths via `getRelativePath()` consistent with all other analyzers
-- `SilentFailureAnalyzer` no longer emits Low severity issues for broad catches (`Throwable`/`Exception`/`Error`) that both log the exception and reference the exception variable — these are well-handled patterns (e.g. `Log::error() + markAsFailed($e->getMessage())` in jobs and controllers); High severity (no logging) and Medium severity (logging but `$e` unused) are retained
+- `mixed-query-builder-eloquent` reports the query builder line rather than the Eloquent one, since the query builder call is the offending statement and the right anchor for inline suppression
+- `service-container-resolution` no longer flags an Eloquent model, a `ShouldQueue` class or a service provider, where constructor injection is impractical or the serialization lifecycle bypasses `__construct`; issue locations now use relative paths like every other analyzer
+- `silent-failure` no longer reports Low for a broad catch that both logs the exception and uses the exception variable; High for no logging and Medium for an unused variable are unchanged
 
 ## v1.5.12
 
 ### Fixed
-- `MissingDatabaseTransactionsAnalyzer` no longer false-positives on guard clause patterns — an `if`-block with no `else`/`elseif` whose last statement is `return` or `throw` is now recognised as a guard clause; writes inside it are isolated (they exist on execution paths that always terminate before reaching the main flow) and are excluded from the atomicity threshold check; fixes false positives like a guard clause deleting a record before a properly-wrapped `DB::transaction()`
+- `missing-database-transactions` no longer flags a guard clause, an `if` with no `else` ending in `return` or `throw`, since its writes sit on a path that always terminates before the main flow and cannot break atomicity with it
 
 ## v1.5.11
 
 ### Added
-- `EloquentNPlusOneAnalyzer` upgraded to registry-based detection with semantic type inference — a two-pass architecture scans all model files first (`EloquentModelRelationshipScanner`) to build relationship, attribute, and accessor registries, then uses precise registry lookups during N+1 traversal; unknown variable types no longer produce false positives
-- Column-constrained eager loads (`with('project:id,uuid,name')`) are now correctly matched — the colon suffix is stripped before relationship name comparison
+- `eloquent-n-plus-one` detects through a registry rather than guesswork: `EloquentModelRelationshipScanner` scans every model first to build relationship, attribute and accessor registries, which a second pass looks up, so an unknown variable type no longer produces a false positive
+- `eloquent-n-plus-one` matches a column-constrained eager load such as `with('project:id,uuid,name')`, stripping the colon suffix before comparing relationship names
 
 ### Fixed
-- `FatModelAnalyzer` no longer reports a line number for class-level issues (method count, LOC) — these are whole-class concerns with no single causal line; complexity issues retain their method start line as before
-- `HelperFunctionAbuseAnalyzer` now counts unique helper functions per class instead of total calls — a class calling `config()` seven times has one implicit dependency (the config system), not seven; thresholds recalibrated for unique-count scale (High at ≥ 10 distinct helpers, Medium at ≥ 5)
-- `LogicInBladeAnalyzer` no longer false-positives on `@props` and `@aware` Blade component directives — these compile to framework-internal PHP containing `array_filter` (for `ComponentSlot` detection), which was incorrectly flagged as "business logic found in Blade directive"
+- `fat-model` reports no line number for a class-level issue such as method count or lines of code, which no single line causes; a complexity issue keeps its method start line
+- `helper-function-abuse` counts distinct helper functions per class rather than total calls, so a class calling `config()` seven times carries one implicit dependency rather than seven; thresholds are rescaled to High at 10 distinct helpers and Medium at 5
+- `logic-in-blade` no longer flags the `@props` and `@aware` component directives, which compile to framework-internal PHP containing `array_filter`
 
 ## v1.5.10
 
 ### Fixed
-- `ChunkMissingAnalyzer` no longer false-positives when a variable name used in a `foreach` in one method matches a query-assigned variable from a different method in the same class — `$variableAssignments` is now reset on entry to each `ClassMethod`, `Function_`, `Closure`, and `ArrowFunction` scope
-- `ChunkMissingAnalyzer` no longer false-positives on `->pluck(...)->all()` chains — `pluck()` executes the query and returns an in-memory `Collection`; the subsequent `->all()` is `Collection::all()` (array conversion), not `Builder::all()`, and is now correctly treated as safe
+- `chunk-missing` no longer flags a `foreach` whose variable name happens to match a query-assigned variable in a different method of the same class, since assignments now reset on entry to each method, function and closure
+- `chunk-missing` no longer flags a `->pluck(...)->all()` chain, where `all()` converts an in-memory `Collection` to an array rather than fetching every row
 
 ## v1.5.9
 
 ### Added
-- `InlineSuppressionParser` now recognises `@shieldci-ignore` inside multi-line docblocks — when the line immediately above a flagged issue ends with the block-comment closing marker, the parser scans backward through the block for a matching suppression tag; this covers both standalone suppress docblocks and `@shieldci-ignore` placed inside an existing `@param`/`@return` docblock
+- `InlineSuppressionParser` recognises `@shieldci-ignore` inside a multi-line docblock, scanning back through the block when the line above a finding closes one, so the tag works in a standalone docblock or alongside existing `@param` and `@return` tags
 
 ## v1.5.8
 
-### Fixed
-- `CustomErrorPageAnalyzer` recommendation now lists only the templates that are actually missing instead of always enumerating all 7 — if a project already has `404.blade.php`, it will no longer appear in the recommendation text
-
 ### Changed
-- `CustomErrorPageAnalyzer` reads the required template list from `shieldci.analyzers.reliability.custom-error-pages.required_templates` config (falling back to the default 7 templates) — advanced users can override this list without modifying the published config file
+- `custom-error-pages` reads its required template list from `shieldci.analyzers.reliability.custom-error-pages.required_templates`, falling back to the default seven, so the list can be overridden without editing the published config
+
+### Fixed
+- `custom-error-pages` recommends only the templates actually missing, so a project that already has `404.blade.php` no longer sees it listed
 
 ## v1.5.7
 
 ### Fixed
-- `UnusedGlobalMiddlewareAnalyzer` no longer false-positives on `TrustProxies` and `TrustHosts` in Laravel 11+ applications — in Laravel 11+, these are framework-level defaults injected by `Illuminate\Foundation\Configuration\Middleware`, not user-registered middleware, so flagging them as "unused" was incorrect for every Laravel 11+ app
-- `UnusedGlobalMiddlewareAnalyzer` now reports issues against `bootstrap/app.php` on Laravel 11+ (instead of the non-existent `app/Http/Kernel.php`), and the `HandleCors` recommendation text now references `withMiddleware()` in `bootstrap/app.php` on Laravel 11+
-- Laravel version detection uses `class_exists(Illuminate\Foundation\Configuration\Middleware::class)` — reliable across all environments (no filesystem dependency)
+- `unused-global-middleware` no longer flags `TrustProxies` and `TrustHosts` on Laravel 11+, where the framework injects them as defaults rather than the developer registering them
+- `unused-global-middleware` reports against `bootstrap/app.php` on Laravel 11+ rather than the `app/Http/Kernel.php` that does not exist there, and its `HandleCors` recommendation names `withMiddleware()`
 
 ## v1.5.6
 
-### Fixed
-- `LoginThrottlingAnalyzer` no longer false-positives on route files registered with a throttle middleware directly on their group in `bootstrap/app.php` (e.g. `Route::prefix('api/v1')->middleware(['api', 'throttle:api.rest'])->group(base_path('routes/api-v1.php'))`) — these files now correctly inherit their rate-limiting protection and are skipped
-- `LoginThrottlingAnalyzer` no longer false-positives on `GET /token/verify` and similar token management endpoints in `routes/api.php` — `token`/`oauth` URL keywords now only trigger a check on `POST`, `any`, and `match` routes (credential submission methods); `GET`, `resource`, and `controller` routes only match the `login`/`signin`/`auth`/`authenticate` keywords
-
 ### Added
-- `BootstrapRouteParser::getThrottleProtectedRouteFiles()` — detects route files registered with any `throttle:*` middleware (string or array form) on their group in `bootstrap/app.php`; used by `LoginThrottlingAnalyzer` to suppress false positives on externally throttled route groups
+- `BootstrapRouteParser::getThrottleProtectedRouteFiles()` detects route files registered with any `throttle:*` middleware, in string or array form, on their group in `bootstrap/app.php`
+
+### Fixed
+- `login-throttling` no longer flags a route file whose group already carries throttle middleware in `bootstrap/app.php`, such as `Route::prefix('api/v1')->middleware(['api', 'throttle:api.rest'])->group(...)`
+- `login-throttling` no longer flags a token management endpoint such as `GET /token/verify`, since the `token` and `oauth` keywords now trigger a check only on the credential-submitting methods `POST`, `any` and `match`
 
 ## v1.5.5
 
-### Fixed
-- `CsrfAnalyzer` no longer false-positives on API route files (e.g. `routes/api-v1.php`) registered under the `api` middleware group via `withRouting(then: ...)` in `bootstrap/app.php` — these files use Sanctum token-based authentication and must not have `web` middleware; they are now correctly skipped
-- `BootstrapRouteParser::chainContainsMiddleware` now recognises array-form middleware declarations (e.g. `->middleware(['api', 'throttle:api.rest'])`) in addition to the string form `->middleware('api')`
-
 ### Added
-- `BootstrapRouteParser::getApiRegisteredRouteFiles()` — detects route files registered under the `api` middleware group through two sources: `require`/`include` statements in `routes/api.php`, and `Route::middleware('api'|['api', ...])->...->group(base_path(...))` chains in `bootstrap/app.php`
+- `BootstrapRouteParser::getApiRegisteredRouteFiles()` detects route files registered under the `api` middleware group, reading both `require` statements in `routes/api.php` and `Route::middleware('api')->group(base_path(...))` chains in `bootstrap/app.php`
+
+### Fixed
+- `csrf-protection` no longer flags an API route file such as `routes/api-v1.php` registered under the `api` group through `withRouting(then: ...)`, which authenticates by Sanctum token and must not carry `web` middleware
+- `BootstrapRouteParser::chainContainsMiddleware()` recognises the array form `->middleware(['api', 'throttle:api.rest'])`, not only the string form
 
 ## v1.5.4
 
 ### Fixed
-- `FillableForeignKeyAnalyzer` now reports each issue at the specific `$fillable` array item line (e.g. `'user_id',`) instead of the `protected $fillable = [` declaration line — fixes `@shieldci-ignore` comments placed on the offending entry being silently ignored
-- `NamingConventionAnalyzer` now reports property violations at the individual property line (`$prop->getStartLine()`) and constant violations at the individual constant line (`$const->getStartLine()`) instead of the parent statement line — same inline-suppression fix applies
-- `PasswordSecurityAnalyzer` now reports weak `password_hash()` option issues (`bcrypt cost`, `argon2 memory_cost`, `time_cost`, `threads`) at the offending array item line instead of the `password_hash(` call line
+- `fillable-foreign-key` reports each issue at the offending `$fillable` entry rather than the `protected $fillable = [` line, so an `@shieldci-ignore` comment placed on that entry is no longer ignored
+- `naming-convention` reports a property or constant violation at its own line rather than the parent statement, so inline suppression works there too
+- `password-security` reports a weak `password_hash()` option at the offending array entry rather than the call line
 
 ## v1.5.3
 
-### Fixed
-- `CsrfAnalyzer` no longer false-positives on route files registered with `web` middleware externally via `withRouting(then: ...)` in `bootstrap/app.php` (e.g. `Route::middleware('web')->group(base_path('routes/auth.php'))`) — these files inherit CSRF protection from the middleware group and are now correctly skipped
-- `LoginThrottlingAnalyzer` no longer false-positives on login routes in the same externally-registered route files — throttle applied globally to the `web` group is now respected
-
 ### Added
-- `BootstrapRouteParser` support class (`ShieldCI\Support`) — AST-based utility that detects route files covered by the `web` middleware group through external registration; checks both `require`/`include` statements in `routes/web.php` and `Route::middleware('web')->...->group(base_path(...))` chains in `bootstrap/app.php`; used by `CsrfAnalyzer` and `LoginThrottlingAnalyzer`
+- `BootstrapRouteParser` (`ShieldCI\Support`) detects route files covered by the `web` middleware group through external registration, reading both `require` statements in `routes/web.php` and `Route::middleware('web')->group(base_path(...))` chains in `bootstrap/app.php`
+
+### Fixed
+- `csrf-protection` no longer flags a route file given `web` middleware externally through `withRouting(then: ...)`, such as `Route::middleware('web')->group(base_path('routes/auth.php'))`, since the file inherits CSRF protection from the group
+- `login-throttling` no longer flags a login route in one of those externally registered files, since throttling applied to the whole `web` group covers it
 
 ## v1.5.2
 
-### Fixed
-- `AuthenticationAnalyzer` now correctly recognises custom auth middleware classes applied at the group level via `Route::middleware(ClassName::class)->group()` — the class name was previously unresolved due to a NameResolver timing issue in single-pass traversal
-- `AuthenticationAnalyzer` now correctly inherits middleware from multi-segment route chains such as `Route::prefix('api')->middleware('auth')->group()` — intermediate method calls between the `Route::` static call and `->group()` are now walked correctly
-- `AuthenticationAnalyzer` now correctly maps legacy string-format route handlers (`'Controller@method'`, `'Controller'`) to controller methods for auth-stat tracking
-
 ### Changed
-- `AuthenticationAnalyzer` route file analysis fully migrated from regex/line-based parsing to PHP-Parser AST via a new `RouteAuthVisitor` — 17 regex methods removed; all valid PHP formatting variants (multiline chains, different indentation, etc.) are now handled without fragility
+- `authentication-authorization` parses route files through a `RouteAuthVisitor` AST pass rather than 17 regular expressions, so multi-line chains and unusual indentation are read correctly
+
+### Fixed
+- `authentication-authorization` recognises a custom auth middleware class applied to a group as `Route::middleware(ClassName::class)->group()`, which a name-resolution ordering problem previously left unresolved
+- `authentication-authorization` inherits middleware through a multi-segment chain such as `Route::prefix('api')->middleware('auth')->group()`
+- `authentication-authorization` maps a legacy string route handler, `'Controller@method'` or `'Controller'`, to its controller method for auth statistics
 
 ## v1.5.1
 
 ### Fixed
-- `AuthenticationAnalyzer` no longer false-positives on invokable controllers registered on plain `Route::get()` routes (e.g. `PrivacyController`, `LandingController`) — unauthenticated GET routes now mark the target method as intentionally public, consistent with named resource actions `index`/`show`; POST/PUT/PATCH/DELETE routes without auth middleware continue to be flagged
-- `AuthenticationAnalyzer` no longer false-positives on `FormRequest::authorize() => true` when the `FormRequest` is injected into an auth-gated controller action (route middleware, constructor middleware, or `middleware()` method) — only unprotected sensitive actions are flagged; orphaned `FormRequest` classes are also skipped
-- `AuthenticationAnalyzer` no longer false-positives on `Auth::user()->`, `auth()->user()->`, or `$request->user()->` calls inside controller methods that are verifiably protected by auth middleware — suppression uses the already-computed `routeAuthStats` and `publicControllerMethods` maps (route-level) or constructor / `middleware()` method inspection (controller-level)
+- `authentication-authorization` no longer flags an invokable controller on a plain `Route::get()` route, since an unauthenticated GET marks the method intentionally public in the same way as `index` and `show`
+- `authentication-authorization` no longer flags `FormRequest::authorize()` returning true when the request is injected into an auth-gated controller action, and skips orphaned `FormRequest` classes
+- `authentication-authorization` no longer flags `Auth::user()`, `auth()->user()` or `$request->user()` inside a controller method that route or controller middleware verifiably protects
 
 ## v1.5.0
 
 ### Added
-- `--category` now accepts comma-separated values to run multiple categories in one pass (e.g. `--category=security,performance`)
-- `AnalyzerManager::getByCategories(array $categories)` — filters the registered analyzer pool to any number of categories at once
-- Warning emitted when both `--analyzer` and `--category` are provided simultaneously (`--category` is silently ignored in that case; the warning makes the precedence explicit)
+- `--category` accepts comma-separated values, so `--category=security,performance` runs both in one pass
+- `AnalyzerManager::getByCategories()` filters the registered analyzer pool to any number of categories at once
+- `shield:analyze` warns when `--analyzer` and `--category` are passed together, making explicit that `--category` is ignored
 
 ### Changed
-- `--category` help text updated to document comma-separated usage
+- `--category` help text documents the comma-separated form
 
 ## v1.4.0
 

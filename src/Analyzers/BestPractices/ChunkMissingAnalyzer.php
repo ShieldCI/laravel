@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Support\ModelTableResolver;
 use ShieldCI\Support\SeededTableScanner;
 
@@ -58,6 +59,10 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // Facade detection matches fully qualified names, so that a project's own
+                // App\Models\Event is not mistaken for the Event facade on its last segment.
+                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+
                 $visitor = new ChunkMissingVisitor($catalogueTables, $tableResolver, $this->getBasePath());
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
@@ -94,6 +99,22 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 
 class ChunkMissingVisitor extends NodeVisitorAbstract
 {
+    use IdentifiesNonQueryClasses;
+
+    /**
+     * Roots whose own read is not a query, but which hand back a model that can then
+     * be queried: Request::all() is HTTP input, Request::user()->orders()->get() is a
+     * table read. The exemption therefore applies to the bare static call only, which
+     * is the same distinction the shared list draws around Auth.
+     *
+     * @var array<int, string>
+     */
+    private const AMBIGUOUS_ROOTS = [
+        'Illuminate\Support\Facades\Request',
+        'Illuminate\Http\Request',
+        'Illuminate\Support\Facades\Route',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -170,6 +191,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         }
 
         if (! $expr instanceof Node\Expr\MethodCall && ! $expr instanceof Node\Expr\StaticCall) {
+            return false;
+        }
+
+        // Cache::get(), Request::all(), Http::get()->json() and friends are not database
+        // reads. The single-method filter below only rejects their instance spellings
+        // ($request->all(), config()->get()), so the facade spellings need their own guard.
+        if ($this->isNonQueryClassChain($expr)) {
             return false;
         }
 
@@ -293,6 +321,34 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     private function severityFor(Node\Expr $expr): Severity
     {
         return $this->isStaticCallChain($expr) ? Severity::High : Severity::Medium;
+    }
+
+    /**
+     * Return true when the chain is rooted at a static call on a class that never
+     * returns a database result set.
+     */
+    private function isNonQueryClassChain(Node\Expr $expr): bool
+    {
+        $current = $expr;
+        $isBareStaticCall = true;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+            $isBareStaticCall = false;
+        }
+
+        if (! $current instanceof Node\Expr\StaticCall || ! $current->class instanceof Node\Name) {
+            return false;
+        }
+
+        // An ambiguous root only earns the exemption when nothing is chained onto it,
+        // so Request::all() passes while Request::user()->orders()->get() is judged on
+        // its merits like any other row read.
+        if ($isBareStaticCall && $this->isNonQueryClass($current->class, self::AMBIGUOUS_ROOTS)) {
+            return true;
+        }
+
+        return $this->isNonQueryClass($current->class);
     }
 
     /**

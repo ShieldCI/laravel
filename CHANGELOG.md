@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.16.0
+
+### Added
+- `OriginReachabilityChecker` probes each origin the app declares once and names the outcome, so an unreachable host cannot read as a clean result (#404)
+
+### Changed
+- `env-http-accessibility` verifies TLS certificates on its probes, so a staging origin with a self-signed certificate warns rather than passing (#408)
+- Requires `shieldci/analyzers-core ^2.6` (was `^2.5`), for the shared AST parser every analyzer now resolves through (#412)
+
+### Fixed
+- `logic-in-blade` and `eloquent-n-plus-one` analyze Blade views containing a multi-line directive, an inline `@php`, a `@switch` or a raw `<?php` tag, rather than skipping them and reporting a pass (#407, #409, #413, #414, #416)
+- `logic-in-blade` no longer reports `blade-unclosed-php-block` for a `@php` that is not a directive, such as one written in prose or inside `{{-- --}}` (#414)
+- `logic-in-blade` no longer reports `blade-inline-php` for a `<?php` occurring inside a `@php` block body, such as one in a string or heredoc (#416)
+- `env-http-accessibility` warns when a location produced no response, instead of reporting the web server properly configured from zero replies (#408)
+
 ## v1.15.3
 
 ### Changed

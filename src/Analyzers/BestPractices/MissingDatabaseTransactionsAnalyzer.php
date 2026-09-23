@@ -146,6 +146,38 @@ class TransactionVisitor extends NodeVisitorAbstract
         'Cache', 'Redis', 'RateLimiter', 'Session', 'Storage', 'Queue',
     ];
 
+    /**
+     * The same six services in their injected-contract spelling. A property declared as
+     * one of these holds a cache, filesystem, queue, session or Redis client, so its
+     * delete()/save()/update() never reaches the database.
+     *
+     * Deliberately an explicit list rather than "does not extend Eloquent\Model": an
+     * injected repository or service wrapping several writes does not extend Model
+     * either, and those are exactly what this rule is meant to catch.
+     *
+     * @var array<string>
+     */
+    private const NON_DB_CLIENT_TYPES = [
+        'Psr\SimpleCache\CacheInterface',
+        'Psr\Cache\CacheItemPoolInterface',
+        'Illuminate\Contracts\Cache\Repository',
+        'Illuminate\Contracts\Cache\Factory',
+        'Illuminate\Contracts\Filesystem\Filesystem',
+        'Illuminate\Contracts\Filesystem\Cloud',
+        'Illuminate\Contracts\Filesystem\Factory',
+        'Illuminate\Filesystem\Filesystem',
+        'Illuminate\Contracts\Queue\Queue',
+        'Illuminate\Contracts\Queue\Factory',
+        'Illuminate\Contracts\Queue\Job',
+        'Illuminate\Contracts\Session\Session',
+        'Illuminate\Session\Store',
+        'Illuminate\Contracts\Redis\Factory',
+        'Illuminate\Redis\Connections\Connection',
+        'Illuminate\Cache\RateLimiter',
+        'Predis\Client',
+        'Redis',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -250,6 +282,22 @@ class TransactionVisitor extends NodeVisitorAbstract
     private array $ifElseBranchStack = [];
 
     /**
+     * Variables holding a non-database facade, e.g. $disk = Storage::disk('s3').
+     * Writes on such a receiver are filesystem/cache/queue calls, not database writes.
+     *
+     * @var array<string, true>
+     */
+    private array $nonDbVariables = [];
+
+    /**
+     * Declared type of each property of the current class, keyed by property name.
+     * Covers plain declarations and constructor-promoted parameters alike.
+     *
+     * @var array<string, string>
+     */
+    private array $propertyTypes = [];
+
+    /**
      * @param  array<string, true>  $transactionDelegatedMethods
      * @param  array<string, string|null>  $classParents
      */
@@ -264,6 +312,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
             $this->currentClassName = $node->name?->toString();
+            $this->propertyTypes = $this->collectPropertyTypes($node);
         }
 
         // Track current method
@@ -288,10 +337,25 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->maxClosureLines = [];
             $this->maxClosureLine = 0;
             $this->closureScopeStack = [];
+            $this->nonDbVariables = [];
         }
 
-        // Check for DB::transaction or DB::beginTransaction
-        if ($node instanceof Node\Expr\StaticCall) {
+        // Remember variables holding a non-database facade ($disk = Storage::disk('s3')).
+        // Any other assignment drops the marker, so $user = User::find($id) stays flaggable.
+        if ($node instanceof Node\Expr\Assign
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)
+        ) {
+            if ($this->isNonDbFacadeRooted($node->expr)) {
+                $this->nonDbVariables[$node->var->name] = true;
+            } else {
+                unset($this->nonDbVariables[$node->var->name]);
+            }
+        }
+
+        // Check for DB::transaction or DB::beginTransaction, in either the direct static
+        // spelling or the connection-scoped one (DB::connection('tenant')->transaction()).
+        if ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) {
             if ($this->isTransactionCall($node)) {
                 // If it's beginTransaction, mark that we're in a manual transaction
                 // (it's typically called before a try block)
@@ -648,39 +712,45 @@ class TransactionVisitor extends NodeVisitorAbstract
         return $this->issues;
     }
 
-    private function isTransactionCall(Node\Expr\StaticCall $node): bool
+    /**
+     * Return the method name of a call made on the DB facade, in either spelling:
+     * the direct static call DB::transaction(), or the connection-scoped chain
+     * DB::connection('tenant')->transaction(). The latter is the only way to open a
+     * transaction on a non-default connection, so it has to count as one.
+     */
+    private function dbFacadeMethod(Node\Expr $node): ?string
     {
-        if ($node->class instanceof Node\Name) {
-            $className = $node->class->toString();
-            if ($className === 'DB') {
-                if ($node->name instanceof Node\Identifier) {
-                    $method = $node->name->toString();
-
-                    return in_array($method, ['transaction', 'beginTransaction'], true);
-                }
-            }
+        if (! $node instanceof Node\Expr\StaticCall && ! $node instanceof Node\Expr\MethodCall) {
+            return null;
         }
 
-        return false;
+        if (! $node->name instanceof Node\Identifier) {
+            return null;
+        }
+
+        $root = $node;
+        while ($root instanceof Node\Expr\MethodCall) {
+            $root = $root->var;
+        }
+
+        if (! $root instanceof Node\Expr\StaticCall || ! $root->class instanceof Node\Name) {
+            return null;
+        }
+
+        return $root->class->toString() === 'DB' ? $node->name->toString() : null;
+    }
+
+    private function isTransactionCall(Node\Expr $node): bool
+    {
+        return in_array($this->dbFacadeMethod($node), ['transaction', 'beginTransaction'], true);
     }
 
     /**
      * Check if the call is a transaction end (commit or rollBack).
      */
-    private function isTransactionEndCall(Node\Expr\StaticCall $node): bool
+    private function isTransactionEndCall(Node\Expr $node): bool
     {
-        if ($node->class instanceof Node\Name) {
-            $className = $node->class->toString();
-            if ($className === 'DB') {
-                if ($node->name instanceof Node\Identifier) {
-                    $method = $node->name->toString();
-
-                    return in_array($method, ['commit', 'rollBack'], true);
-                }
-            }
-        }
-
-        return false;
+        return in_array($this->dbFacadeMethod($node), ['commit', 'rollBack'], true);
     }
 
     /**
@@ -742,7 +812,109 @@ class TransactionVisitor extends NodeVisitorAbstract
             return true;
         }
 
+        // A variable holding a non-database facade, e.g. $disk = Storage::disk('s3').
+        if ($current instanceof Node\Expr\Variable
+            && is_string($current->name)
+            && isset($this->nonDbVariables[$current->name])
+        ) {
+            return true;
+        }
+
+        // A single level of property access is flaggable unless the property is declared
+        // as a cache/filesystem/queue/session/Redis client. That keeps $this->model->update()
+        // reported while $this->cache->delete() is not.
+        if ($current instanceof Node\Expr\PropertyFetch
+            && $current->var instanceof Node\Expr\Variable
+            && $current->var->name === 'this'
+            && $current->name instanceof Node\Identifier
+        ) {
+            $type = $this->propertyTypes[$current->name->toString()] ?? null;
+
+            return $type !== null && in_array($type, self::NON_DB_CLIENT_TYPES, true);
+        }
+
         return false;
+    }
+
+    /**
+     * True when a chain bottoms out in a static call on a non-database facade,
+     * e.g. the right-hand side of $disk = Storage::disk('s3').
+     */
+    private function isNonDbFacadeRooted(Node\Expr $expr): bool
+    {
+        $current = $expr;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall
+            && $current->class instanceof Node\Name
+            && in_array($this->getShortClassName($current->class), self::NON_DB_FACADES, true);
+    }
+
+    /**
+     * Map every property of a class to its declared type FQN, covering both plain
+     * declarations and constructor-promoted parameters. Properties with no type, or a
+     * scalar or composite type, are omitted so they stay conservative (flaggable).
+     *
+     * @return array<string, string>
+     */
+    private function collectPropertyTypes(Node\Stmt\Class_ $class): array
+    {
+        $types = [];
+
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Property) {
+                $type = $this->typeFqn($stmt->type);
+                if ($type !== null) {
+                    foreach ($stmt->props as $prop) {
+                        $types[$prop->name->toString()] = $type;
+                    }
+                }
+
+                continue;
+            }
+
+            if (! $stmt instanceof Node\Stmt\ClassMethod || $stmt->name->toString() !== '__construct') {
+                continue;
+            }
+
+            foreach ($stmt->params as $param) {
+                $type = $this->typeFqn($param->type);
+                if ($param->flags !== 0
+                    && $type !== null
+                    && $param->var instanceof Node\Expr\Variable
+                    && is_string($param->var->name)
+                ) {
+                    $types[$param->var->name] = $type;
+                }
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * Resolve a declared type to its fully-qualified name, or null when it is not a
+     * plain class name (scalar, union, intersection, or absent).
+     */
+    private function typeFqn(?Node $type): ?string
+    {
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if (! $type instanceof Node\Name) {
+            return null;
+        }
+
+        $resolvedName = $type->getAttribute('resolvedName');
+        $fqn = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $type->toString();
+
+        return ltrim($fqn, '\\');
     }
 
     /**
@@ -969,12 +1141,10 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
             $this->methodIsHidden[$this->currentMethodName] = $node->isPrivate() || $node->isProtected();
         }
 
-        // Record closures passed directly to DB::transaction().
-        if ($node instanceof Node\Expr\StaticCall
-            && $node->class instanceof Node\Name
-            && $node->class->toString() === 'DB'
-            && $node->name instanceof Node\Identifier
-            && $node->name->toString() === 'transaction'
+        // Record closures passed directly to DB::transaction(), including the
+        // connection-scoped spelling DB::connection('tenant')->transaction().
+        if (($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall)
+            && $this->isDbTransactionCall($node)
             && ! empty($node->args)
         ) {
             $firstArgNode = $node->args[0];
@@ -1005,6 +1175,26 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    /**
+     * True when the call opens a transaction on the DB facade, either as DB::transaction()
+     * or through a connection chain such as DB::connection('tenant')->transaction().
+     */
+    private function isDbTransactionCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): bool
+    {
+        if (! $node->name instanceof Node\Identifier || $node->name->toString() !== 'transaction') {
+            return false;
+        }
+
+        $root = $node;
+        while ($root instanceof Node\Expr\MethodCall) {
+            $root = $root->var;
+        }
+
+        return $root instanceof Node\Expr\StaticCall
+            && $root->class instanceof Node\Name
+            && $root->class->toString() === 'DB';
     }
 
     public function leaveNode(Node $node): ?Node

@@ -20,6 +20,29 @@ class BladeCompilerFactory
     use ReadsBladePhpBlocks;
 
     /**
+     * Marks a parse-failure origin as compiled output rather than the template file.
+     *
+     * The failure log is keyed by origin and keeps the first sighting of each key, so
+     * without this suffix a raw parse of the same .blade.php and a parse of its compiled
+     * output would collide and one would be dropped. That is not hypothetical:
+     * EloquentNPlusOneAnalyzer hands every scanned file, Blade templates included, to
+     * parseFile() before it compiles any of them.
+     *
+     * It lives here rather than on either analyzer because it names what compile()
+     * produces, and because two analyzers compiling one template have to spell the origin
+     * identically. The log keys on that string, so a second spelling turns one skipped
+     * template into two entries, one of them attributable to no file at all.
+     *
+     * It also keeps our own defect from reading as the author's. What is parsed is
+     * generated code carrying the line markers injected below, so a marker-injection bug
+     * surfaces as a syntax error; saying "(compiled)" is what separates that from a
+     * template the author actually broke. The cost is that the recorded path is no longer
+     * a path a consumer can open directly, which is the right trade while the alternative
+     * is misattributing our bug to the user.
+     */
+    public const COMPILED_ORIGIN_SUFFIX = ' (compiled)';
+
+    /**
      * Compile Blade source to PHP with line-number tracking.
      *
      * @return array{compiledPhp: string, lineMap: array<int, int>}|null

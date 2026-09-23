@@ -74,23 +74,6 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
     /** @var array<int, true> Track reported lines to avoid duplicates */
     private array $reportedLines = [];
 
-    /**
-     * Marks a failure as coming from compiled Blade output rather than the template file.
-     *
-     * The failure log is keyed by origin and keeps the first sighting of each key, so
-     * without this suffix a raw parse of the same .blade.php (core accepts the extension,
-     * and resources/views is in several analyzers' search paths) and this analyzer's parse
-     * of its compiled output would collide and one would be dropped.
-     *
-     * It also keeps our own defect from reading as the author's. What is parsed here is
-     * generated code carrying ShieldCI's line markers, so a marker-injection bug surfaces
-     * as a syntax error; saying "(compiled)" is what separates that from a template the
-     * author actually broke. The cost is that the recorded path is no longer a path a
-     * consumer can open directly, which is the right trade while the alternative is
-     * misattributing our bug to the user.
-     */
-    private const COMPILED_ORIGIN_SUFFIX = ' (compiled)';
-
     /** The shared parser; never a private instance. */
     private AstParser $astParser;
 
@@ -369,7 +352,7 @@ class LogicInBladeAnalyzer extends AbstractFileAnalyzer
         // translate is reported without a line rather than as a Blade line it is not.
         $ast = $this->astParser->parseCode(
             $result['compiledPhp'],
-            $file.self::COMPILED_ORIGIN_SUFFIX,
+            $file.BladeCompilerFactory::COMPILED_ORIGIN_SUFFIX,
             fn (int $compiledLine): int => $lineMap[$compiledLine] ?? 0,
         );
 

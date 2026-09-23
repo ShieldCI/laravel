@@ -1440,4 +1440,158 @@ PHP;
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('->get()', $result);
     }
+
+    public function test_still_flags_model_whose_name_matches_a_facade(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Event;
+
+class ScheduleService
+{
+    public function rebuild()
+    {
+        foreach (Event::all() as $event) {
+            echo $event->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ScheduleService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('->all()', $result);
+    }
+
+    public function test_still_flags_model_named_like_a_facade_through_a_variable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\File;
+
+class ArchiveService
+{
+    public function archive()
+    {
+        $files = File::where('archived', false)->get();
+
+        foreach ($files as $file) {
+            echo $file->path;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ArchiveService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_passes_with_aliased_facade_import(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache as C;
+
+class AliasService
+{
+    public function render()
+    {
+        foreach (C::get('menu.items', []) as $item) {
+            echo $item;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/AliasService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_unqualified_facade_alias_in_global_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+class LegacyReport
+{
+    public function render()
+    {
+        foreach (Cache::get('report.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['LegacyReport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_still_flags_rows_reached_through_the_request_facade(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Request;
+
+class OrderHistory
+{
+    public function render()
+    {
+        foreach (Request::user()->orders()->get() as $order) {
+            echo $order->id;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/OrderHistory.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('->get()', $result);
+    }
 }

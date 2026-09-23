@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\ModelVariableScanner;
@@ -1209,6 +1210,8 @@ class MethodBodyCollector extends NodeVisitorAbstract
  */
 class NPlusOneVisitor extends NodeVisitorAbstract
 {
+    use IdentifiesNonQueryClasses;
+
     /** @var string Loop type constants */
     private const LOOP_TYPE_FOREACH = 'foreach';
 
@@ -1276,16 +1279,24 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'tostring', '__tostring', 'render', 'display',
     ];
 
-    /** @var array<string> Facades/classes that have query-like methods but are NOT database queries */
-    private const NON_QUERY_CLASSES = [
-        // Laravel facades
-        'cache', 'config', 'session', 'storage', 'cookie', 'auth',
-        'log', 'mail', 'event', 'queue', 'broadcast', 'notification',
-        'gate', 'validator', 'view', 'response', 'request', 'redirect',
-        'url', 'file', 'hash', 'crypt', 'artisan', 'bus', 'http', 'redis',
-        'guzzle', 'soap', 'curl',
-        // Common non-Eloquent classes
-        'arr', 'str', 'collection', 'carbon', 'datetime',
+    /**
+     * On top of the shared list. This visitor asks whether the static call is itself a
+     * query, not whether a chain rooted at it can reach rows, so Auth and Request earn
+     * an exemption here that they do not earn in ChunkMissingAnalyzer: Auth::user() is
+     * memoized and issues no SQL, while Auth::user()->orders()->get() plainly does.
+     *
+     * The HTTP clients have no single canonical namespace and are matched on the bare
+     * name, which is all this visitor can do anyway: it does not resolve names.
+     *
+     * @var array<int, string>
+     */
+    private const EXTRA_NON_QUERY_CLASSES = [
+        'Illuminate\Support\Facades\Auth',
+        'Illuminate\Support\Facades\Request',
+        'Illuminate\Http\Request',
+        'Guzzle',
+        'Soap',
+        'Curl',
     ];
 
     /** @var array<string> Methods that are batch operations (solutions, not N+1 problems) */
@@ -1531,7 +1542,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 // Skip DB facade - handled separately
                 if ($className !== 'DB' && $node->name instanceof Node\Identifier) {
                     // Skip non-query facades (Cache, Config, Session, etc.)
-                    if (in_array(strtolower($className), self::NON_QUERY_CLASSES, true)) {
+                    if ($this->isNonQueryClass($node->class, self::EXTRA_NON_QUERY_CLASSES)) {
                         return null;
                     }
 
@@ -2060,7 +2071,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
 
             // Skip non-query facades (Cache, Config, Session, etc.)
-            if (in_array(strtolower($className), self::NON_QUERY_CLASSES, true)) {
+            if ($this->isNonQueryClass($current->class, self::EXTRA_NON_QUERY_CLASSES)) {
                 return null;
             }
 

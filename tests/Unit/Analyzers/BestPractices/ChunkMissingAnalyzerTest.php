@@ -1303,4 +1303,141 @@ PHP;
         $this->assertFailed($result);
         $this->assertCount(2, $result->getIssues());
     }
+
+    public function test_passes_with_cache_facade_get(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+use Illuminate\Support\Facades\Cache;
+class CartService {
+    public function render() {
+        foreach (Cache::get('cart.items', []) as $item) { echo $item; }
+    }
+}
+PHP;
+        $tempDir = $this->createTempDirectory(['Services/CartService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_http_client_json(): void
+    {
+        $code = <<<'PHP'
+<?php
+namespace App\Services;
+use Illuminate\Support\Facades\Http;
+class ApiService {
+    public function sync() {
+        foreach (Http::get('https://api.example.com/items')->json() as $item) { echo $item; }
+    }
+}
+PHP;
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_request_facade_all(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Request;
+
+class ImportController
+{
+    public function store()
+    {
+        // Request::all() returns HTTP input, NOT database records
+        foreach (Request::all() as $key => $value) {
+            echo $key;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Controllers/ImportController.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_variable_assigned_from_facade_get(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class BasketService
+{
+    public function render()
+    {
+        $items = Cache::get('basket.items', []);
+
+        foreach ($items as $item) {
+            echo $item;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BasketService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_still_flags_model_scan_alongside_facade_read(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\Cache;
+
+class DigestService
+{
+    public function send()
+    {
+        foreach (Cache::get('digest.settings', []) as $setting) {
+            echo $setting;
+        }
+
+        foreach (User::where('active', true)->get() as $user) {
+            echo $user->email;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/DigestService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('->get()', $result);
+    }
 }

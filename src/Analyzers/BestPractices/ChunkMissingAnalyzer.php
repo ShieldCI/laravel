@@ -94,6 +94,27 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 
 class ChunkMissingVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Facades and utility classes whose all()/get() return HTTP input, cached values,
+     * configuration, or an in-memory collection, never a database result set. A read
+     * rooted at one of these is not iteration over a query at all, so it is neither a
+     * chunking candidate nor a memory risk this rule can speak to.
+     *
+     * DB and Schema are deliberately absent: DB::table(...)->get() is the exact
+     * table-wide scan this rule exists to catch. Auth is absent too, because
+     * Auth::user()->orders()->get() reads real rows.
+     *
+     * @var array<string>
+     */
+    private const NON_QUERY_CLASSES = [
+        'cache', 'config', 'session', 'cookie', 'storage', 'file',
+        'request', 'response', 'redirect', 'url', 'route', 'view', 'blade',
+        'log', 'event', 'mail', 'notification', 'queue', 'bus', 'broadcast',
+        'http', 'redis', 'validator', 'gate', 'hash', 'crypt', 'password',
+        'artisan', 'process', 'pipeline', 'ratelimiter', 'lang', 'date', 'vite', 'context',
+        'arr', 'str', 'collection', 'carbon', 'carbonimmutable', 'datetime', 'datetimeimmutable',
+    ];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -170,6 +191,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         }
 
         if (! $expr instanceof Node\Expr\MethodCall && ! $expr instanceof Node\Expr\StaticCall) {
+            return false;
+        }
+
+        // Cache::get(), Request::all(), Http::get()->json() and friends are not database
+        // reads. The single-method filter below only rejects their instance spellings
+        // ($request->all(), config()->get()), so the facade spellings need their own guard.
+        if ($this->isNonQueryClassChain($expr)) {
             return false;
         }
 
@@ -293,6 +321,25 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     private function severityFor(Node\Expr $expr): Severity
     {
         return $this->isStaticCallChain($expr) ? Severity::High : Severity::Medium;
+    }
+
+    /**
+     * Return true when the chain is rooted at a static call on a class that never
+     * returns a database result set.
+     */
+    private function isNonQueryClassChain(Node\Expr $expr): bool
+    {
+        $current = $expr;
+
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        if (! $current instanceof Node\Expr\StaticCall || ! $current->class instanceof Node\Name) {
+            return false;
+        }
+
+        return in_array(strtolower($current->class->getLast()), self::NON_QUERY_CLASSES, true);
     }
 
     /**

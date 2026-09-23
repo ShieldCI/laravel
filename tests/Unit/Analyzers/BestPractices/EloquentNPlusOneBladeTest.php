@@ -211,6 +211,64 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
     }
 
     /**
+     * A template reaches for a model the same way a PHP file does, so the facade list has to
+     * see the same fully qualified name. `Event` shares a last segment with the Event facade,
+     * and matching on that segment used to exempt the model from the check entirely.
+     */
+    public function test_flags_a_facade_named_model_a_template_imports(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Models/Event.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Event extends Model {}",
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@php use App\\Models\\Event; @endphp\n@foreach(\$cities as \$city)\n  {{ Event::where('city_id', \$city->id)->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->queryExecutionIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame('Event::where()->...count()', $issues[0]->metadata['query']);
+        $location = $issues[0]->location;
+        $this->assertNotNull($location);
+        $this->assertStringEndsWith('index.blade.php', $location->file);
+    }
+
+    /**
+     * The counterpart: compiled output carries no namespace, so a name a template writes bare
+     * is the container alias, and the facade keeps its exemption there.
+     */
+    public function test_silent_when_a_template_names_the_facade_itself(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ Cache::get('city_' . \$city->id) }}\n@endforeach",
+        ]);
+
+        $this->assertSame([], $this->queryExecutionIssues($result));
+    }
+
+    /**
+     * Resolving names throws on an import set PHP would reject, and a template carries its own
+     * through @php use. One such template must be skipped like an unparseable file: it cannot
+     * take the whole analyzer down with it, and the view next to it still has to be reported.
+     */
+    public function test_survives_a_template_whose_imports_collide(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Models/Airport.php' => self::AIRPORT_MODEL,
+            'app/Http/Controllers/CityController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass CityController { public function index(){ \$cities = City::all(); return view('cities.index', compact('cities')); } public function broken(){ \$cities = City::all(); return view('cities.broken', compact('cities')); } }",
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+            'resources/views/cities/broken.blade.php' => "@php use App\\Models\\Airport; @endphp\n@php use App\\Other\\Airport; @endphp\n@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+        ]);
+
+        $this->assertFailed($result);
+
+        $files = array_map(fn (Issue $i): string => basename((string) $i->location?->file), $this->airportIssues($result));
+        $this->assertSame(['index.blade.php'], $files);
+    }
+
+    /**
      * A vendor-published view (e.g. from a Composer package) is always skipped, even when a
      * controller renders it with a non-eager-loaded relationship that would otherwise be
      * flagged in an application view.

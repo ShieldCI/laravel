@@ -1715,6 +1715,8 @@ PHP;
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\Cache;
+
 class UserController
 {
     public function index()
@@ -1749,6 +1751,8 @@ PHP;
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\Config;
+
 class UserController
 {
     public function index()
@@ -1782,6 +1786,8 @@ PHP;
 <?php
 
 namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Session;
 
 class UserController
 {
@@ -2063,6 +2069,11 @@ PHP;
 
 namespace App\Http\Controllers;
 
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Session;
+
 class UserController
 {
     public function index()
@@ -2090,6 +2101,148 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should pass - none of these are database queries
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_a_query_on_a_model_whose_short_name_matches_a_facade(): void
+    {
+        // Regression test for #423: `use App\Models\Event` leaves the reference written as a
+        // bare `Event`, which the non-query list matched on its last segment against the Event
+        // facade. The model was exempted from the very check this analyzer exists to run.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Event;
+
+class Probe
+{
+    public function run(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = Event::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Probe.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Event::where', $result);
+    }
+
+    public function test_flags_a_facade_named_model_called_from_its_own_namespace(): void
+    {
+        // The other half of #423: nothing imports `Event` here, so it resolves through the
+        // current namespace rather than a use statement. Both spellings have to reach the
+        // model, or a caller that happens to sit beside it keeps the facade's exemption.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class EventReport
+{
+    public function build(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = Event::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/EventReport.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Event::where', $result);
+    }
+
+    public function test_does_not_flag_a_facade_written_with_a_leading_backslash(): void
+    {
+        // `\Cache::get()` is the container alias spelled out. It resolves to the root
+        // namespace, which is the one place the short-name fallback still applies.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = \Cache::get('user_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_flag_a_facade_in_a_file_with_no_namespace(): void
+    {
+        // Nothing to resolve against, so `Cache` stays unqualified and reaches the exemption
+        // on its bare name, exactly as the alias loader would resolve it at runtime.
+        $code = <<<'PHP'
+<?php
+
+class LegacyController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/LegacyController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
         $this->assertPassed($result);
     }
 

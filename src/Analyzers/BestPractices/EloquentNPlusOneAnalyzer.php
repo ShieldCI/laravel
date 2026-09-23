@@ -81,18 +81,25 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if (str_ends_with($file, '.blade.php')) {
-                $this->analyzeBladeFile($file, $bindingRegistry, $scanResult, $issues);
-
-                continue;
-            }
-
             try {
+                // Inside the try because resolving names throws on an import set PHP would
+                // itself reject, and a template carries its own through @php use. One such
+                // file is skipped like an unparseable one rather than erroring the analyzer.
+                if (str_ends_with($file, '.blade.php')) {
+                    $this->analyzeBladeFile($file, $bindingRegistry, $scanResult, $issues);
+
+                    continue;
+                }
+
                 $ast = $this->parser->parseFile($file);
 
                 if (empty($ast)) {
                     continue;
                 }
+
+                // Facade detection matches fully qualified names, so that a project's own
+                // App\Models\Event is not mistaken for the Event facade on its last segment.
+                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
 
                 $visitor = new NPlusOneVisitor($scanResult);
                 $traverser = new NodeTraverser;
@@ -232,6 +239,12 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         if ($ast === []) {
             return;
         }
+
+        // A template reaches for classes the way a PHP file does, so the facade list has to
+        // see the same fully qualified names here. Compiled output carries no namespace, so a
+        // bare `Event::` still resolves to the root alias the template means; only an
+        // `@php use App\Models\Event; @endphp` changes what this sees.
+        $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
 
         $seed = [];
         foreach ($bindings as $var => $binding) {
@@ -1285,8 +1298,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * an exemption here that they do not earn in ChunkMissingAnalyzer: Auth::user() is
      * memoized and issues no SQL, while Auth::user()->orders()->get() plainly does.
      *
-     * The HTTP clients have no single canonical namespace and are matched on the bare
-     * name, which is all this visitor can do anyway: it does not resolve names.
+     * The HTTP clients have no single canonical namespace, so they are matched on the bare
+     * name. That still reaches them once names are resolved: an unqualified `Guzzle` in a
+     * file with no namespace, or one imported as `use Guzzle;`, keeps its short spelling.
      *
      * @var array<int, string>
      */

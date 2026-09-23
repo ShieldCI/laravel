@@ -2670,7 +2670,7 @@ class Svc {
 }
 PHP;
         $tempDir = $this->createTempDirectory(['Svc.php' => $code]);
-        $analyzer = new MissingDatabaseTransactionsAnalyzer($this->parser, app('config'));
+        $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
         $this->assertPassed($analyzer->analyze());
@@ -2691,7 +2691,7 @@ class A {
 }
 PHP;
         $tempDir = $this->createTempDirectory(['A.php' => $code]);
-        $analyzer = new MissingDatabaseTransactionsAnalyzer($this->parser, app('config'));
+        $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
         $this->assertPassed($analyzer->analyze());
@@ -2711,7 +2711,7 @@ class B {
 }
 PHP;
         $tempDir = $this->createTempDirectory(['B.php' => $code]);
-        $analyzer = new MissingDatabaseTransactionsAnalyzer($this->parser, app('config'));
+        $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
         $this->assertPassed($analyzer->analyze());
@@ -2877,6 +2877,203 @@ class ProfileSyncer
 PHP;
 
         $tempDir = $this->createTempDirectory(['Services/ProfileSyncer.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    public function test_still_flags_model_whose_name_matches_a_non_db_facade(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Session;
+
+class SessionReaper
+{
+    public function expire(int $id, string $ip)
+    {
+        $session = Session::find($id);
+        $session->update(['ip' => $ip]);
+        $session->delete();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/SessionReaper.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    public function test_ignores_cache_client_after_an_anonymous_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class Handler
+{
+    public function __construct(private Repository $cache) {}
+
+    public function run(string $a, string $b)
+    {
+        $rule = new class
+        {
+            public function passes(): bool
+            {
+                return true;
+            }
+        };
+
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Handler.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_imported_cache_client_declared_as_a_property(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagFlusher
+{
+    private Repository $cache;
+
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TagFlusher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_cache_client_injected_into_a_trait(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+use Illuminate\Contracts\Cache\Repository;
+
+trait ManagesCache
+{
+    private Repository $cache;
+
+    public function flushBoth(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Concerns/ManagesCache.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_still_flags_connection_scoped_raw_statements(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB;
+
+class TenantPurger
+{
+    public function purge()
+    {
+        DB::connection('tenant')->statement('DELETE FROM sessions WHERE expired = 1');
+        DB::connection('tenant')->statement('UPDATE accounts SET purged_at = NOW()');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TenantPurger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    public function test_still_flags_model_writes_on_a_closure_parameter_shadowing_a_disk(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Storage;
+
+class Syncer
+{
+    public function sync(array $models)
+    {
+        $disk = Storage::disk('s3');
+        $disk->delete('tmp');
+
+        collect($models)->each(function ($disk) {
+            $disk->save();
+            $disk->delete();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Syncer.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);

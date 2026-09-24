@@ -20,13 +20,19 @@ use PhpParser\Node;
  * other. Analyzer-specific entries are still possible through $extra, which is the
  * honest way to express a difference that is real (see Auth, below).
  *
- * Matching is on the fully qualified name. `App\Models\Event` and
- * `Illuminate\Support\Facades\Event` share a last segment, and only the first of
- * them reads rows, so a short-name match silently exempts an application's own
- * models from the very check these analyzers exist to perform. Callers that want
- * the FQN must run the AST through ParserInterface::resolveNames() first; the bare
- * short name still matches when a name is unqualified, which covers both the
- * container alias spelling and a caller that has not resolved names.
+ * How an entry is written decides how it matches. A fully qualified entry names one
+ * class: `App\Models\Event` must not borrow the exemption that belongs to
+ * `Illuminate\Support\Facades\Event`, since only the first of them reads rows. Its
+ * last segment still matches a reference that stayed unqualified, which covers the
+ * container alias spelling (`Event::` in a file with no namespace) and a caller that
+ * never resolved names at all.
+ *
+ * A bare entry is the opposite claim, and the only reason the distinction exists: the
+ * class has no canonical namespace, so it matches on its last segment wherever it
+ * lives. An HTTP client an application imports from its own namespace is reached that
+ * way and no other.
+ *
+ * Callers that want the FQN must run the AST through ResolvesClassNames first.
  *
  * DB and Schema are deliberately absent: DB::table(...)->get() is a real query.
  * Auth is absent too, because Auth::user()->orders()->get() reads real rows, and
@@ -44,31 +50,47 @@ trait IdentifiesNonQueryClasses
      */
     private function isNonQueryClass(Node\Name $class, array $extra = []): bool
     {
-        $fqn = $this->resolvedClassFqn($class);
-        $known = array_merge($this->sharedNonQueryClasses(), $extra);
+        return $this->classMatches($class, array_merge($this->sharedNonQueryClasses(), $extra));
+    }
 
-        if (in_array($fqn, $known, true)) {
+    /**
+     * True when $class names one of $candidates, under the rules in the class docblock.
+     *
+     * @param  array<int, string>  $candidates  Fully qualified names, or bare names for a
+     *                                          class with no single canonical namespace.
+     */
+    private function classMatches(Node\Name $class, array $candidates): bool
+    {
+        $fqn = $this->resolvedClassFqn($class);
+
+        if (in_array($fqn, $candidates, true)) {
             return true;
         }
 
-        // An unqualified single-segment name is either the container alias spelling
-        // (`Cache::get()` in a file with no namespace) or a caller that never resolved
-        // names. Fall back to the short name there, and only there, so that a resolved
-        // App\Models\Event cannot borrow the exemption meant for the Event facade.
-        if (str_contains($fqn, '\\')) {
-            return false;
-        }
+        $short = strtolower($this->lastSegment($fqn));
+        $isQualified = str_contains($fqn, '\\');
 
-        $short = strtolower($fqn);
+        foreach ($candidates as $candidate) {
+            // A qualified reference has already had its one chance above. Letting a
+            // qualified candidate match it on the last segment too is exactly what #423
+            // was filed about.
+            if ($isQualified && str_contains($candidate, '\\')) {
+                continue;
+            }
 
-        foreach ($known as $name) {
-            $parts = explode('\\', $name);
-            if (strtolower((string) end($parts)) === $short) {
+            if (strtolower($this->lastSegment($candidate)) === $short) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    private function lastSegment(string $name): string
+    {
+        $parts = explode('\\', $name);
+
+        return (string) end($parts);
     }
 
     /**

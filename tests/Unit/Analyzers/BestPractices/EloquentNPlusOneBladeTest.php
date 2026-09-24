@@ -12,6 +12,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EloquentNPlusOneBladeTest extends AnalyzerTestCase
@@ -214,6 +215,10 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
      * A template reaches for a model the same way a PHP file does, so the facade list has to
      * see the same fully qualified name. `Event` shares a last segment with the Event facade,
      * and matching on that segment used to exempt the model from the check entirely.
+     *
+     * The Event model is here to make the import coherent, not to carry the assertion: this
+     * finding comes from the query chain, which never consults the relationship registry.
+     * The colliding-imports test below does depend on its Airport model being registered.
      */
     public function test_flags_a_facade_named_model_a_template_imports(): void
     {
@@ -249,10 +254,11 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
 
     /**
      * Resolving names throws on an import set PHP would reject, and a template carries its own
-     * through @php use. One such template must be skipped like an unparseable file: it cannot
-     * take the whole analyzer down with it, and the view next to it still has to be reported.
+     * through @php use. Only the facade resolution degrades there: the template is still
+     * analysed, because dropping it would lose a relationship finding that never depended on
+     * an import, and leave nothing behind saying the view had been skipped.
      */
-    public function test_survives_a_template_whose_imports_collide(): void
+    public function test_still_analyzes_a_template_whose_imports_collide(): void
     {
         $result = $this->analyze([
             'app/Models/City.php' => self::CITY_MODEL,
@@ -265,7 +271,46 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         $this->assertFailed($result);
 
         $files = array_map(fn (Issue $i): string => basename((string) $i->location?->file), $this->airportIssues($result));
-        $this->assertSame(['index.blade.php'], $files);
+        sort($files);
+        $this->assertSame(['broken.blade.php', 'index.blade.php'], $files);
+    }
+
+    /**
+     * The guard around name resolution covers that one call and nothing else. A fault anywhere
+     * else in the Blade path is a bug in this analyzer, and has to reach the error channel
+     * #343 added rather than be reported as a project with clean views.
+     */
+    public function test_does_not_swallow_a_fault_in_the_blade_path(): void
+    {
+        $parser = new class extends AstParser
+        {
+            public function parseCode(string $code, ?string $origin = null, ?callable $translateLine = null): array
+            {
+                // Only the compiled-template call, so that scanning the project's own PHP
+                // files still works and the analyzer reaches the Blade path at all.
+                if ($origin !== null && str_ends_with($origin, BladeCompilerFactory::COMPILED_ORIGIN_SUFFIX)) {
+                    throw new \RuntimeException('compiled template exploded');
+                }
+
+                return parent::parseCode($code, $origin, $translateLine);
+            }
+        };
+
+        $dir = $this->createTempDirectory([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Models/Airport.php' => self::AIRPORT_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+        ]);
+
+        $analyzer = new EloquentNPlusOneAnalyzer($parser);
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['app', 'resources/views']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertSame('RuntimeException', $result->getMetadata()['exception'] ?? null);
     }
 
     /**

@@ -2246,6 +2246,196 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_exempts_an_http_client_matched_on_its_bare_name_in_a_namespaced_file(): void
+    {
+        // Guzzle, Soap and Curl sit in the non-query list under a bare name because they have
+        // no single canonical namespace. A bare entry is a deliberate short-name rule, so the
+        // application's own wrapper has to keep the exemption wherever it happens to live.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Support\Curl;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $body = Curl::get('https://example.test/' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_a_chained_query_on_a_model_whose_short_name_is_db(): void
+    {
+        // The DB skip sitting beside the facade list is the same short-name match #423 was
+        // filed about: an application model called DB borrowed the facade's blanket exemption.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\DB;
+
+class Probe
+{
+    public function run(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = DB::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Probe.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('DB::where', $result);
+    }
+
+    public function test_does_not_flag_the_db_facade_itself(): void
+    {
+        // The counterpart: the real facade, however it is spelled, still has its own handling
+        // and must not start reporting once the skip matches on the resolved name.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB;
+
+class Probe
+{
+    public function run(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = DB::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Probe.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_analyzes_a_file_whose_imports_php_would_reject(): void
+    {
+        // A duplicate alias is invalid PHP and resolving names on it throws. The file still
+        // parsed, so dropping it would lose a real finding with nothing recorded anywhere to
+        // say a file had been skipped. Only the resolution degrades: `Order` is matched as
+        // written, which is what this analyzer did before it resolved names at all.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use App\Other\Order;
+
+class Probe
+{
+    public function run(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = Order::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Probe.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Order::where', $result);
+    }
+
+    public function test_flags_an_unimported_facade_spelling_in_a_namespaced_file(): void
+    {
+        // `Cache` with no import inside a namespace resolves to App\Http\Controllers\Cache,
+        // and that is what PHP would look for too: class names do not fall back to the global
+        // namespace, so this code cannot run as written. Treating it as the application's own
+        // class is the same rule that keeps App\Models\Event out of the facade's exemption,
+        // and the four fixtures above carry the import precisely because of it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class UserController
+{
+    public function index()
+    {
+        $users = User::all();
+
+        foreach ($users as $user) {
+            $cached = Cache::get('user_' . $user->id);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/UserController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Cache::get', $result);
+    }
+
     public function test_flags_direct_find_with_loop_variable(): void
     {
         $code = <<<'PHP'

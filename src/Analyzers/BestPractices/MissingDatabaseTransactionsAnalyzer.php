@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
 use ShieldCI\Concerns\ReadsConfigArrays;
+use ShieldCI\Concerns\ResolvesClassNames;
 
 /**
  * Detects multiple database write operations without transactions.
@@ -29,6 +30,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 {
     use ClassifiesFiles;
     use ReadsConfigArrays;
+    use ResolvesClassNames;
 
     /**
      * Minimum number of writes that require full transactional atomicity.
@@ -74,7 +76,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
-                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+                $ast = $this->resolveNamesForMatching($this->parser, $ast);
                 $registryTraverser = new NodeTraverser;
                 $registryTraverser->addVisitor($modelScanner);
                 $registryTraverser->traverse($ast);
@@ -96,7 +98,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+                $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
                 $scanner = new TransactionDelegatedMethodScanner;
                 $preScanTraverser = new NodeTraverser;

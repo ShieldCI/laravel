@@ -2401,17 +2401,22 @@ PHP;
     {
         // Giving up on the whole file costs more than the alias that collided. Matching falls
         // back to every name as written, so `Event` takes the Event facade's exemption on its
-        // last segment and the query it guards goes unreported. Only `Order` is ambiguous
-        // here, and it keeps whichever import came first; `Event` still resolves, and the
-        // model it names is still not a facade.
+        // last segment and the query it guards goes unreported. `Event` still resolves, and
+        // the model it names is still not a facade.
+        //
+        // Only `Cache` is ambiguous here, and NameContext records the collision and keeps the
+        // first spelling. That is observable rather than merely documented: the first `use`
+        // names the facade, which is exempt, so the `Cache` query must not be reported. Were
+        // the last spelling to win instead, `App\Models\Cache` is no facade and that same
+        // query would be flagged.
         $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 use App\Models\Event;
-use App\Models\Order;
-use App\Other\Order;
+use Illuminate\Support\Facades\Cache;
+use App\Models\Cache;
 
 class Probe
 {
@@ -2420,6 +2425,11 @@ class Probe
         foreach ($ids as $id) {
             $rows = Event::where('user_id', $id)->get();
             echo count($rows);
+        }
+
+        foreach ($ids as $id) {
+            $hits = Cache::where('user_id', $id)->get();
+            echo count($hits);
         }
     }
 }
@@ -2435,8 +2445,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
+        // The name that does not collide still resolves, and the model it names is no facade.
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Event::where', $result);
+
+        // The name that does collide kept its first import, so it is still the exempt facade.
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('Cache::where', $issue->message);
+        }
     }
 
     public function test_flags_an_unimported_facade_spelling_in_a_namespaced_file(): void

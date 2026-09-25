@@ -1533,8 +1533,12 @@ PHP;
         // Resolving names replaces each Name node in place unless asked not to, and parseFile()
         // hands back a shared, mtime-cached tree, so the rewrite outlives this analyzer and
         // shows every later reader of that file a name the file never wrote. Nothing depends on
-        // it today, because the cache is drained between analyzers, so the mutation itself is
-        // the only thing there is to assert.
+        // it today, because the cache is drained between analyzers.
+        //
+        // Turning replacement off does not leave that tree pristine, it moves the write: the
+        // Name survives, and a resolvedName attribute plus a namespacedName on the declaration
+        // take its place. Both halves are asserted below, so a change that believes this walk
+        // is cache-clean fails here rather than in whatever later reads the attribute.
         $code = <<<'PHP'
 <?php
 
@@ -1558,8 +1562,9 @@ PHP;
         // by path and mtime with no normalisation, so setPaths() below has to name 'app' and
         // not '.', or the analyzer would look up '<dir>/./app/...' and get its own entry.
         $path = $tempDir.'/app/Services/Importer.php';
+        $ast = $this->parser->parseFile($path);
         /** @var array<Node\Expr\StaticCall> $calls */
-        $calls = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
         $this->assertCount(1, $calls);
 
         $analyzer = $this->createAnalyzer();
@@ -1578,6 +1583,19 @@ PHP;
 
         $this->assertSame(Node\Name::class, $class::class);
         $this->assertSame('Model', $class->toString());
+
+        // What resolution did leave behind, on the same cached nodes.
+        $resolved = $class->getAttribute('resolvedName');
+        $this->assertInstanceOf(Node\Name::class, $resolved);
+        $this->assertSame('Illuminate\\Database\\Eloquent\\Model', $resolved->toString());
+
+        /** @var array<Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertTrue(isset($declarations[0]->namespacedName));
+        $namespacedName = $declarations[0]->namespacedName;
+        $this->assertInstanceOf(Node\Name::class, $namespacedName);
+        $this->assertSame('App\\Services\\Importer', $namespacedName->toString());
     }
 
     public function test_reports_the_resolved_class_name_for_an_aliased_model_import(): void

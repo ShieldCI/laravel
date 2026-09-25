@@ -3084,4 +3084,408 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('2 database write operation(s)', $result);
     }
+
+    /**
+     * A property the class inherits is declared in another node, usually in another file,
+     * so the map built from the node being entered has no entry for it. Before #422 the
+     * receiver check found no declared type and the cache write was reported.
+     */
+    public function test_ignores_cache_client_declared_on_a_parent_class(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class TagService extends BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_cache_client_declared_two_levels_up(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+            'Services/MidService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class MidService extends BaseService {}
+PHP,
+            'Services/DeepService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class DeepService extends MidService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_filesystem_promoted_on_a_parent_constructor(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Jobs/BaseJob.php' => <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Contracts\Filesystem\Filesystem;
+
+abstract class BaseJob
+{
+    public function __construct(protected Filesystem $disk) {}
+}
+PHP,
+            'Jobs/PurgeJob.php' => <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+class PurgeJob extends BaseJob
+{
+    public function purge(string $a, string $b)
+    {
+        $this->disk->delete($a);
+        $this->disk->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The trait half of the same blind spot. #421 covered a trait that declares the
+     * property and does the writing; here the writing happens in the class that uses it.
+     */
+    public function test_ignores_cache_client_declared_in_a_used_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/CachesThings.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Contracts\Cache\Repository;
+
+trait CachesThings
+{
+    protected Repository $store;
+}
+PHP,
+            'Http/TagController.php' => <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Support\CachesThings;
+
+class TagController
+{
+    use CachesThings;
+
+    public function clear(string $a, string $b)
+    {
+        $this->store->delete($a);
+        $this->store->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_cache_client_declared_in_a_trait_used_by_a_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/HoldsCache.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Contracts\Cache\Repository;
+
+trait HoldsCache
+{
+    protected Repository $store;
+}
+PHP,
+            'Support/CachesThings.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+trait CachesThings
+{
+    use HoldsCache;
+}
+PHP,
+            'Http/TagController.php' => <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Support\CachesThings;
+
+class TagController
+{
+    use CachesThings;
+
+    public function clear(string $a, string $b)
+    {
+        $this->store->delete($a);
+        $this->store->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_still_flags_model_property_declared_on_a_parent_class(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseSyncer.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+abstract class BaseSyncer
+{
+    protected User $model;
+}
+PHP,
+            'Services/ProfileSyncer.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ProfileSyncer extends BaseSyncer
+{
+    public function sync()
+    {
+        $this->model->save();
+        $this->model->touch();
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    public function test_still_flags_when_a_child_redeclares_an_inherited_cache_property_as_a_model(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+            'Services/OverrideService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Post;
+
+class OverrideService extends BaseService
+{
+    protected Post $cache;
+
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    /**
+     * Ancestors are looked up by fully qualified name only. Two parents sharing a short
+     * name are two different declarations, and the one this child extends holds a model,
+     * not a cache client. This pins the lookup against ever falling back to a short-name
+     * match, which would hand this child the other BaseService's exemption.
+     */
+    public function test_still_flags_child_of_a_same_named_parent_in_another_namespace(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+            'Billing/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Billing;
+
+use App\Models\Invoice;
+
+abstract class BaseService
+{
+    protected Invoice $cache;
+}
+PHP,
+            'Billing/InvoiceService.php' => <<<'PHP'
+<?php
+
+namespace App\Billing;
+
+class InvoiceService extends BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    /**
+     * PHP could not load this pair, but an AST can express it, and the walk has to
+     * terminate rather than follow the parent link back and forth forever.
+     */
+    public function test_terminates_on_a_class_hierarchy_that_refers_back_to_itself(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/Looping.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class Alpha extends Beta
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+
+class Beta extends Alpha {}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
 }

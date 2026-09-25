@@ -68,8 +68,9 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
         $phpFiles = $this->getPhpFiles();
 
-        // Phase 0: Build Eloquent model registry from all project PHP files.
-        $modelScanner = new EloquentModelScanner;
+        // Phase 0: index every class-like declaration in the project, so that the pass
+        // below can ask about declarations it is not itself looking at.
+        $classScanner = new ClassHierarchyScanner;
         foreach ($phpFiles as $file) {
             try {
                 $ast = $this->parser->parseFile($file);
@@ -78,13 +79,12 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 }
                 $ast = $this->resolveNamesForMatching($this->parser, $ast);
                 $registryTraverser = new NodeTraverser;
-                $registryTraverser->addVisitor($modelScanner);
+                $registryTraverser->addVisitor($classScanner);
                 $registryTraverser->traverse($ast);
             } catch (\Throwable) {
                 continue;
             }
         }
-        $classParents = $modelScanner->getParents();
 
         foreach ($phpFiles as $file) {
             // Skip test and development files
@@ -105,7 +105,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 $preScanTraverser->addVisitor($scanner);
                 $preScanTraverser->traverse($ast);
 
-                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods(), $classParents);
+                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods(), $classScanner);
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -339,12 +339,11 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     /**
      * @param  array<string, true>  $transactionDelegatedMethods
-     * @param  array<string, string|null>  $classParents
      */
     public function __construct(
         private int $threshold,
         private array $transactionDelegatedMethods = [],
-        private array $classParents = [],
+        private ClassHierarchyScanner $classes = new ClassHierarchyScanner,
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -361,7 +360,12 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->classNameStack[] = $this->currentClassName;
             $this->propertyTypeStack[] = $this->propertyTypes;
             $this->currentClassName = $node->name?->toString();
-            $this->propertyTypes = $this->collectPropertyTypes($node);
+            // Own declarations first: array + array keeps the left-hand entry, so a
+            // property the class redeclares wins over the one it would have inherited.
+            // They are read from the node rather than from the registry because an
+            // anonymous class has no name for the registry to have filed it under.
+            $this->propertyTypes = ClassHierarchyScanner::propertyTypesOf($node)
+                + $this->classes->inheritedPropertyTypes(ClassHierarchyScanner::declarationFqn($node));
         }
 
         // Track current method
@@ -823,15 +827,11 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private function getShortClassName(Node\Name $name): string
     {
-        $resolvedName = $name->getAttribute('resolvedName');
-        $fqn = $resolvedName instanceof Node\Name\FullyQualified
-            ? $resolvedName->toString()
-            : $name->toString();
-        $normalized = ltrim($fqn, '\\');
+        $fqn = ClassHierarchyScanner::nameFqn($name);
 
-        $parts = explode('\\', $normalized);
+        $parts = explode('\\', $fqn);
 
-        return end($parts) ?: $normalized;
+        return end($parts) ?: $fqn;
     }
 
     /**
@@ -932,7 +932,7 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private function isNonDbFacadeName(Node\Name $class): bool
     {
-        $fqn = $this->resolvedClassFqn($class);
+        $fqn = ClassHierarchyScanner::nameFqn($class);
 
         if (in_array($fqn, self::NON_DB_FACADE_FQNS, true)) {
             return true;
@@ -940,88 +940,6 @@ class TransactionVisitor extends NodeVisitorAbstract
 
         return ! str_contains($fqn, '\\')
             && in_array($fqn, self::NON_DB_FACADES, true);
-    }
-
-    /**
-     * The fully qualified name behind a class reference, preferring the attribute
-     * NameResolver leaves behind when it runs with ['replaceNodes' => false].
-     */
-    private function resolvedClassFqn(Node\Name $class): string
-    {
-        $resolved = $class->getAttribute('resolvedName');
-
-        $fqn = $resolved instanceof Node\Name\FullyQualified
-            ? $resolved->toString()
-            : $class->toString();
-
-        return ltrim($fqn, '\\');
-    }
-
-    /**
-     * Map every property of a class or trait to its declared type FQN, covering both
-     * plain declarations and constructor-promoted parameters. Properties with no type,
-     * or a scalar or composite type, are omitted so they stay conservative (flaggable).
-     *
-     * Properties inherited from a parent class are not visible here, since only the
-     * declaring node's own statements are read.
-     *
-     * @return array<string, string>
-     */
-    private function collectPropertyTypes(Node\Stmt\ClassLike $class): array
-    {
-        $types = [];
-
-        foreach ($class->stmts as $stmt) {
-            if ($stmt instanceof Node\Stmt\Property) {
-                $type = $this->typeFqn($stmt->type);
-                if ($type !== null) {
-                    foreach ($stmt->props as $prop) {
-                        $types[$prop->name->toString()] = $type;
-                    }
-                }
-
-                continue;
-            }
-
-            if (! $stmt instanceof Node\Stmt\ClassMethod || $stmt->name->toString() !== '__construct') {
-                continue;
-            }
-
-            foreach ($stmt->params as $param) {
-                $type = $this->typeFqn($param->type);
-                if ($param->flags !== 0
-                    && $type !== null
-                    && $param->var instanceof Node\Expr\Variable
-                    && is_string($param->var->name)
-                ) {
-                    $types[$param->var->name] = $type;
-                }
-            }
-        }
-
-        return $types;
-    }
-
-    /**
-     * Resolve a declared type to its fully-qualified name, or null when it is not a
-     * plain class name (scalar, union, intersection, or absent).
-     */
-    private function typeFqn(?Node $type): ?string
-    {
-        if ($type instanceof Node\NullableType) {
-            $type = $type->type;
-        }
-
-        if (! $type instanceof Node\Name) {
-            return null;
-        }
-
-        $resolvedName = $type->getAttribute('resolvedName');
-        $fqn = $resolvedName instanceof Node\Name\FullyQualified
-            ? $resolvedName->toString()
-            : $type->toString();
-
-        return ltrim($fqn, '\\');
     }
 
     /**
@@ -1164,11 +1082,11 @@ class TransactionVisitor extends NodeVisitorAbstract
                 return true;
             }
 
-            if (! array_key_exists($current, $this->classParents)) {
+            if (! $this->classes->knows($current)) {
                 break; // Not in registry — fall through to heuristics
             }
 
-            $parent = $this->classParents[$current];
+            $parent = $this->classes->parentOf($current);
             if ($parent === null) {
                 break;
             }
@@ -1378,48 +1296,219 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 }
 
 /**
- * Pre-scan that records every class's direct parent FQN from AST.
+ * Pre-scan that indexes every named class-like declaration in the project: what it
+ * extends, which traits it uses, and the declared type of each property it holds.
  *
- * Requires NameResolver to have run first so that resolvedName attributes
- * and namespacedName are populated on class and name nodes.
+ * The declaration a later pass needs is often not the one it is standing in. A service
+ * that writes to an injected cache client routinely inherits that property from an
+ * abstract base in another file, or picks it up from a trait, and a visitor reading only
+ * the node it entered can see neither.
+ *
+ * Requires NameResolver to have run first. Note that `namespacedName` is a public
+ * property on ClassLike rather than an attribute, and a typed one with no default: read
+ * through getAttribute() it silently yields null, and read directly it throws when the
+ * resolver did not run. Both reads here go through isset() for that reason.
  */
-class EloquentModelScanner extends NodeVisitorAbstract
+class ClassHierarchyScanner extends NodeVisitorAbstract
 {
-    /** @var array<string, string|null> class FQN → parent FQN (null if no parent) */
+    /** @var array<string, string|null> class FQN => parent FQN (null if no parent) */
     private array $parents = [];
+
+    /** @var array<string, list<string>> class or trait FQN => FQNs of the traits it uses */
+    private array $traitUses = [];
+
+    /** @var array<string, array<string, string>> class or trait FQN => property name => type FQN */
+    private array $propertyTypes = [];
 
     public function enterNode(Node $node): ?Node
     {
-        if (! ($node instanceof Node\Stmt\Class_)) {
+        if (! ($node instanceof Node\Stmt\ClassLike)) {
             return null;
         }
 
-        // NameResolver sets namespacedName on class definitions
-        $namespacedName = $node->getAttribute('namespacedName');
-        $className = $namespacedName instanceof Node\Name
-            ? $namespacedName->toString()
-            : $node->name?->toString();
-
-        if ($className === null) {
-            return null;
+        $fqn = self::declarationFqn($node);
+        if ($fqn === null) {
+            return null; // Anonymous class: nothing elsewhere can name it to ask about it.
         }
 
-        $parentFqn = null;
-        if ($node->extends !== null) {
-            $resolved = $node->extends->getAttribute('resolvedName');
-            $parentFqn = $resolved instanceof Node\Name\FullyQualified
-                ? ltrim($resolved->toString(), '\\')
-                : ltrim($node->extends->toString(), '\\');
+        if ($node instanceof Node\Stmt\Class_) {
+            $this->parents[$fqn] = $node->extends !== null ? self::nameFqn($node->extends) : null;
         }
 
-        $this->parents[$className] = $parentFqn;
+        $traits = [];
+        foreach ($node->getTraitUses() as $use) {
+            foreach ($use->traits as $trait) {
+                $traits[] = self::nameFqn($trait);
+            }
+        }
+        if ($traits !== []) {
+            $this->traitUses[$fqn] = $traits;
+        }
+
+        $types = self::propertyTypesOf($node);
+        if ($types !== []) {
+            $this->propertyTypes[$fqn] = $types;
+        }
 
         return null;
     }
 
-    /** @return array<string, string|null> */
-    public function getParents(): array
+    /**
+     * True when the scan saw this class declared, which is what tells "declared, with no
+     * parent" apart from "never scanned".
+     */
+    public function knows(string $fqn): bool
     {
-        return $this->parents;
+        return array_key_exists($fqn, $this->parents);
+    }
+
+    public function parentOf(string $fqn): ?string
+    {
+        return $this->parents[$fqn] ?? null;
+    }
+
+    /**
+     * The declared property types $fqn holds without declaring them itself, gathered from
+     * the traits it uses and the classes it extends.
+     *
+     * Breadth first from the declaration outwards, so that a declaration nearer the child
+     * wins: array + array keeps the entry already present. The visited set makes the walk
+     * terminate on a hierarchy that refers back to itself, which an AST can express even
+     * though PHP could not load it.
+     *
+     * @return array<string, string>
+     */
+    public function inheritedPropertyTypes(?string $fqn): array
+    {
+        if ($fqn === null) {
+            return [];
+        }
+
+        $types = [];
+        $seen = [$fqn => true];
+        $queue = $this->ancestorsOf($fqn);
+
+        while ($queue !== []) {
+            $ancestor = array_shift($queue);
+
+            if (isset($seen[$ancestor])) {
+                continue;
+            }
+            $seen[$ancestor] = true;
+
+            $types += $this->propertyTypes[$ancestor] ?? [];
+
+            foreach ($this->ancestorsOf($ancestor) as $next) {
+                $queue[] = $next;
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * The declarations $fqn draws members from directly. Traits come first because that is
+     * PHP's own precedence: a trait a class uses overrides what it would have inherited.
+     *
+     * @return list<string>
+     */
+    private function ancestorsOf(string $fqn): array
+    {
+        $ancestors = $this->traitUses[$fqn] ?? [];
+
+        $parent = $this->parents[$fqn] ?? null;
+        if ($parent !== null) {
+            $ancestors[] = $parent;
+        }
+
+        return $ancestors;
+    }
+
+    /**
+     * The fully qualified name of a class-like declaration, or null for an anonymous class.
+     */
+    public static function declarationFqn(Node\Stmt\ClassLike $class): ?string
+    {
+        if (isset($class->namespacedName)) {
+            return ltrim($class->namespacedName->toString(), '\\');
+        }
+
+        return $class->name?->toString();
+    }
+
+    /**
+     * The fully qualified name behind a class reference, preferring the attribute
+     * NameResolver leaves behind when it runs with ['replaceNodes' => false], and falling
+     * back to the name as written when it has not run.
+     */
+    public static function nameFqn(Node\Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        $fqn = $resolved instanceof Node\Name\FullyQualified
+            ? $resolved->toString()
+            : $name->toString();
+
+        return ltrim($fqn, '\\');
+    }
+
+    /**
+     * Map every property a declaration holds itself to its declared type FQN, covering
+     * plain declarations and constructor-promoted parameters alike. Properties with no
+     * type, or a scalar or composite type, are omitted so they stay conservative
+     * (flaggable).
+     *
+     * @return array<string, string>
+     */
+    public static function propertyTypesOf(Node\Stmt\ClassLike $class): array
+    {
+        $types = [];
+
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\Property) {
+                $type = self::typeFqn($stmt->type);
+                if ($type !== null) {
+                    foreach ($stmt->props as $prop) {
+                        $types[$prop->name->toString()] = $type;
+                    }
+                }
+
+                continue;
+            }
+
+            if (! $stmt instanceof Node\Stmt\ClassMethod || $stmt->name->toString() !== '__construct') {
+                continue;
+            }
+
+            foreach ($stmt->params as $param) {
+                $type = self::typeFqn($param->type);
+                if ($param->flags !== 0
+                    && $type !== null
+                    && $param->var instanceof Node\Expr\Variable
+                    && is_string($param->var->name)
+                ) {
+                    $types[$param->var->name] = $type;
+                }
+            }
+        }
+
+        return $types;
+    }
+
+    /**
+     * Resolve a declared type to its fully-qualified name, or null when it is not a plain
+     * class name (scalar, union, intersection, or absent).
+     */
+    private static function typeFqn(?Node $type): ?string
+    {
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if (! $type instanceof Node\Name) {
+            return null;
+        }
+
+        return self::nameFqn($type);
     }
 }

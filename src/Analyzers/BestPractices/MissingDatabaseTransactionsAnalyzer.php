@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\Modifiers;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitorAbstract;
@@ -342,8 +343,8 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     public function __construct(
         private int $threshold,
-        private array $transactionDelegatedMethods = [],
-        private ClassHierarchyScanner $classes = new ClassHierarchyScanner,
+        private array $transactionDelegatedMethods,
+        private ClassHierarchyScanner $classes,
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -362,10 +363,11 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->currentClassName = $node->name?->toString();
             // Own declarations first: array + array keeps the left-hand entry, so a
             // property the class redeclares wins over the one it would have inherited.
-            // They are read from the node rather than from the registry because an
-            // anonymous class has no name for the registry to have filed it under.
+            // Own properties are read from the node, and the inherited half is seeded
+            // from it too, because an anonymous class has no name for the registry to
+            // have filed it under.
             $this->propertyTypes = ClassHierarchyScanner::propertyTypesOf($node)
-                + $this->classes->inheritedPropertyTypes(ClassHierarchyScanner::declarationFqn($node));
+                + $this->classes->inheritedPropertyTypesFor($node);
         }
 
         // Track current method
@@ -1082,13 +1084,9 @@ class TransactionVisitor extends NodeVisitorAbstract
                 return true;
             }
 
-            if (! $this->classes->knows($current)) {
-                break; // Not in registry — fall through to heuristics
-            }
-
             $parent = $this->classes->parentOf($current);
             if ($parent === null) {
-                break;
+                break; // Unknown, or known with no parent: fall through to heuristics
             }
 
             $current = $parent;
@@ -1308,17 +1306,25 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
  * property on ClassLike rather than an attribute, and a typed one with no default: read
  * through getAttribute() it silently yields null, and read directly it throws when the
  * resolver did not run. Both reads here go through isset() for that reason.
+ *
+ * Keys are case folded throughout, because PHP resolves a class name without regard to
+ * case and a reference spelled differently from its declaration names the same class.
+ *
+ * @internal
  */
 class ClassHierarchyScanner extends NodeVisitorAbstract
 {
-    /** @var array<string, string|null> class FQN => parent FQN (null if no parent) */
+    /** @var array<string, string|null> class key => parent FQN (null if no parent) */
     private array $parents = [];
 
-    /** @var array<string, list<string>> class or trait FQN => FQNs of the traits it uses */
+    /** @var array<string, list<string>> class or trait key => FQNs of the traits it uses */
     private array $traitUses = [];
 
-    /** @var array<string, array<string, string>> class or trait FQN => property name => type FQN */
+    /** @var array<string, array<string, string>> class or trait key => property name => type FQN */
     private array $propertyTypes = [];
+
+    /** @var array<string, array<string, string>> class key => flattened inherited property types */
+    private array $inheritedCache = [];
 
     public function enterNode(Node $node): ?Node
     {
@@ -1328,11 +1334,17 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
 
         $fqn = self::declarationFqn($node);
         if ($fqn === null) {
-            return null; // Anonymous class: nothing elsewhere can name it to ask about it.
+            // An anonymous class, which nothing elsewhere can name to ask about, or a
+            // declaration whose file NameResolver could not finish. Filing the latter
+            // under the short name left to it would hand its properties to whatever
+            // global-namespace class genuinely bears that name.
+            return null;
         }
 
+        $key = self::key($fqn);
+
         if ($node instanceof Node\Stmt\Class_) {
-            $this->parents[$fqn] = $node->extends !== null ? self::nameFqn($node->extends) : null;
+            $this->parents[$key] = $node->extends !== null ? self::nameFqn($node->extends) : null;
         }
 
         $traits = [];
@@ -1342,54 +1354,71 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             }
         }
         if ($traits !== []) {
-            $this->traitUses[$fqn] = $traits;
+            $this->traitUses[$key] = $traits;
         }
 
-        $types = self::propertyTypesOf($node);
-        if ($types !== []) {
-            $this->propertyTypes[$fqn] = $types;
-        }
+        // Written whatever it holds, so a name declared twice cannot leave one
+        // declaration's parent standing beside another declaration's properties.
+        $this->propertyTypes[$key] = self::propertyTypesOf($node, skipPrivate: true);
 
         return null;
     }
 
-    /**
-     * True when the scan saw this class declared, which is what tells "declared, with no
-     * parent" apart from "never scanned".
-     */
-    public function knows(string $fqn): bool
-    {
-        return array_key_exists($fqn, $this->parents);
-    }
-
     public function parentOf(string $fqn): ?string
     {
-        return $this->parents[$fqn] ?? null;
+        return $this->parents[self::key($fqn)] ?? null;
+    }
+
+    /**
+     * The declared property types a declaration holds without declaring them itself.
+     *
+     * Takes the node rather than a name so that an anonymous class is covered too. The
+     * registry could not file one under a key, but the extends clause and trait uses
+     * sitting on the node name the declarations it draws from just as well.
+     *
+     * @return array<string, string>
+     */
+    public function inheritedPropertyTypesFor(Node\Stmt\ClassLike $class): array
+    {
+        $fqn = self::declarationFqn($class);
+
+        return $fqn !== null
+            ? $this->inheritedPropertyTypes($fqn)
+            : $this->gather(self::declaredAncestorsOf($class), []);
     }
 
     /**
      * The declared property types $fqn holds without declaring them itself, gathered from
      * the traits it uses and the classes it extends.
      *
-     * Breadth first from the declaration outwards, so that a declaration nearer the child
-     * wins: array + array keeps the entry already present. The visited set makes the walk
-     * terminate on a hierarchy that refers back to itself, which an AST can express even
-     * though PHP could not load it.
+     * Memoized, because every sibling under a shared base would otherwise re-flatten the
+     * same ancestors once per declaration the second pass enters.
      *
      * @return array<string, string>
      */
-    public function inheritedPropertyTypes(?string $fqn): array
+    public function inheritedPropertyTypes(string $fqn): array
     {
-        if ($fqn === null) {
-            return [];
-        }
+        $key = self::key($fqn);
 
+        return $this->inheritedCache[$key] ??= $this->gather($this->ancestorsOf($fqn), [$key => true]);
+    }
+
+    /**
+     * Breadth first from the given declarations outwards, so that a declaration nearer the
+     * child wins: array + array keeps the entry already present. The visited set makes the
+     * walk terminate on a hierarchy that refers back to itself, which an AST can express
+     * even though PHP could not load it.
+     *
+     * @param  list<string>  $queue
+     * @param  array<string, true>  $seen
+     * @return array<string, string>
+     */
+    private function gather(array $queue, array $seen): array
+    {
         $types = [];
-        $seen = [$fqn => true];
-        $queue = $this->ancestorsOf($fqn);
 
         while ($queue !== []) {
-            $ancestor = array_shift($queue);
+            $ancestor = self::key(array_shift($queue));
 
             if (isset($seen[$ancestor])) {
                 continue;
@@ -1414,9 +1443,11 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     private function ancestorsOf(string $fqn): array
     {
-        $ancestors = $this->traitUses[$fqn] ?? [];
+        $key = self::key($fqn);
 
-        $parent = $this->parents[$fqn] ?? null;
+        $ancestors = $this->traitUses[$key] ?? [];
+
+        $parent = $this->parents[$key] ?? null;
         if ($parent !== null) {
             $ancestors[] = $parent;
         }
@@ -1425,15 +1456,50 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
     }
 
     /**
-     * The fully qualified name of a class-like declaration, or null for an anonymous class.
+     * The same question asked of a node instead of the registry, for a declaration the
+     * registry has no key for.
+     *
+     * @return list<string>
+     */
+    private static function declaredAncestorsOf(Node\Stmt\ClassLike $class): array
+    {
+        $ancestors = [];
+
+        foreach ($class->getTraitUses() as $use) {
+            foreach ($use->traits as $trait) {
+                $ancestors[] = self::nameFqn($trait);
+            }
+        }
+
+        if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
+            $ancestors[] = self::nameFqn($class->extends);
+        }
+
+        return $ancestors;
+    }
+
+    /**
+     * The key a name is filed under. Folded because PHP resolves a class name without
+     * regard to case, so a reference spelled differently is still the same class.
+     */
+    private static function key(string $fqn): string
+    {
+        return strtolower($fqn);
+    }
+
+    /**
+     * The fully qualified name of a class-like declaration, or null when it has none to
+     * give: an anonymous class, or one in a file NameResolver could not finish.
+     *
+     * The short name is deliberately not a fallback. NameResolver sets namespacedName on
+     * every declaration it reaches, the global namespace included, so an unset one means
+     * the resolver stopped rather than that the class is unqualified.
      */
     public static function declarationFqn(Node\Stmt\ClassLike $class): ?string
     {
-        if (isset($class->namespacedName)) {
-            return ltrim($class->namespacedName->toString(), '\\');
-        }
-
-        return $class->name?->toString();
+        return isset($class->namespacedName)
+            ? ltrim($class->namespacedName->toString(), '\\')
+            : null;
     }
 
     /**
@@ -1458,14 +1524,22 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      * type, or a scalar or composite type, are omitted so they stay conservative
      * (flaggable).
      *
+     * $skipPrivate leaves out what another declaration could not see. A class reads its
+     * own private properties, so the node being entered keeps them; the registry, which
+     * exists to answer what a different declaration inherits, does not.
+     *
      * @return array<string, string>
      */
-    public static function propertyTypesOf(Node\Stmt\ClassLike $class): array
+    public static function propertyTypesOf(Node\Stmt\ClassLike $class, bool $skipPrivate = false): array
     {
         $types = [];
 
         foreach ($class->stmts as $stmt) {
             if ($stmt instanceof Node\Stmt\Property) {
+                if ($skipPrivate && $stmt->isPrivate()) {
+                    continue;
+                }
+
                 $type = self::typeFqn($stmt->type);
                 if ($type !== null) {
                     foreach ($stmt->props as $prop) {
@@ -1481,6 +1555,10 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             }
 
             foreach ($stmt->params as $param) {
+                if ($skipPrivate && ($param->flags & Modifiers::PRIVATE) !== 0) {
+                    continue;
+                }
+
                 $type = self::typeFqn($param->type);
                 if ($param->flags !== 0
                     && $type !== null

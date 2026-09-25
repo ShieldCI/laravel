@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PhpParser\Node;
 use ShieldCI\Analyzers\Security\UnguardedModelsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -1525,5 +1526,146 @@ PHP;
 
         // Should pass - this is not Illuminate\Database\Eloquent\Model
         $this->assertPassed($result);
+    }
+
+    public function test_does_not_rewrite_the_names_in_the_shared_parser_cache(): void
+    {
+        // Resolving names replaces each Name node in place unless asked not to, and parseFile()
+        // hands back a shared, mtime-cached tree, so the rewrite outlives this analyzer and
+        // shows every later reader of that file a name the file never wrote. Nothing depends on
+        // it today, because the cache is drained between analyzers.
+        //
+        // Turning replacement off does not leave that tree pristine, it moves the write: the
+        // Name survives, and a resolvedName attribute plus a namespacedName on the declaration
+        // take its place. Both halves are asserted below, so a change that believes this walk
+        // is cache-clean fails here rather than in whatever later reads the attribute.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Importer
+{
+    public function import(array $rows)
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/Importer.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed rather than a second parse of the same file. The cache is keyed
+        // by path and mtime with no normalisation, so setPaths() below has to name 'app' and
+        // not '.', or the analyzer would look up '<dir>/./app/...' and get its own entry.
+        $path = $tempDir.'/app/Services/Importer.php';
+        $ast = $this->parser->parseFile($path);
+        /** @var array<Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(1, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        // Asserted so the resolve call is known to have been reached: the analyzer skips any
+        // file whose text does not mention unguard before it resolves anything.
+        $this->assertFailed($analyzer->analyze());
+        $this->assertSame($calls[0], $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class)[0]);
+
+        $class = $calls[0]->class;
+        if (! $class instanceof Node\Name) {
+            self::fail('Expected the static call to name a class.');
+        }
+
+        $this->assertSame(Node\Name::class, $class::class);
+        $this->assertSame('Model', $class->toString());
+
+        // What resolution did leave behind, on the same cached nodes.
+        $resolved = $class->getAttribute('resolvedName');
+        $this->assertInstanceOf(Node\Name::class, $resolved);
+        $this->assertSame('Illuminate\\Database\\Eloquent\\Model', $resolved->toString());
+
+        /** @var array<Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertTrue(isset($declarations[0]->namespacedName));
+        $namespacedName = $declarations[0]->namespacedName;
+        $this->assertInstanceOf(Node\Name::class, $namespacedName);
+        $this->assertSame('App\\Services\\Importer', $namespacedName->toString());
+    }
+
+    public function test_reports_the_resolved_class_name_for_an_aliased_model_import(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Database\Eloquent\Model as Eloquent;
+
+class ImportCommand
+{
+    public function handle()
+    {
+        Eloquent::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Commands/ImportCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Illuminate\Database\Eloquent\Model::unguard()', $result);
+
+        // BaselineCommand hashes the message, so naming the alias the file wrote instead of
+        // the class it resolves to would orphan every baselined entry on upgrade.
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('Eloquent::unguard()', $issue->message);
+        }
+    }
+
+    public function test_analyzes_a_file_whose_imports_php_would_reject(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Order;
+use App\Other\Order;
+use Illuminate\Database\Eloquent\Model;
+
+class ImportCommand
+{
+    public function handle()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Commands/ImportCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Two use statements landing on one alias make NameResolver throw. Letting that
+        // escape marks the analyzer errored, which exits the whole run non-zero over one
+        // file; degrading to the names as written still finds the unguard call.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Model::unguard()', $result);
     }
 }

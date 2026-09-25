@@ -21,7 +21,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
-use ShieldCI\Concerns\ResolvesClassNames;
+use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\ModelVariableScanner;
@@ -38,8 +38,6 @@ use ShieldCI\Support\ViewRenderScanner;
  */
 class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 {
-    use ResolvesClassNames;
-
     /**
      * @param  AstParser  $parser  Narrowed from ParserInterface because the Blade path names
      *                             the template it compiled and translates the failing line
@@ -99,10 +97,6 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
-
-                // Facade detection matches fully qualified names, so that a project's own
-                // App\Models\Event is not mistaken for the Event facade on its last segment.
-                $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
                 $visitor = new NPlusOneVisitor($scanResult);
                 $traverser = new NodeTraverser;
@@ -243,17 +237,16 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // A template reaches for classes the way a PHP file does, so the facade list has to
-        // see the same fully qualified names here. Compiled output carries no namespace, so a
-        // bare `Event::` still resolves to the root alias the template means; only an
-        // `@php use App\Models\Event; @endphp` changes what this sees.
-        $ast = $this->resolveNamesForMatching($this->parser, $ast);
-
         $seed = [];
         foreach ($bindings as $var => $binding) {
             $seed[$var] = ['type' => $binding['type'], 'eagerLoads' => $binding['eagerLoads']];
         }
 
+        // A template reaches for classes the way a PHP file does, and the visitor resolves
+        // them the same way here. Compiled output carries no namespace, so a bare `Event::`
+        // still resolves to the root alias the template means; only an
+        // `@php use App\Models\Event; @endphp` changes what this sees, and Blade copies that
+        // statement through to a position the import table reaches.
         $visitor = new NPlusOneVisitor($scanResult, $seed);
         $traverser = new NodeTraverser;
         $traverser->addVisitor(new ParentConnectingVisitor);
@@ -1226,7 +1219,13 @@ class MethodBodyCollector extends NodeVisitorAbstract
  */
 class NPlusOneVisitor extends NodeVisitorAbstract
 {
-    use IdentifiesNonQueryClasses;
+    // The import table resolves class names instead of the resolvedName attribute a separate
+    // NameResolver pass used to leave behind, because getQueryChainDescription() reads the
+    // root of a chain from the outer call and so runs before the traverser has annotated it.
+    // TracksImportedNames explains why that direction of read cannot use an attribute.
+    use IdentifiesNonQueryClasses, TracksImportedNames {
+        TracksImportedNames::resolvedClassFqn insteadof IdentifiesNonQueryClasses;
+    }
 
     /** @var string Loop type constants */
     private const LOOP_TYPE_FOREACH = 'foreach';
@@ -1399,8 +1398,19 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
     }
 
+    public function beforeTraverse(array $nodes): ?array
+    {
+        $this->startTrackingImports();
+
+        return null;
+    }
+
     public function enterNode(Node $node)
     {
+        // Before anything reads a class name: namespace and use declarations are reached
+        // ahead of the code that relies on them, so the table is complete by then.
+        $this->trackImports($node);
+
         // Feed every node to the model-variable scanner so it can infer variable
         // types (e.g. $posts → Collection<Post>) and eager-loaded relationships.
         $this->modelVars->enterNode($node);
@@ -2080,6 +2090,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * Get a description of a query chain starting from a static call.
      *
      * Walks up the method chain to find if it starts with Model::query() or Model::where() etc.
+     *
+     * This runs on entering the outermost call, so the root it walks down to has not been
+     * visited yet. The facade checks below therefore have to resolve through the import
+     * table and not through anything written onto the root node on arrival, which would
+     * still be absent here. Reverting that is silent: matching falls back to the name as
+     * written, `Event` takes the Event facade's exemption on its last segment, and every
+     * chained query on a facade-named model stops being reported.
      */
     private function getQueryChainDescription(Expr\MethodCall $node): ?string
     {

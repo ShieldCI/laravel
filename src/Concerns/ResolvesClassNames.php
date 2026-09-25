@@ -22,6 +22,10 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  * imports collide was therefore dropped from the analysis entirely, without so much as a
  * recorded parse failure to say so, even though the file had parsed and most of what the
  * analyzer looks for does not turn on a class name at all.
+ *
+ * Two of those three analyzers are left. eloquent-n-plus-one collects imports during its
+ * own traversal instead (TracksImportedNames), because it reads one class name by reaching
+ * down from an ancestor, which a pass that annotates nodes on arrival cannot serve.
  */
 trait ResolvesClassNames
 {

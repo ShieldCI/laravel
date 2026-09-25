@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\ResolvesClassNames;
 
 /**
  * Detects Model::unguard() calls that disable mass assignment protection.
@@ -25,6 +26,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  */
 class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
 {
+    use ResolvesClassNames;
+
     public function __construct(
         private ParserInterface $parser
     ) {}
@@ -89,8 +92,11 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Resolve all class names to FQCNs
-        $ast = $this->parser->resolveNames($ast);
+        // Resolve class names to FQCNs, so an aliased import is judged and reported as the
+        // class it names rather than the word the file happened to spell. Resolution goes
+        // through the shared helper because NameResolver throws on an import set PHP would
+        // itself reject, and an uncaught throw here errors the whole analyzer over one file.
+        $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
         $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }
@@ -240,7 +246,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($method === 'unguard') {
-                $unguardCalls[] = $call;
+                $unguardCalls[] = ['call' => $call, 'label' => $resolvedClassName];
             }
 
             if ($method === 'reguard') {
@@ -256,7 +262,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         $consumedReguards = [];
 
         // Check each unguard call for a matching reguard in the same scope
-        foreach ($unguardCalls as $unguardCall) {
+        foreach ($unguardCalls as ['call' => $unguardCall, 'label' => $classLabel]) {
             $unguardScope = $this->findEnclosingScope($unguardCall, $methodMap);
             $hasMatchingReguard = false;
 
@@ -280,8 +286,6 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             if ($hasMatchingReguard) {
                 continue;
             }
-
-            $classLabel = $unguardCall->class instanceof Node\Name ? $unguardCall->class->toString() : 'Model';
 
             $issues[] = $this->createIssueWithSnippet(
                 message: sprintf(

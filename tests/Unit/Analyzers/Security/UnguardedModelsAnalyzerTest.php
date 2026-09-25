@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PhpParser\Node;
 use ShieldCI\Analyzers\Security\UnguardedModelsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -1525,5 +1526,57 @@ PHP;
 
         // Should pass - this is not Illuminate\Database\Eloquent\Model
         $this->assertPassed($result);
+    }
+
+    public function test_does_not_rewrite_the_names_in_the_shared_parser_cache(): void
+    {
+        // Resolving names replaces each Name node in place unless asked not to, and parseFile()
+        // hands back a shared, mtime-cached tree, so the rewrite outlives this analyzer and
+        // shows every later reader of that file a name the file never wrote. Nothing depends on
+        // it today, because the cache is drained between analyzers, so the mutation itself is
+        // the only thing there is to assert.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Importer
+{
+    public function import(array $rows)
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/Importer.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed rather than a second parse of the same file. The cache is keyed
+        // by path and mtime with no normalisation, so setPaths() below has to name 'app' and
+        // not '.', or the analyzer would look up '<dir>/./app/...' and get its own entry.
+        $path = $tempDir.'/app/Services/Importer.php';
+        /** @var array<Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
+        $this->assertCount(1, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        // Asserted so the resolve call is known to have been reached: the analyzer skips any
+        // file whose text does not mention unguard before it resolves anything.
+        $this->assertFailed($analyzer->analyze());
+        $this->assertSame($calls[0], $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class)[0]);
+
+        $class = $calls[0]->class;
+        if (! $class instanceof Node\Name) {
+            self::fail('Expected the static call to name a class.');
+        }
+
+        $this->assertSame(Node\Name::class, $class::class);
+        $this->assertSame('Model', $class->toString());
     }
 }

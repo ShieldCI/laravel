@@ -89,8 +89,12 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Resolve all class names to FQCNs
-        $ast = $this->parser->resolveNames($ast);
+        // Resolve all class names to FQCNs. Node replacement stays off because parseFile()
+        // hands back a shared, mtime-cached tree, and rewriting each Name in it into a
+        // FullyQualified changes what the file wrote for every later reader of that tree.
+        // The static-call loop below already prefers the resolvedName attribute this leaves
+        // instead, so the name it reads is unchanged.
+        $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
 
         $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }

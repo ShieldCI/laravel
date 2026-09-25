@@ -21,6 +21,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
+use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\ModelVariableScanner;
@@ -37,6 +38,8 @@ use ShieldCI\Support\ViewRenderScanner;
  */
 class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 {
+    use ResolvesClassNames;
+
     /**
      * @param  AstParser  $parser  Narrowed from ParserInterface because the Blade path names
      *                             the template it compiled and translates the failing line
@@ -81,6 +84,9 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            // Outside the try: a fault in the Blade path is a bug in this analyzer, not an
+            // unreadable file, and has to reach the error channel rather than be reported as
+            // a project whose views are clean.
             if (str_ends_with($file, '.blade.php')) {
                 $this->analyzeBladeFile($file, $bindingRegistry, $scanResult, $issues);
 
@@ -93,6 +99,10 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
+
+                // Facade detection matches fully qualified names, so that a project's own
+                // App\Models\Event is not mistaken for the Event facade on its last segment.
+                $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
                 $visitor = new NPlusOneVisitor($scanResult);
                 $traverser = new NodeTraverser;
@@ -131,7 +141,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                         ]
                     );
                 }
-            } catch (\Throwable $e) {
+            } catch (\Throwable) {
                 // Skip files that can't be parsed
                 continue;
             }
@@ -232,6 +242,12 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         if ($ast === []) {
             return;
         }
+
+        // A template reaches for classes the way a PHP file does, so the facade list has to
+        // see the same fully qualified names here. Compiled output carries no namespace, so a
+        // bare `Event::` still resolves to the root alias the template means; only an
+        // `@php use App\Models\Event; @endphp` changes what this sees.
+        $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
         $seed = [];
         foreach ($bindings as $var => $binding) {
@@ -1280,13 +1296,27 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     ];
 
     /**
+     * The query builder entry point, which this analyzer does not report.
+     *
+     * `DB::table('x')->where($row->id)->get()` in a loop is a real N+1 and nothing here
+     * looks for it; the skip is a gap, not a judgement that the chain is safe. It is kept
+     * as a list so that it matches under the same rules as the non-query names: an
+     * application's own model called DB must not inherit the gap, which is the mistake
+     * #423 was filed about one identifier along.
+     *
+     * @var array<int, string>
+     */
+    private const DB_FACADE = ['Illuminate\Support\Facades\DB'];
+
+    /**
      * On top of the shared list. This visitor asks whether the static call is itself a
      * query, not whether a chain rooted at it can reach rows, so Auth and Request earn
      * an exemption here that they do not earn in ChunkMissingAnalyzer: Auth::user() is
      * memoized and issues no SQL, while Auth::user()->orders()->get() plainly does.
      *
-     * The HTTP clients have no single canonical namespace and are matched on the bare
-     * name, which is all this visitor can do anyway: it does not resolve names.
+     * The HTTP clients have no single canonical namespace, which is what a bare entry
+     * means: it matches on the last segment wherever the class lives, so an application
+     * that imports its own `App\Support\Curl` keeps the exemption.
      *
      * @var array<int, string>
      */
@@ -1539,8 +1569,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             if ($node instanceof Expr\StaticCall && $node->class instanceof Node\Name) {
                 $className = $node->class->getLast();
 
-                // Skip DB facade - handled separately
-                if ($className !== 'DB' && $node->name instanceof Node\Identifier) {
+                if (! $this->classMatches($node->class, self::DB_FACADE) && $node->name instanceof Node\Identifier) {
                     // Skip non-query facades (Cache, Config, Session, etc.)
                     if ($this->isNonQueryClass($node->class, self::EXTRA_NON_QUERY_CLASSES)) {
                         return null;
@@ -2065,8 +2094,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         if ($current instanceof Expr\StaticCall && $current->class instanceof Node\Name) {
             $className = $current->class->getLast();
 
-            // Skip DB facade
-            if ($className === 'DB') {
+            if ($this->classMatches($current->class, self::DB_FACADE)) {
                 return null;
             }
 

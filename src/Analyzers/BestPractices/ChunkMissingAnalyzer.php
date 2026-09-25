@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
+use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\ModelTableResolver;
 use ShieldCI\Support\SeededTableScanner;
 
@@ -24,6 +25,8 @@ use ShieldCI\Support\SeededTableScanner;
  */
 class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 {
+    use ResolvesClassNames;
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -61,7 +64,7 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 
                 // Facade detection matches fully qualified names, so that a project's own
                 // App\Models\Event is not mistaken for the Event facade on its last segment.
-                $ast = $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+                $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
                 $visitor = new ChunkMissingVisitor($catalogueTables, $tableResolver, $this->getBasePath());
                 $traverser = new NodeTraverser;

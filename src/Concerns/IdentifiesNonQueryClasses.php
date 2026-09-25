@@ -32,7 +32,11 @@ use PhpParser\Node;
  * lives. An HTTP client an application imports from its own namespace is reached that
  * way and no other.
  *
- * Callers that want the FQN must run the AST through ResolvesClassNames first.
+ * Callers that want the FQN must resolve names one of two ways: run the AST through
+ * ResolvesClassNames before traversing it, or also use TracksImportedNames, whose
+ * resolvedClassFqn() then replaces the one below. A caller that reads a class name by
+ * reaching down from an ancestor needs the second, because the attribute the first leaves
+ * is written when the traverser arrives at a node and so is not there yet.
  *
  * DB and Schema are deliberately absent: DB::table(...)->get() is a real query.
  * Auth is absent too, because Auth::user()->orders()->get() reads real rows, and

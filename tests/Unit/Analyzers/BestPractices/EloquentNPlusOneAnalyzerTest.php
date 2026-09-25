@@ -2397,6 +2397,48 @@ PHP;
         $this->assertHasIssueContaining('Order::where', $result);
     }
 
+    public function test_resolves_the_names_that_do_not_collide_in_a_file_php_would_reject(): void
+    {
+        // Giving up on the whole file costs more than the alias that collided. Matching falls
+        // back to every name as written, so `Event` takes the Event facade's exemption on its
+        // last segment and the query it guards goes unreported. Only `Order` is ambiguous
+        // here, and it keeps whichever import came first; `Event` still resolves, and the
+        // model it names is still not a facade.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Event;
+use App\Models\Order;
+use App\Other\Order;
+
+class Probe
+{
+    public function run(array $ids)
+    {
+        foreach ($ids as $id) {
+            $rows = Event::where('user_id', $id)->get();
+            echo count($rows);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/Probe.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Event::where', $result);
+    }
+
     public function test_flags_an_unimported_facade_spelling_in_a_namespaced_file(): void
     {
         // `Cache` with no import inside a namespace resolves to App\Http\Controllers\Cache,

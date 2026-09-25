@@ -1579,4 +1579,75 @@ PHP;
         $this->assertSame(Node\Name::class, $class::class);
         $this->assertSame('Model', $class->toString());
     }
+
+    public function test_reports_the_resolved_class_name_for_an_aliased_model_import(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use Illuminate\Database\Eloquent\Model as Eloquent;
+
+class ImportCommand
+{
+    public function handle()
+    {
+        Eloquent::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Commands/ImportCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Illuminate\Database\Eloquent\Model::unguard()', $result);
+
+        // BaselineCommand hashes the message, so naming the alias the file wrote instead of
+        // the class it resolves to would orphan every baselined entry on upgrade.
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('Eloquent::unguard()', $issue->message);
+        }
+    }
+
+    public function test_analyzes_a_file_whose_imports_php_would_reject(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Order;
+use App\Other\Order;
+use Illuminate\Database\Eloquent\Model;
+
+class ImportCommand
+{
+    public function handle()
+    {
+        Model::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Commands/ImportCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Two use statements landing on one alias make NameResolver throw. Letting that
+        // escape marks the analyzer errored, which exits the whole run non-zero over one
+        // file; degrading to the names as written still finds the unguard call.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Model::unguard()', $result);
+    }
 }

@@ -37,9 +37,12 @@ use PhpParser\Node\Stmt;
  * passed through rather than filtered to TYPE_NORMAL, because NameContext keeps a bucket
  * per type and getResolvedClassName() reads only the one it wants.
  *
- * Nothing is written to the AST. That matters because parseFile() hands back a shared,
- * mtime-cached tree, so resolving into it leaves a FullyQualified on every Name node, and a
- * namespacedName on every declaration, for as long as the cache lives.
+ * The table is the visitor's own state, so nothing here is written to the AST. That matters
+ * because parseFile() hands back a shared, mtime-cached tree, and a resolving pass over it
+ * leaves a resolvedName attribute on every Name node and a namespacedName on every
+ * declaration, or a FullyQualified in place of each Name with replaceNodes on, for as long as
+ * the cache lives. It does not make the walk as a whole cache-clean: ParentConnectingVisitor,
+ * in the same traverser, still writes a parent attribute onto every node it reaches.
  */
 trait TracksImportedNames
 {

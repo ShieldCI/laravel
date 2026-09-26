@@ -3834,12 +3834,14 @@ PHP;
 
         // The anonymous class's own method is reported; the enclosing method performs one
         // write and must not inherit the two the anonymous class performs.
+        $this->assertFailed($result);
         $this->assertCount(1, $issues);
-        $this->assertStringContainsString('Unknown::inner()', $issues[0]->message);
+        $this->assertStringContainsString('Svc@anonymous::inner()', $issues[0]->message);
         $this->assertStringContainsString('2 database write', $issues[0]->message);
 
+        // Reported after the class it sits in, not as one of that class's own methods.
         foreach ($issues as $issue) {
-            $this->assertStringNotContainsString('Svc::', $issue->message);
+            $this->assertStringNotContainsString('"Svc::', $issue->message);
         }
     }
 

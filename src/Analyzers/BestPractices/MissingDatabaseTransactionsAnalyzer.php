@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
+use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Concerns\ResolvesClassNames;
 
@@ -180,6 +181,8 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
  */
 class TransactionVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /**
      * Facades that have methods looking like DB writes but aren't database operations.
      */
@@ -397,7 +400,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\ClassLike) {
             $this->classNameStack[] = $this->currentClassName;
             $this->propertyTypeStack[] = $this->propertyTypes;
-            $this->currentClassName = $node->name?->toString();
+            $this->currentClassName = $this->declarationName($node, $this->currentClassName);
             // Own declarations first: array + array keeps the left-hand entry, so a
             // property the class redeclares wins over the one it would have inherited.
             // Own properties are read from the node, and the inherited half is seeded

@@ -2928,8 +2928,9 @@ PHP;
         }
 
         // The anonymous class owns its own method; the method declared after it still
-        // belongs to the class it is written in.
-        $this->assertSame('Anonymous', $classFor['handle'] ?? null);
+        // belongs to the class it is written in. The anonymous one is attributed to the
+        // declaration enclosing it, so the subject names something that can be opened.
+        $this->assertSame('ReportService@anonymous', $classFor['handle'] ?? null);
         $this->assertSame('ReportService', $classFor['summarise'] ?? null);
     }
 

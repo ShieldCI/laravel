@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
+use ShieldCI\Concerns\NamesDeclarations;
 
 /**
  * Flags public methods without documentation.
@@ -574,6 +575,8 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
  */
 class DocBlockVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /**
      * @var array<int, array{message: string, line: int, type: string, method: string, class: string, needsParam?: bool, needsReturn?: bool, needsThrows?: bool}>
      */
@@ -609,7 +612,7 @@ class DocBlockVisitor extends NodeVisitorAbstract
         // Track current class context (classes, traits, interfaces, and enums)
         if ($node instanceof Stmt\ClassLike) {
             $this->classStack[] = $this->currentClass;
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+            $this->currentClass = $this->declarationName($node, $this->currentClass);
 
             return null;
         }

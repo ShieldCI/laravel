@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Support\EloquentModelDetector;
 
 /**
@@ -415,6 +416,8 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
  */
 class MixedQueryVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -490,6 +493,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     {
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
+            $isNested = $this->classScopeStack !== [];
+
             $this->classScopeStack[] = [
                 'currentClassName' => $this->currentClassName,
                 'tableUsage' => $this->tableUsage,
@@ -498,8 +503,16 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 'classManagesGlobalScopes' => $this->classManagesGlobalScopes,
             ];
 
-            $this->currentClassName = $node->name?->toString();
-            $this->tableUsage = [];
+            $this->currentClassName = $this->declarationName($node, $this->currentClassName);
+
+            // Only a class declared inside another starts from nothing: the evidence read so
+            // far is the enclosing class's. The outermost class in a file keeps what the file
+            // gathered ahead of it, which is where a composed trait or a helper function
+            // queries from, and which is half of the mixing it is judged on.
+            if ($isNested) {
+                $this->tableUsage = [];
+            }
+
             $this->variableTracking = [];
             $this->classHasQueryBuilderWrite = false;
             $this->classManagesGlobalScopes = false;
@@ -708,12 +721,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // When leaving a class, check for mixed usage
         if ($node instanceof Node\Stmt\Class_) {
-            // Skip check if class is whitelisted. An anonymous class is skipped outright:
-            // it has no name to report the verdict under, and a consistency rule about a
-            // declaration nobody can name is not actionable.
+            // Skip check if class is whitelisted. An anonymous class is checked like any
+            // other: the mixing is real, and it reports under the subject PHP would name it
+            // by, so the reader has somewhere to go.
             $isWhitelisted = $this->currentClassName && in_array($this->currentClassName, $this->whitelist, true);
 
-            if ($node->name !== null && ! $isWhitelisted) {
+            if (! $isWhitelisted) {
                 $this->checkMixedUsage();
             }
 

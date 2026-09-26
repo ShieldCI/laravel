@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -1593,5 +1594,217 @@ PHP;
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('->get()', $result);
+    }
+
+    public function test_resolves_the_names_that_do_not_collide_in_a_file_php_would_reject(): void
+    {
+        // Giving up on the whole file costs more than the alias that collided. Matching falls
+        // back to every name as written, so `Event` takes the Event facade's exemption on its
+        // last segment and the unchunked loop it guards goes unreported. `Event` does not
+        // collide, so it still resolves, and the model it names is no facade.
+        //
+        // Only `Cache` is ambiguous here, and the import table records the collision and keeps
+        // the first spelling. That is observable rather than merely documented: the first `use`
+        // names the facade, which is exempt, so the `Cache` loop must stay unreported. Were the
+        // last spelling to win instead, `App\Models\Cache` is no facade and that loop would be
+        // reported too.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Event;
+use Illuminate\Support\Facades\Cache;
+use App\Models\Cache;
+
+class Probe
+{
+    public function run()
+    {
+        foreach (Event::all() as $event) {
+            echo $event->id;
+        }
+
+        foreach (Cache::get('rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Probe.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        // The message names no class, so the line is what says which loop was reported: the
+        // Event read, not the Cache read below it.
+        $issues = array_values($result->getIssues());
+        $this->assertSame(13, $issues[0]->location?->line);
+    }
+
+    public function test_does_not_write_resolution_into_the_shared_parser_cache(): void
+    {
+        // A resolving pass does not leave the tree it read alone. With replaceNodes off the
+        // Name survives, but a resolvedName attribute and a namespacedName on the declaration
+        // take its place, and parseFile() hands back a shared, mtime-cached tree, so both
+        // outlive this analyzer. Collecting imports during the walk writes nothing, and this
+        // visitor is the only one in its traverser, so the walk is cache-clean in full rather
+        // than in part. Both halves are asserted, so reinstating a resolving pass fails here
+        // instead of in whatever later reads the attribute.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class Report
+{
+    public function render()
+    {
+        foreach (Cache::get('report.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Report.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed rather than a second parse of the same file. The cache is keyed
+        // by path and mtime with no normalisation, so setPaths() below has to name 'Services'
+        // and not '.', or the analyzer would look up '<dir>/./Services/Report.php' and get its
+        // own entry.
+        $path = $tempDir.'/Services/Report.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(1, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        // Asserted so the facade exemption is known to have been reached: an analyzer that
+        // scanned nothing would leave the tree pristine for the wrong reason.
+        $this->assertPassed($analyzer->analyze());
+
+        /** @var array<int, Node\Expr\StaticCall> $reparsed */
+        $reparsed = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
+        $this->assertSame($calls[0], $reparsed[0]);
+
+        $class = $calls[0]->class;
+        if (! $class instanceof Node\Name) {
+            self::fail('Expected the static call to name a class.');
+        }
+
+        $this->assertSame(Node\Name::class, $class::class);
+        $this->assertNull($class->getAttribute('resolvedName'));
+
+        /** @var array<int, Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertFalse(isset($declarations[0]->namespacedName));
+    }
+
+    public function test_passes_with_a_facade_imported_through_a_group_use(): void
+    {
+        // The prefix of a group use is joined onto each name by hand, so a facade imported
+        // this way is exempt only if that join is right.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\{Cache, Http};
+
+class MenuService
+{
+    public function render()
+    {
+        foreach (Cache::get('menu.items', []) as $item) {
+            echo $item;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/MenuService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_a_fully_qualified_facade_reference(): void
+    {
+        // A leading backslash needs no import to resolve, and must not need one to be exempt.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    public function render()
+    {
+        foreach (\Illuminate\Support\Facades\Cache::get('report.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_flags_an_unimported_facade_spelling_in_a_namespaced_file(): void
+    {
+        // `Cache` with no import inside a namespace is App\Services\Cache, which is a class of
+        // the application's own and no facade. The global-namespace spelling is the one that
+        // earns the exemption on its last segment, and it is covered separately.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LedgerService
+{
+    public function render()
+    {
+        foreach (Cache::get('ledger.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LedgerService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
     }
 }

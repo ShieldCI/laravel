@@ -128,11 +128,21 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
      * Saved variable maps of enclosing function scopes. Each scope counts its own
      * assignments, which is what the reset below is for, but the enclosing scope has to get
      * its own map back: a loop written after a closure is still looking at the collection
-     * the method fetched, and a variable the closure assigned is not that collection.
+     * the method fetched, and a variable the closure assigned by value is not that
+     * collection. What the closure took by reference is, and travels with it either way.
      *
      * @var list<array<string, Node\Expr>>
      */
     private array $assignmentStack = [];
+
+    /**
+     * Names each open scope captured with use (&$x), innermost last. A by-reference capture
+     * is the only way a closure reaches an enclosing function's local, so these are the
+     * names whose value has to travel in when the scope opens and back out when it closes.
+     *
+     * @var list<list<string>>
+     */
+    private array $byRefCaptureStack = [];
 
     /**
      * @param  array<int, string>  $catalogueTables  Seeded reference tables exempt from the hint
@@ -146,9 +156,23 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node): ?Node
     {
         // Hold the enclosing scope's assignments and start this one with a map of its own
+        // (bar what it shares by reference, below)
         if ($this->isFunctionScope($node)) {
-            $this->assignmentStack[] = $this->variableAssignments;
+            $enclosing = $this->variableAssignments;
+            $byRefCaptures = $this->byRefCaptures($node);
+
+            $this->assignmentStack[] = $enclosing;
+            $this->byRefCaptureStack[] = $byRefCaptures;
+
+            // A by-reference capture is the enclosing variable, not a copy of it, so this
+            // scope opens already seeing whatever that variable holds. Every other name
+            // starts clean, because this scope counts its own assignments.
             $this->variableAssignments = [];
+            foreach ($byRefCaptures as $name) {
+                if (isset($enclosing[$name])) {
+                    $this->variableAssignments[$name] = $enclosing[$name];
+                }
+            }
         }
 
         // Track variable assignments with ->all() or ->get()
@@ -199,7 +223,21 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     {
         // Hand the enclosing scope back its own assignments.
         if ($this->isFunctionScope($node)) {
+            $closing = $this->variableAssignments;
+            $byRefCaptures = array_pop($this->byRefCaptureStack) ?? [];
+
             $this->variableAssignments = array_pop($this->assignmentStack) ?? [];
+
+            // What this scope wrote through a by-reference capture is what the enclosing
+            // scope now holds, so carry that verdict out: a fetch a later loop would read,
+            // or the absence of one where this scope replaced it with something bounded.
+            foreach ($byRefCaptures as $name) {
+                if (isset($closing[$name])) {
+                    $this->variableAssignments[$name] = $closing[$name];
+                } else {
+                    unset($this->variableAssignments[$name]);
+                }
+            }
         }
 
         return null;
@@ -211,6 +249,29 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             || $node instanceof Node\Stmt\Function_
             || $node instanceof Node\Expr\Closure
             || $node instanceof Node\Expr\ArrowFunction;
+    }
+
+    /**
+     * Names this scope captured by reference. Only a closure can do so: an arrow function
+     * captures by value, and a named function or method reaches no enclosing local at all.
+     *
+     * @return list<string>
+     */
+    private function byRefCaptures(Node $node): array
+    {
+        if (! $node instanceof Node\Expr\Closure) {
+            return [];
+        }
+
+        $names = [];
+
+        foreach ($node->uses as $use) {
+            if ($use->byRef && is_string($use->var->name)) {
+                $names[] = $use->var->name;
+            }
+        }
+
+        return $names;
     }
 
     private function isFetchCollectionCall(?Node\Expr $expr): bool

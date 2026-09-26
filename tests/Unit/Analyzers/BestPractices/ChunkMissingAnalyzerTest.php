@@ -1672,4 +1672,85 @@ PHP;
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_a_by_reference_assignment_inside_a_closure_does_escape_it(): void
+    {
+        // The closure rebinds the outer $users by reference, and it rebinds it to a cursor,
+        // which is the remedy this analyzer recommends. The loop below reads that cursor.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process()
+    {
+        $users = User::all();
+
+        $swap = function () use (&$users): void {
+            $users = User::cursor();
+        };
+
+        $swap();
+
+        foreach ($users as $user) {
+            echo $user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_by_reference_rebind_to_an_unbounded_fetch_is_still_reported(): void
+    {
+        // The mirror of the test above: a by-reference rebind that makes the variable
+        // unbounded must be picked up, so the fix cannot simply drop the name and go quiet.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process()
+    {
+        $users = User::cursor();
+
+        $swap = function () use (&$users): void {
+            $users = User::all();
+        };
+
+        $swap();
+
+        foreach ($users as $user) {
+            echo $user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
+    }
 }

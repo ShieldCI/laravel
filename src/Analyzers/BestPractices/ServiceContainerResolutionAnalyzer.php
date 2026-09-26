@@ -855,6 +855,19 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private ?string $currentClass = null;
 
     /**
+     * Saved names of enclosing class-likes, and saved method contexts, pushed on the way in
+     * and popped on the way out. A method body can declare a class of its own, and every
+     * suppression keyed on the class or the method would otherwise stop applying for the
+     * rest of the enclosing method.
+     *
+     * @var list<string|null>
+     */
+    private array $classStack = [];
+
+    /** @var list<array{method: string|null, static: bool}> */
+    private array $methodStack = [];
+
+    /**
      * Current method name.
      */
     private ?string $currentMethod = null;
@@ -970,6 +983,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
         // Track class entry
         if ($node instanceof Stmt\Class_) {
+            $this->classStack[] = $this->currentClass;
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
 
             return null;
@@ -979,6 +993,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
         // in boot{Trait}() methods but extend nothing, so without this their context
         // would render as 'Unknown'. Tracked exactly like a class.
         if ($node instanceof Stmt\Trait_) {
+            $this->classStack[] = $this->currentClass;
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
 
             return null;
@@ -993,6 +1008,7 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
 
         // Track method entry
         if ($node instanceof Stmt\ClassMethod) {
+            $this->methodStack[] = ['method' => $this->currentMethod, 'static' => $this->currentMethodIsStatic];
             $this->currentMethod = $node->name->toString();
             $this->currentMethodIsStatic = $node->isStatic();
 
@@ -1375,15 +1391,16 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             $this->functionDepth--;
         }
 
-        // Clear method context on exit
+        // Restore the enclosing method context on exit
         if ($node instanceof Stmt\ClassMethod) {
-            $this->currentMethod = null;
-            $this->currentMethodIsStatic = false;
+            $frame = array_pop($this->methodStack);
+            $this->currentMethod = $frame['method'] ?? null;
+            $this->currentMethodIsStatic = $frame['static'] ?? false;
         }
 
-        // Clear class/trait context on exit
+        // Restore the enclosing class/trait context on exit
         if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
-            $this->currentClass = null;
+            $this->currentClass = array_pop($this->classStack);
         }
 
         // Clear namespace context on exit

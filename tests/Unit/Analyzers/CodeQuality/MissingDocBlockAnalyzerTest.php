@@ -2819,6 +2819,205 @@ PHP;
         $this->assertHasIssueContaining('summarize', $result);
     }
 
+    /** @test */
+    #[Test]
+    public function test_an_anonymous_class_does_not_wipe_the_enclosing_class_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    /**
+     * Build the pipeline.
+     */
+    public function pipeline(): object
+    {
+        return new class
+        {
+            public int $steps = 0;
+        };
+    }
+
+    public function summarise(array $rows): array
+    {
+        foreach ($rows as $row) {
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ReportService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertNotEmpty($issues);
+
+        foreach ($issues as $issue) {
+            $this->assertSame('ReportService', $issue->metadata['class'] ?? null);
+        }
+    }
+
+    /** @test */
+    #[Test]
+    public function test_a_method_inside_an_anonymous_class_is_attributed_to_the_anonymous_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    /**
+     * Build the pipeline.
+     */
+    public function pipeline(): object
+    {
+        return new class
+        {
+            public function handle(array $rows): array
+            {
+                sort($rows);
+
+                return $rows;
+            }
+        };
+    }
+
+    public function summarise(array $rows): array
+    {
+        foreach ($rows as $row) {
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ReportService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+
+        $classFor = [];
+        foreach ($result->getIssues() as $issue) {
+            $method = $issue->metadata['method'] ?? null;
+            $classFor[is_string($method) ? $method : ''] = $issue->metadata['class'] ?? null;
+        }
+
+        // The anonymous class owns its own method; the method declared after it still
+        // belongs to the class it is written in.
+        $this->assertSame('Anonymous', $classFor['handle'] ?? null);
+        $this->assertSame('ReportService', $classFor['summarise'] ?? null);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_methods_sharing_a_name_after_anonymous_classes_are_counted_separately(): void
+    {
+        $first = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ReportService
+{
+    /**
+     * Build the pipeline.
+     *
+     * @return object
+     */
+    public function pipeline(): object
+    {
+        return new class
+        {
+            public int $steps = 0;
+        };
+    }
+
+    public function run(array $rows): array
+    {
+        foreach ($rows as $row) {
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+}
+PHP;
+
+        $second = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ExportService
+{
+    /**
+     * Build the pipeline.
+     *
+     * @return object
+     */
+    public function pipeline(): object
+    {
+        return new class
+        {
+            public int $steps = 0;
+        };
+    }
+
+    public function run(array $rows): array
+    {
+        foreach ($rows as $row) {
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ReportService.php' => $first,
+            'app/Services/ExportService.php' => $second,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(2, $result->getIssues());
+
+        // The tally keys on class@method, so two classes both degrading to "Unknown"
+        // collapse into one.
+        $this->assertStringContainsString('across 2 public methods', $result->getMessage());
+    }
+
     /**
      * Find the recommendation for the issue raised against the named method.
      */

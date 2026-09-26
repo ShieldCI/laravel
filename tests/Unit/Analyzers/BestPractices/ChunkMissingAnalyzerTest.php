@@ -1594,4 +1594,82 @@ PHP;
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('->get()', $result);
     }
+
+    public function test_a_closure_does_not_erase_the_enclosing_method_assignments(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process()
+    {
+        $users = User::all();
+
+        $format = function (string $name): string {
+            return strtoupper($name);
+        };
+
+        foreach ($users as $user) {
+            echo $format($user->name);
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
+    }
+
+    public function test_an_assignment_inside_a_closure_does_not_escape_it(): void
+    {
+        // The outer $users is a cursor, which is the remedy this analyzer recommends.
+        // The closure's own same-named variable must not make it look unbounded.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process()
+    {
+        $users = User::cursor();
+
+        $warm = function (): void {
+            $users = User::all();
+            $users->count();
+        };
+
+        $warm();
+
+        foreach ($users as $user) {
+            echo $user->name;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

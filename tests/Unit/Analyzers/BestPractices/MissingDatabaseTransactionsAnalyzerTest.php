@@ -3792,4 +3792,251 @@ PHP,
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_an_anonymous_class_method_is_not_folded_into_the_enclosing_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class Svc
+{
+    public function outer(array $d)
+    {
+        $x = new class
+        {
+            public function inner()
+            {
+                User::create([]);
+                User::create([]);
+            }
+        };
+
+        User::create($d);
+
+        return $x;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Svc.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+
+        // The anonymous class's own method is reported; the enclosing method performs one
+        // write and must not inherit the two the anonymous class performs.
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Unknown::inner()', $issues[0]->message);
+        $this->assertStringContainsString('2 database write', $issues[0]->message);
+
+        foreach ($issues as $issue) {
+            $this->assertStringNotContainsString('Svc::', $issue->message);
+        }
+    }
+
+    public function test_writes_on_both_sides_of_an_anonymous_class_are_still_counted(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class Svc
+{
+    public function outer(array $d)
+    {
+        User::create($d);
+
+        $x = new class
+        {
+            public function inner()
+            {
+            }
+        };
+
+        User::create($d);
+
+        return $x;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Svc.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Method "Svc::outer()"', $issues[0]->message);
+        $this->assertStringContainsString('2 database write', $issues[0]->message);
+    }
+
+    public function test_an_anonymous_class_does_not_break_the_enclosing_transaction_closure(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class Svc
+{
+    public function place(array $d)
+    {
+        return DB::transaction(function () use ($d) {
+            $rule = new class
+            {
+                public function passes(): bool
+                {
+                    return true;
+                }
+            };
+
+            Order::create($d);
+            Order::create($d);
+
+            return $rule;
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Svc.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_delegated_helper_stays_delegated_after_an_anonymous_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+class Svc
+{
+    public function place(array $d)
+    {
+        return DB::transaction(function () use ($d) {
+            return $this->build($d);
+        });
+    }
+
+    private function build(array $d)
+    {
+        $rule = new class
+        {
+            public function passes(): bool
+            {
+                return true;
+            }
+        };
+
+        $this->persist($d);
+
+        return $rule;
+    }
+
+    private function persist(array $d): void
+    {
+        Order::create($d);
+        Order::create($d);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Svc.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_an_anonymous_class_does_not_detach_a_callback_closure_from_its_method(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Filament\Resources;
+
+use App\Models\Order;
+use Filament\Tables\Actions\Action;
+use Filament\Tables\Table;
+
+class OrderResource
+{
+    public function table(Table $table): Table
+    {
+        return $table
+            ->recordActions([
+                Action::make('approve')
+                    ->action(function (Order $record): void {
+                        $stamp = new class
+                        {
+                            public function at(): string
+                            {
+                                return 'now';
+                            }
+                        };
+
+                        $record->status = $stamp->at();
+                        $record->save();
+                        $record->touch();
+                    }),
+            ]);
+    }
+}
+PHP;
+
+        // Resolve the expected line dynamically so the assertion is not brittle.
+        $closureLine = null;
+        foreach (explode("\n", $code) as $index => $lineText) {
+            if (str_contains($lineText, '->action(function')) {
+                $closureLine = $index + 1;
+            }
+        }
+        $this->assertNotNull($closureLine);
+
+        $tempDir = $this->createTempDirectory(['Filament/Resources/OrderResource.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Closure in "OrderResource::table()"', $issues[0]->message);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame($closureLine, $issues[0]->location->line);
+    }
 }

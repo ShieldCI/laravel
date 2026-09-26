@@ -20,9 +20,9 @@ use PhpParser\Node\Stmt;
  * reads it. A visitor that reaches down from an ancestor cannot.
  * EloquentNPlusOneAnalyzer::getQueryChainDescription() is called on entering the outer
  * MethodCall of `Event::where(...)->get()` and walks down to the chain-root StaticCall,
- * which the traverser has not reached yet, so nothing is annotated there. Since
- * IdentifiesNonQueryClasses::resolvedClassFqn() falls back to the name as written, `Event`
- * would match the Event facade on its last segment and the query would be exempted, which
+ * which the traverser has not reached yet, so nothing is annotated there. Reading an
+ * attribute there yields nothing, and any reader that answers with the name as written then
+ * matches `Event` against the Event facade on its last segment and exempts the query, which
  * is #423 over again. AuthenticationAnalyzer keeps a separate resolving pass for the same
  * reason.
  *
@@ -103,9 +103,9 @@ trait TracksImportedNames
      * The fully qualified name behind a class reference, as PHP would resolve it at the
      * point the file writes it.
      *
-     * This deliberately shadows IdentifiesNonQueryClasses::resolvedClassFqn() in the
-     * visitors that use both traits, so that every caller of classMatches() and
-     * isNonQueryClass() is resolved this way without having to know it.
+     * This satisfies the declaration IdentifiesNonQueryClasses leaves open, so that every
+     * caller of classMatches() and isNonQueryClass() in a visitor using both traits is
+     * resolved this way without having to know it.
      */
     private function resolvedClassFqn(Name $class): string
     {

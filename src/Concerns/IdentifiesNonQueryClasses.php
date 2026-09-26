@@ -32,11 +32,13 @@ use PhpParser\Node;
  * lives. An HTTP client an application imports from its own namespace is reached that
  * way and no other.
  *
- * Callers that want the FQN must resolve names one of two ways: run the AST through
- * ResolvesClassNames before traversing it, or also use TracksImportedNames, whose
- * resolvedClassFqn() then replaces the one below. A caller that reads a class name by
- * reaching down from an ancestor needs the second, because the attribute the first leaves
- * is written when the traverser arrives at a node and so is not there yet.
+ * Resolution is the consumer's to supply. resolvedClassFqn() is declared below and left
+ * unimplemented, so a consumer states how its names resolve instead of inheriting a default
+ * that quietly matches on the name as written, which is what #423 was filed about. Both
+ * consumers today also use TracksImportedNames, which satisfies it from imports collected
+ * during the walk, and a consumer that reads a class name by reaching down from an ancestor
+ * needs exactly that: an attribute a separate pass leaves behind is written when the
+ * traverser arrives at a node, and so is not there yet.
  *
  * DB and Schema are deliberately absent: DB::table(...)->get() is a real query.
  * Auth is absent too, because Auth::user()->orders()->get() reads real rows, and
@@ -98,20 +100,14 @@ trait IdentifiesNonQueryClasses
     }
 
     /**
-     * The fully qualified name behind a class reference, preferring the attribute
-     * NameResolver leaves behind when it runs with ['replaceNodes' => false], and
-     * falling back to the name as written when it has not run.
+     * The fully qualified name behind a class reference, as PHP would resolve it at the point
+     * the file writes it.
+     *
+     * Declared here and implemented by the consumer, because every answer this trait gives
+     * turns on it and the wrong one is silent: an unresolved name matches a facade on its last
+     * segment and takes an exemption that belongs to a different class.
      */
-    private function resolvedClassFqn(Node\Name $class): string
-    {
-        $resolved = $class->getAttribute('resolvedName');
-
-        $fqn = $resolved instanceof Node\Name\FullyQualified
-            ? $resolved->toString()
-            : $class->toString();
-
-        return ltrim($fqn, '\\');
-    }
+    abstract private function resolvedClassFqn(Node\Name $class): string;
 
     /**
      * @return array<int, string>

@@ -585,6 +585,16 @@ class DocBlockVisitor extends NodeVisitorAbstract
     private ?string $currentClass = null;
 
     /**
+     * Saved names of enclosing class-like declarations. A method body can declare a class
+     * of its own, and without this every method written after it is reported under the
+     * fallback name rather than the class it belongs to, which also folds two real methods
+     * into one entry in the affected-method tally.
+     *
+     * @var list<string|null>
+     */
+    private array $classStack = [];
+
+    /**
      * @param  array<string>  $excludePatterns
      * @param  array<string>  $contractMethods  lowercased framework-contract method names to skip
      */
@@ -597,7 +607,8 @@ class DocBlockVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node)
     {
         // Track current class context (classes, traits, interfaces, and enums)
-        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Enum_) {
+        if ($node instanceof Stmt\ClassLike) {
+            $this->classStack[] = $this->currentClass;
             $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
 
             return null;
@@ -662,9 +673,9 @@ class DocBlockVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Clear class context on exit
-        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Enum_) {
-            $this->currentClass = null;
+        // Restore the enclosing declaration's context on exit
+        if ($node instanceof Stmt\ClassLike) {
+            $this->currentClass = array_pop($this->classStack);
         }
 
         return null;

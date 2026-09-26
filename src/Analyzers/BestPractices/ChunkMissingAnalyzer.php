@@ -125,6 +125,16 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     private array $variableAssignments = [];
 
     /**
+     * Saved variable maps of enclosing function scopes. Each scope counts its own
+     * assignments, which is what the reset below is for, but the enclosing scope has to get
+     * its own map back: a loop written after a closure is still looking at the collection
+     * the method fetched, and a variable the closure assigned is not that collection.
+     *
+     * @var list<array<string, Node\Expr>>
+     */
+    private array $assignmentStack = [];
+
+    /**
      * @param  array<int, string>  $catalogueTables  Seeded reference tables exempt from the hint
      */
     public function __construct(
@@ -135,11 +145,9 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        // Reset variable tracking when entering a new function scope
-        if ($node instanceof Node\Stmt\ClassMethod ||
-            $node instanceof Node\Stmt\Function_ ||
-            $node instanceof Node\Expr\Closure ||
-            $node instanceof Node\Expr\ArrowFunction) {
+        // Hold the enclosing scope's assignments and start this one with a map of its own
+        if ($this->isFunctionScope($node)) {
+            $this->assignmentStack[] = $this->variableAssignments;
             $this->variableAssignments = [];
         }
 
@@ -185,6 +193,24 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         }
 
         return null;
+    }
+
+    public function leaveNode(Node $node): ?Node
+    {
+        // Hand the enclosing scope back its own assignments.
+        if ($this->isFunctionScope($node)) {
+            $this->variableAssignments = array_pop($this->assignmentStack) ?? [];
+        }
+
+        return null;
+    }
+
+    private function isFunctionScope(Node $node): bool
+    {
+        return $node instanceof Node\Stmt\ClassMethod
+            || $node instanceof Node\Stmt\Function_
+            || $node instanceof Node\Expr\Closure
+            || $node instanceof Node\Expr\ArrowFunction;
     }
 
     private function isFetchCollectionCall(?Node\Expr $expr): bool

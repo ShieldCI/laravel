@@ -33,15 +33,16 @@ trait NamesDeclarations
             return $node->name->toString();
         }
 
-        // PHP names an anonymous class after its parent, or failing that the first
-        // interface it implements: new class extends Migration {} is Migration@anonymous.
-        // Only a class can be anonymous, so nothing else needs asking.
-        $inherited = $node instanceof Node\Stmt\Class_
-            ? ($node->extends ?? ($node->implements[0] ?? null))
-            : null;
+        // Only a class reaches here, because every other declaration carries a name. PHP
+        // names an anonymous one after its parent, or failing that the first interface it
+        // implements, so new class extends Migration {} is Migration@anonymous. The check
+        // is what tells the type checker those two properties exist, not a real branch.
+        if ($node instanceof Node\Stmt\Class_) {
+            $inherited = $node->extends ?? $node->implements[0] ?? null;
 
-        if ($inherited !== null) {
-            return $inherited->toString().'@anonymous';
+            if ($inherited !== null) {
+                return $inherited->toString().'@anonymous';
+            }
         }
 
         // Nothing inherited to borrow from, so fall back to the declaration it sits in.

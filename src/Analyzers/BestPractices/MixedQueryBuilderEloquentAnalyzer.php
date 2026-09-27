@@ -457,9 +457,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
      */
     private array $classScopeStack = [];
 
-    /** @var list<array<string, string>> Saved variable maps of enclosing methods. */
-    private array $variableTrackingStack = [];
-
     /** @var bool Whether the current class writes via the query builder (DB::table()->insert/update/delete/...). */
     private bool $classHasQueryBuilderWrite = false;
 
@@ -518,9 +515,11 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->classManagesGlobalScopes = false;
         }
 
-        // Reset variable tracking at method boundaries for proper scoping
+        // Reset variable tracking at method boundaries for proper scoping. Nothing is saved
+        // here: entering a class resets the map too, and a class body cannot assign outside
+        // a method, so there is never an enclosing method's map to hand back. What a method
+        // of a class declared inside another method needs is restored on leaving that class.
         if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->variableTrackingStack[] = $this->variableTracking;
             $this->variableTracking = [];
         }
 
@@ -713,10 +712,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     }
                 }
             }
-        }
-
-        if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->variableTracking = array_pop($this->variableTrackingStack) ?? [];
         }
 
         // When leaving a class, check for mixed usage

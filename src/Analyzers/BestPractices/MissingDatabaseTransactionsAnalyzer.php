@@ -142,7 +142,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
  * Visitor to detect missing transactions.
  *
  * @phpstan-type IfElseFrame array{pos: int, elsePos: int, inElse: bool, ifWrites: int, elseWrites: int, ifLines: list<int>, elseLines: list<int>}
- * @phpstan-type ClosureScopeFrame array{
+ * @phpstan-type ScopeCounters array{
  *   writeOperations: int,
  *   writeOperationsInTransaction: int,
  *   unprotectedWriteLines: list<int>,
@@ -158,25 +158,13 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
  *   nonDbVariables: array<string, true>
  * }
  * @phpstan-type MethodScopeFrame array{
+ *   counters: ScopeCounters,
  *   currentMethodName: string|null,
  *   methodStartLine: int,
- *   writeOperations: int,
- *   writeOperationsInTransaction: int,
- *   unprotectedWriteLines: list<int>,
  *   transactionDepth: int,
  *   manualTransactionDepth: int,
- *   isolatedWrites: int,
- *   earlyExitIfDepth: int,
  *   transactionClosurePositions: array<int, true>,
- *   earlyExitIfPositions: array<int, true>,
- *   guardClauseElsePositions: array<int, true>,
- *   ifElseBranchStack: list<IfElseFrame>,
- *   maxClosureWrites: int,
- *   maxClosureUnprotected: int,
- *   maxClosureLines: list<int>,
- *   maxClosureLine: int,
- *   closureScopeStack: list<ClosureScopeFrame>,
- *   nonDbVariables: array<string, true>
+ *   closureScopeStack: list<ScopeCounters>
  * }
  */
 class TransactionVisitor extends NodeVisitorAbstract
@@ -287,7 +275,7 @@ class TransactionVisitor extends NodeVisitorAbstract
      * and reset the counters, on exit we restore them and fold the closure in as a
      * sibling (max), never summing across siblings.
      *
-     * @var list<ClosureScopeFrame>
+     * @var list<ScopeCounters>
      */
     private array $closureScopeStack = [];
 
@@ -371,8 +359,10 @@ class TransactionVisitor extends NodeVisitorAbstract
      * this the inner method's tally would be handed to the enclosing method, which then
      * reports writes it never performs under a name it does not have.
      *
-     * Every field pushMethodScope() resets belongs here, the same duty $closureScopeStack
-     * carries: a new method-scoped field has to be added in all three lists at once.
+     * A frame is the shared counters plus the handful of fields only a method scope carries.
+     * The counters are named once each in snapshotCounters(), restoreCounters() and
+     * zeroCounters(), so a new counter cannot be added to a method scope and missed in a
+     * closure scope, which is the half the two used to be able to disagree on.
      *
      * @var list<MethodScopeFrame>
      */
@@ -704,16 +694,40 @@ class TransactionVisitor extends NodeVisitorAbstract
     private function pushMethodScope(Node\Stmt\ClassMethod $node): void
     {
         $this->methodScopeStack[] = [
+            'counters' => $this->snapshotCounters(),
             'currentMethodName' => $this->currentMethodName,
             'methodStartLine' => $this->methodStartLine,
+            'transactionDepth' => $this->transactionDepth,
+            'manualTransactionDepth' => $this->manualTransactionDepth,
+            'transactionClosurePositions' => $this->transactionClosurePositions,
+            'closureScopeStack' => $this->closureScopeStack,
+        ];
+
+        $this->restoreCounters($this->zeroCounters());
+
+        $this->currentMethodName = $node->name->toString();
+        $this->methodStartLine = $node->getStartLine();
+        // Start inside a virtual transaction if this method is exclusively called
+        // from within DB::transaction() closures (determined by the pre-scan).
+        $this->transactionDepth = isset($this->transactionDelegatedMethods[$this->currentMethodName]) ? 1 : 0;
+        $this->manualTransactionDepth = 0;
+        $this->transactionClosurePositions = [];
+        $this->closureScopeStack = [];
+    }
+
+    /**
+     * The counters a method scope and a closure scope both carry, as they stand now.
+     *
+     * @return ScopeCounters
+     */
+    private function snapshotCounters(): array
+    {
+        return [
             'writeOperations' => $this->writeOperations,
             'writeOperationsInTransaction' => $this->writeOperationsInTransaction,
             'unprotectedWriteLines' => $this->unprotectedWriteLines,
-            'transactionDepth' => $this->transactionDepth,
-            'manualTransactionDepth' => $this->manualTransactionDepth,
             'isolatedWrites' => $this->isolatedWrites,
             'earlyExitIfDepth' => $this->earlyExitIfDepth,
-            'transactionClosurePositions' => $this->transactionClosurePositions,
             'earlyExitIfPositions' => $this->earlyExitIfPositions,
             'guardClauseElsePositions' => $this->guardClauseElsePositions,
             'ifElseBranchStack' => $this->ifElseBranchStack,
@@ -721,31 +735,52 @@ class TransactionVisitor extends NodeVisitorAbstract
             'maxClosureUnprotected' => $this->maxClosureUnprotected,
             'maxClosureLines' => $this->maxClosureLines,
             'maxClosureLine' => $this->maxClosureLine,
-            'closureScopeStack' => $this->closureScopeStack,
             'nonDbVariables' => $this->nonDbVariables,
         ];
+    }
 
-        $this->currentMethodName = $node->name->toString();
-        $this->methodStartLine = $node->getStartLine();
-        $this->writeOperations = 0;
-        $this->writeOperationsInTransaction = 0;
-        $this->unprotectedWriteLines = [];
-        // Start inside a virtual transaction if this method is exclusively called
-        // from within DB::transaction() closures (determined by the pre-scan).
-        $this->transactionDepth = isset($this->transactionDelegatedMethods[$this->currentMethodName]) ? 1 : 0;
-        $this->manualTransactionDepth = 0;
-        $this->isolatedWrites = 0;
-        $this->earlyExitIfDepth = 0;
-        $this->transactionClosurePositions = [];
-        $this->earlyExitIfPositions = [];
-        $this->guardClauseElsePositions = [];
-        $this->ifElseBranchStack = [];
-        $this->maxClosureWrites = 0;
-        $this->maxClosureUnprotected = 0;
-        $this->maxClosureLines = [];
-        $this->maxClosureLine = 0;
-        $this->closureScopeStack = [];
-        $this->nonDbVariables = [];
+    /**
+     * @param  ScopeCounters  $counters
+     */
+    private function restoreCounters(array $counters): void
+    {
+        $this->writeOperations = $counters['writeOperations'];
+        $this->writeOperationsInTransaction = $counters['writeOperationsInTransaction'];
+        $this->unprotectedWriteLines = $counters['unprotectedWriteLines'];
+        $this->isolatedWrites = $counters['isolatedWrites'];
+        $this->earlyExitIfDepth = $counters['earlyExitIfDepth'];
+        $this->earlyExitIfPositions = $counters['earlyExitIfPositions'];
+        $this->guardClauseElsePositions = $counters['guardClauseElsePositions'];
+        $this->ifElseBranchStack = $counters['ifElseBranchStack'];
+        $this->maxClosureWrites = $counters['maxClosureWrites'];
+        $this->maxClosureUnprotected = $counters['maxClosureUnprotected'];
+        $this->maxClosureLines = $counters['maxClosureLines'];
+        $this->maxClosureLine = $counters['maxClosureLine'];
+        $this->nonDbVariables = $counters['nonDbVariables'];
+    }
+
+    /**
+     * What a scope counts before it has counted anything.
+     *
+     * @return ScopeCounters
+     */
+    private function zeroCounters(): array
+    {
+        return [
+            'writeOperations' => 0,
+            'writeOperationsInTransaction' => 0,
+            'unprotectedWriteLines' => [],
+            'isolatedWrites' => 0,
+            'earlyExitIfDepth' => 0,
+            'earlyExitIfPositions' => [],
+            'guardClauseElsePositions' => [],
+            'ifElseBranchStack' => [],
+            'maxClosureWrites' => 0,
+            'maxClosureUnprotected' => 0,
+            'maxClosureLines' => [],
+            'maxClosureLine' => 0,
+            'nonDbVariables' => [],
+        ];
     }
 
     /**
@@ -755,31 +790,16 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private function popMethodScope(): void
     {
-        if ($this->methodScopeStack === []) {
-            return;
-        }
-
         $frame = array_pop($this->methodScopeStack);
 
-        $this->currentMethodName = $frame['currentMethodName'];
-        $this->methodStartLine = $frame['methodStartLine'];
-        $this->writeOperations = $frame['writeOperations'];
-        $this->writeOperationsInTransaction = $frame['writeOperationsInTransaction'];
-        $this->unprotectedWriteLines = $frame['unprotectedWriteLines'];
-        $this->transactionDepth = $frame['transactionDepth'];
-        $this->manualTransactionDepth = $frame['manualTransactionDepth'];
-        $this->isolatedWrites = $frame['isolatedWrites'];
-        $this->earlyExitIfDepth = $frame['earlyExitIfDepth'];
-        $this->transactionClosurePositions = $frame['transactionClosurePositions'];
-        $this->earlyExitIfPositions = $frame['earlyExitIfPositions'];
-        $this->guardClauseElsePositions = $frame['guardClauseElsePositions'];
-        $this->ifElseBranchStack = $frame['ifElseBranchStack'];
-        $this->maxClosureWrites = $frame['maxClosureWrites'];
-        $this->maxClosureUnprotected = $frame['maxClosureUnprotected'];
-        $this->maxClosureLines = $frame['maxClosureLines'];
-        $this->maxClosureLine = $frame['maxClosureLine'];
-        $this->closureScopeStack = $frame['closureScopeStack'];
-        $this->nonDbVariables = $frame['nonDbVariables'];
+        $this->restoreCounters($frame['counters'] ?? $this->zeroCounters());
+
+        $this->currentMethodName = $frame['currentMethodName'] ?? null;
+        $this->methodStartLine = $frame['methodStartLine'] ?? 0;
+        $this->transactionDepth = $frame['transactionDepth'] ?? 0;
+        $this->manualTransactionDepth = $frame['manualTransactionDepth'] ?? 0;
+        $this->transactionClosurePositions = $frame['transactionClosurePositions'] ?? [];
+        $this->closureScopeStack = $frame['closureScopeStack'] ?? [];
     }
 
     /**
@@ -790,36 +810,14 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private function pushClosureScope(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): void
     {
-        $this->closureScopeStack[] = [
-            'writeOperations' => $this->writeOperations,
-            'writeOperationsInTransaction' => $this->writeOperationsInTransaction,
-            'unprotectedWriteLines' => $this->unprotectedWriteLines,
-            'isolatedWrites' => $this->isolatedWrites,
-            'earlyExitIfDepth' => $this->earlyExitIfDepth,
-            'earlyExitIfPositions' => $this->earlyExitIfPositions,
-            'guardClauseElsePositions' => $this->guardClauseElsePositions,
-            'ifElseBranchStack' => $this->ifElseBranchStack,
-            'maxClosureWrites' => $this->maxClosureWrites,
-            'maxClosureUnprotected' => $this->maxClosureUnprotected,
-            'maxClosureLines' => $this->maxClosureLines,
-            'maxClosureLine' => $this->maxClosureLine,
-            // A closure parameter shadows the enclosing variable of the same name, so a
-            // facade marker must not follow $disk into function ($disk) { ... }.
-            'nonDbVariables' => $this->nonDbVariables,
-        ];
+        $this->closureScopeStack[] = $this->snapshotCounters();
 
-        $this->writeOperations = 0;
-        $this->writeOperationsInTransaction = 0;
-        $this->unprotectedWriteLines = [];
-        $this->isolatedWrites = 0;
-        $this->earlyExitIfDepth = 0;
-        $this->earlyExitIfPositions = [];
-        $this->guardClauseElsePositions = [];
-        $this->ifElseBranchStack = [];
-        $this->maxClosureWrites = 0;
-        $this->maxClosureUnprotected = 0;
-        $this->maxClosureLines = [];
-        $this->maxClosureLine = 0;
+        // Every counter starts at zero except the facade markers, which the closure keeps:
+        // a marker reached by `use ($disk)` really is looking at the enclosing handle. That
+        // one exception is the whole difference between a closure scope and a method scope.
+        $counters = $this->zeroCounters();
+        $counters['nonDbVariables'] = $this->nonDbVariables;
+        $this->restoreCounters($counters);
 
         // A marker reached by `use ($disk)` stays, because the closure really is looking
         // at the same handle. A parameter of the same name is a different variable, so
@@ -849,21 +847,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         $effClosureUnprotected = $closureMainUnprotected + $this->maxClosureUnprotected;
         $effClosureLines = array_merge($this->unprotectedWriteLines, $this->maxClosureLines);
 
-        $frame = array_pop($this->closureScopeStack);
-
-        $this->writeOperations = $frame['writeOperations'];
-        $this->writeOperationsInTransaction = $frame['writeOperationsInTransaction'];
-        $this->unprotectedWriteLines = $frame['unprotectedWriteLines'];
-        $this->isolatedWrites = $frame['isolatedWrites'];
-        $this->earlyExitIfDepth = $frame['earlyExitIfDepth'];
-        $this->earlyExitIfPositions = $frame['earlyExitIfPositions'];
-        $this->guardClauseElsePositions = $frame['guardClauseElsePositions'];
-        $this->ifElseBranchStack = $frame['ifElseBranchStack'];
-        $this->maxClosureWrites = $frame['maxClosureWrites'];
-        $this->maxClosureUnprotected = $frame['maxClosureUnprotected'];
-        $this->maxClosureLines = $frame['maxClosureLines'];
-        $this->maxClosureLine = $frame['maxClosureLine'];
-        $this->nonDbVariables = $frame['nonDbVariables'];
+        $this->restoreCounters(array_pop($this->closureScopeStack) ?? $this->zeroCounters());
 
         // Fold the just-left closure into the restored parent as the heaviest sibling.
         // Only closures that contain unprotected writes can add transaction risk to the

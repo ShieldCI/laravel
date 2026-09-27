@@ -2827,4 +2827,52 @@ PHP;
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_a_nested_class_does_not_lose_the_methods_variable_tracking(): void
+    {
+        // query() is not itself a recorded Eloquent method, so the only evidence on the
+        // Eloquent side is the read through $query AFTER the anonymous class. If the nested
+        // declaration takes the method's variable map with it, the mixing goes unseen.
+        // The model is written fully qualified because the variable-tracking pass runs
+        // before names are resolved and only recognises a qualified one.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        $query = \App\Models\User::query();
+
+        $stamp = new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+
+        $query->where('active', 1);
+
+        return [DB::table('users')->count(), $stamp->at()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "users"', $result);
+    }
 }

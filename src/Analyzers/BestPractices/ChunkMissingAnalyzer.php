@@ -16,7 +16,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
-use ShieldCI\Concerns\ResolvesClassNames;
+use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\ModelTableResolver;
 use ShieldCI\Support\SeededTableScanner;
 
@@ -25,8 +25,6 @@ use ShieldCI\Support\SeededTableScanner;
  */
 class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 {
-    use ResolvesClassNames;
-
     public function __construct(
         private AstParser $parser
     ) {}
@@ -61,10 +59,6 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
-
-                // Facade detection matches fully qualified names, so that a project's own
-                // App\Models\Event is not mistaken for the Event facade on its last segment.
-                $ast = $this->resolveNamesForMatching($this->parser, $ast);
 
                 $visitor = new ChunkMissingVisitor($catalogueTables, $tableResolver, $this->getBasePath());
                 $traverser = new NodeTraverser;
@@ -102,7 +96,14 @@ class ChunkMissingAnalyzer extends AbstractFileAnalyzer
 
 class ChunkMissingVisitor extends NodeVisitorAbstract
 {
-    use IdentifiesNonQueryClasses;
+    // Facade detection matches fully qualified names, so that a project's own
+    // App\Models\Event is not mistaken for the Event facade on its last segment. The names
+    // come from imports collected during this walk, because isNonQueryClassChain() reads the
+    // root of a chain from the loop or assignment above it, and a resolver sharing this
+    // traverser annotates each node on arrival, so the root carries nothing yet. A resolving
+    // pass of its own would serve that read; the table is preferred over one because it costs
+    // no second walk and writes nothing into the shared parse cache.
+    use IdentifiesNonQueryClasses, TracksImportedNames;
 
     /**
      * Roots whose own read is not a query, but which hand back a model that can then
@@ -155,6 +156,10 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
+        // Before anything reads a class name: namespace and use declarations are reached
+        // ahead of the code that relies on them, so the table is complete by then.
+        $this->trackImports($node);
+
         // Hold the enclosing scope's assignments and start this one with a map of its own
         // (bar what it shares by reference, below)
         if ($this->isFunctionScope($node)) {
@@ -416,6 +421,14 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /**
      * Return true when the chain is rooted at a static call on a class that never
      * returns a database result set.
+     *
+     * This runs on entering the loop or the assignment, so the chain root it walks down to
+     * has not been visited yet. The checks below therefore resolve through the import table,
+     * which is complete before any expression is entered, and not through an attribute a
+     * resolver in this traverser would only write on reaching the root. Swapping the table for
+     * such a resolver is silent: matching falls back to the name as written, an application's
+     * own Event takes the Event facade's exemption on its last segment, and every unchunked
+     * read of that model stops being reported.
      */
     private function isNonQueryClassChain(Node\Expr $expr): bool
     {
@@ -433,9 +446,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         // An ambiguous root only earns the exemption when nothing is chained onto it,
         // so Request::all() passes while Request::user()->orders()->get() is judged on
-        // its merits like any other row read.
-        if ($isBareStaticCall && $this->isNonQueryClass($current->class, self::AMBIGUOUS_ROOTS)) {
-            return true;
+        // its merits like any other row read. Answered in one call either way: the bare case
+        // tests the shared list plus these roots, and a second call on the shared list alone
+        // could only repeat a miss the superset has already reported.
+        if ($isBareStaticCall) {
+            return $this->isNonQueryClass($current->class, self::AMBIGUOUS_ROOTS);
         }
 
         return $this->isNonQueryClass($current->class);

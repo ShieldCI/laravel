@@ -23,9 +23,17 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  * recorded parse failure to say so, even though the file had parsed and most of what the
  * analyzer looks for does not turn on a class name at all.
  *
- * Two of those three analyzers are left. eloquent-n-plus-one collects imports during its
- * own traversal instead (TracksImportedNames), because it reads one class name by reaching
- * down from an ancestor, which a pass that annotates nodes on arrival cannot serve.
+ * One of those three is left, missing-database-transactions. eloquent-n-plus-one and
+ * chunk-missing collect imports during their own traversal instead (TracksImportedNames).
+ * Each reads a class name by reaching down from an ancestor, which this pass does serve,
+ * because it runs in a traverser of its own and finishes before the analysis walk starts;
+ * what the table saves them is the second walk over every file and the resolution this pass
+ * leaves in the shared parse cache.
+ *
+ * unguarded-models is a caller too, and not one of the three. It matches class names from a
+ * findNodes() query rather than a walk, so there is no traversal for an import table to
+ * piggyback on and the arrival-order problem never arises; what it needs from here is the
+ * caught throw.
  */
 trait ResolvesClassNames
 {

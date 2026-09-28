@@ -1219,13 +1219,12 @@ class MethodBodyCollector extends NodeVisitorAbstract
  */
 class NPlusOneVisitor extends NodeVisitorAbstract
 {
-    // The import table resolves class names instead of the resolvedName attribute a separate
+    // The import table resolves class names instead of the resolvedName attribute a
     // NameResolver pass used to leave behind, because getQueryChainDescription() reads the
-    // root of a chain from the outer call and so runs before the traverser has annotated it.
-    // TracksImportedNames explains why that direction of read cannot use an attribute.
-    use IdentifiesNonQueryClasses, TracksImportedNames {
-        TracksImportedNames::resolvedClassFqn insteadof IdentifiesNonQueryClasses;
-    }
+    // root of a chain from the outer call, which a resolver in this traverser has not
+    // annotated yet. TracksImportedNames sets out the alternative, a resolving pass with a
+    // traverser of its own, and what it costs.
+    use IdentifiesNonQueryClasses, TracksImportedNames;
 
     /** @var string Loop type constants */
     private const LOOP_TYPE_FOREACH = 'foreach';
@@ -1396,13 +1395,6 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         foreach ($seedBindings as $var => $binding) {
             $this->modelVars->seed($var, $binding['type'], $binding['eagerLoads']);
         }
-    }
-
-    public function beforeTraverse(array $nodes): ?array
-    {
-        $this->startTrackingImports();
-
-        return null;
     }
 
     public function enterNode(Node $node)

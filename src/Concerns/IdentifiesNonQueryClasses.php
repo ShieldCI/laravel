@@ -9,6 +9,10 @@ use PhpParser\Node;
 /**
  * Tells a facade read apart from a database query.
  *
+ * @internal This trait is an implementation detail shared between this package's analyzers.
+ * It declares an abstract member, so a class outside the package cannot use it on its own,
+ * and its shape is not covered by the package's backward-compatibility promise.
+ *
  * Several analyzers have to answer the same question: does a chain rooted at this
  * class name reach the database? Cache, Config, Session and friends all expose
  * query-shaped methods (get(), all(), find()) that never issue SQL, so a rule that
@@ -36,9 +40,11 @@ use PhpParser\Node;
  * unimplemented, so a consumer states how its names resolve instead of inheriting a default
  * that quietly matches on the name as written, which is what #423 was filed about. Both
  * consumers today also use TracksImportedNames, which satisfies it from imports collected
- * during the walk, and a consumer that reads a class name by reaching down from an ancestor
- * needs exactly that: an attribute a separate pass leaves behind is written when the
- * traverser arrives at a node, and so is not there yet.
+ * during the walk. A resolving pass sharing the consumer's traverser is the one arrangement
+ * that cannot serve a class name read by reaching down from an ancestor, because it annotates
+ * each node on arrival and the traverser has not reached the root yet; a pass in a traverser
+ * of its own does serve it, at the price of a second walk over every file and of writing
+ * resolution into the shared parse cache.
  *
  * DB and Schema are deliberately absent: DB::table(...)->get() is a real query.
  * Auth is absent too, because Auth::user()->orders()->get() reads real rows, and
@@ -106,15 +112,23 @@ trait IdentifiesNonQueryClasses
      * Declared here and implemented by the consumer, because every answer this trait gives
      * turns on it and the wrong one is silent: an unresolved name matches a facade on its last
      * segment and takes an exemption that belongs to a different class.
+     *
+     * protected rather than private, so that a consumer can inherit the implementation from a
+     * base class. An abstract private member has to be satisfied by the class that uses the
+     * trait itself, which would force every future consumer into the same file as its resolver.
      */
-    abstract private function resolvedClassFqn(Node\Name $class): string;
+    abstract protected function resolvedClassFqn(Node\Name $class): string;
 
     /**
      * @return array<int, string>
      */
     private function sharedNonQueryClasses(): array
     {
-        return [
+        // Held in a static because this is a constant that two callers ask for per candidate
+        // expression in every file analysed, and rebuilding the literal each time was showing
+        // up as allocation churn on that path. A trait constant would say it better; those are
+        // PHP 8.2, and this package supports 8.1.
+        static $shared = [
             // Laravel facades
             'Illuminate\Support\Facades\Cache',
             'Illuminate\Support\Facades\Config',
@@ -159,5 +173,7 @@ trait IdentifiesNonQueryClasses
             'DateTime',
             'DateTimeImmutable',
         ];
+
+        return $shared;
     }
 }

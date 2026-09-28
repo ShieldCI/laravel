@@ -98,10 +98,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 {
     // Facade detection matches fully qualified names, so that a project's own
     // App\Models\Event is not mistaken for the Event facade on its last segment. The names
-    // come from imports collected during this walk rather than from an attribute a separate
-    // pass left behind, because isNonQueryClassChain() reads the root of a chain from the
-    // loop or assignment above it. TracksImportedNames explains why that direction of read
-    // cannot use an attribute.
+    // come from imports collected during this walk, because isNonQueryClassChain() reads the
+    // root of a chain from the loop or assignment above it, and a resolver sharing this
+    // traverser annotates each node on arrival, so the root carries nothing yet. A resolving
+    // pass of its own would serve that read; the table is preferred over one because it costs
+    // no second walk and writes nothing into the shared parse cache.
     use IdentifiesNonQueryClasses, TracksImportedNames;
 
     /**
@@ -152,16 +153,6 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         private ?ModelTableResolver $tableResolver = null,
         private string $basePath = '',
     ) {}
-
-    /**
-     * @param  array<Node>  $nodes
-     */
-    public function beforeTraverse(array $nodes): ?array
-    {
-        $this->startTrackingImports();
-
-        return null;
-    }
 
     public function enterNode(Node $node): ?Node
     {
@@ -432,11 +423,12 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
      * returns a database result set.
      *
      * This runs on entering the loop or the assignment, so the chain root it walks down to
-     * has not been visited yet. The checks below therefore have to resolve through the import
-     * table and not through anything written onto the root node on arrival, which would still
-     * be absent here. Reverting that is silent: matching falls back to the name as written,
-     * an application's own Event takes the Event facade's exemption on its last segment, and
-     * every unchunked read of that model stops being reported.
+     * has not been visited yet. The checks below therefore resolve through the import table,
+     * which is complete before any expression is entered, and not through an attribute a
+     * resolver in this traverser would only write on reaching the root. Swapping the table for
+     * such a resolver is silent: matching falls back to the name as written, an application's
+     * own Event takes the Event facade's exemption on its last segment, and every unchunked
+     * read of that model stops being reported.
      */
     private function isNonQueryClassChain(Node\Expr $expr): bool
     {
@@ -454,9 +446,11 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         // An ambiguous root only earns the exemption when nothing is chained onto it,
         // so Request::all() passes while Request::user()->orders()->get() is judged on
-        // its merits like any other row read.
-        if ($isBareStaticCall && $this->isNonQueryClass($current->class, self::AMBIGUOUS_ROOTS)) {
-            return true;
+        // its merits like any other row read. Answered in one call either way: the bare case
+        // tests the shared list plus these roots, and a second call on the shared list alone
+        // could only repeat a miss the superset has already reported.
+        if ($isBareStaticCall) {
+            return $this->isNonQueryClass($current->class, self::AMBIGUOUS_ROOTS);
         }
 
         return $this->isNonQueryClass($current->class);

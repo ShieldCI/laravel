@@ -1894,9 +1894,16 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['Services']);
 
-        // Asserted so the facade exemption is known to have been reached: an analyzer that
-        // scanned nothing would leave the tree pristine for the wrong reason.
         $this->assertPassed($analyzer->analyze());
+
+        // The setPaths() spelling above is load-bearing, so what it buys is asserted rather
+        // than left to the comment explaining it. assertPassed() cannot carry that weight: it
+        // reads the same whether the file was scanned and exempted, scanned in a tree of its
+        // own, or never scanned at all. One cache entry for this path is the difference. Two
+        // would mean the analyzer parsed a second spelling of the same file and left the tree
+        // below pristine for the wrong reason, which is how a reinstated resolving pass would
+        // slip through here.
+        $this->assertSame(1, $this->cachedTreesFor($path));
 
         /** @var array<int, Node\Expr\StaticCall> $reparsed */
         $reparsed = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
@@ -1916,16 +1923,22 @@ PHP;
         $this->assertFalse(isset($declarations[0]->namespacedName));
     }
 
-    public function test_passes_with_a_facade_imported_through_a_group_use(): void
+    public function test_exempts_a_facade_imported_through_a_group_use(): void
     {
         // The prefix of a group use is joined onto each name by hand, so a facade imported
         // this way is exempt only if that join is right.
+        // A flagged read shares the file so that the exemption is told apart from the file
+        // never being reached: runAnalysis() swallows a per-file throw and reports a pass, so
+        // an assertPassed() on a fixture with nothing to find would go green on a file
+        // trackImports() had thrown on. One issue, on the model's line, says the walk ran and
+        // exempted the facade read rather than skipping both.
         $code = <<<'PHP'
 <?php
 
 namespace App\Services;
 
 use Illuminate\Support\Facades\{Cache, Http};
+use App\Models\Item;
 
 class MenuService
 {
@@ -1933,6 +1946,10 @@ class MenuService
     {
         foreach (Cache::get('menu.items', []) as $item) {
             echo $item;
+        }
+
+        foreach (Item::all() as $item) {
+            echo $item->id;
         }
     }
 }
@@ -1944,16 +1961,29 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $this->assertPassed($analyzer->analyze());
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        $issues = array_values($result->getIssues());
+        $this->assertSame(16, $issues[0]->location?->line);
     }
 
-    public function test_passes_with_a_fully_qualified_facade_reference(): void
+    public function test_exempts_a_fully_qualified_facade_reference(): void
     {
         // A leading backslash needs no import to resolve, and must not need one to be exempt.
+        // A flagged read shares the file so that the exemption is told apart from the file
+        // never being reached: runAnalysis() swallows a per-file throw and reports a pass, so
+        // an assertPassed() on a fixture with nothing to find would go green on a file
+        // trackImports() had thrown on. One issue, on the model's line, says the walk ran and
+        // exempted the facade read rather than skipping both.
         $code = <<<'PHP'
 <?php
 
 namespace App\Services;
+
+use App\Models\Receipt;
 
 class ReportService
 {
@@ -1961,6 +1991,10 @@ class ReportService
     {
         foreach (\Illuminate\Support\Facades\Cache::get('report.rows', []) as $row) {
             echo $row;
+        }
+
+        foreach (Receipt::all() as $receipt) {
+            echo $receipt->id;
         }
     }
 }
@@ -1972,7 +2006,49 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $this->assertPassed($analyzer->analyze());
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        $issues = array_values($result->getIssues());
+        $this->assertSame(15, $issues[0]->location?->line);
+    }
+
+    /**
+     * How many trees the shared parse cache holds for one file.
+     *
+     * AstParser keys its cache by path and mtime with no normalisation, so one file reached by
+     * two spellings of its path ('<dir>/Services/x.php' and '<dir>/./Services/x.php') earns two
+     * keys and two independently parsed trees. A test that inspects one tree to prove nothing
+     * was written into it is only testing that if the analyzer read that same tree.
+     */
+    private function cachedTreesFor(string $path): int
+    {
+        $cache = (new \ReflectionProperty($this->parser, 'astCache'))->getValue($this->parser);
+        $this->assertIsArray($cache);
+
+        $target = realpath($path);
+        $this->assertNotFalse($target);
+
+        $trees = 0;
+
+        foreach (array_keys($cache) as $key) {
+            // Each key is '<path>:<mtime>', and the comparison has to be on the resolved path
+            // rather than on the spelling: the two spellings this is here to catch differ, so
+            // matching the literal path would count only one of them and assert nothing.
+            $separator = is_string($key) ? strrpos($key, ':') : false;
+
+            if (! is_string($key) || $separator === false) {
+                continue;
+            }
+
+            if (realpath(substr($key, 0, $separator)) === $target) {
+                $trees++;
+            }
+        }
+
+        return $trees;
     }
 
     public function test_flags_an_unimported_facade_spelling_in_a_namespaced_file(): void
@@ -2006,5 +2082,100 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
+    }
+
+    public function test_exempts_a_facade_imported_under_an_alias(): void
+    {
+        // An alias reaches resolution through a branch of NameContext that a plain import does
+        // not, and it is the branch deciding whether `C::get()` is the Cache facade or a class
+        // of the application's own called C. The model read alongside it says the walk ran.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache as C;
+use App\Models\Invoice;
+
+class BillingService
+{
+    public function render()
+    {
+        foreach (C::get('billing.rows', []) as $row) {
+            echo $row;
+        }
+
+        foreach (Invoice::all() as $invoice) {
+            echo $invoice->id;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/BillingService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        $issues = array_values($result->getIssues());
+        $this->assertSame(16, $issues[0]->location?->line);
+    }
+
+    public function test_does_not_carry_an_import_across_a_namespace_block(): void
+    {
+        // `use` is scoped to the namespace block it sits in, so the second block's `Cache` is
+        // App\Reports\Cache, a class of the application's own, and looping over what it returns
+        // is a row read. The first block's is the facade and stays exempt. One issue rather
+        // than none says the table was reset on entering the second block; one rather than two
+        // says the first block still resolved.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class WarmService
+{
+    public function render()
+    {
+        foreach (Cache::get('warm.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+
+namespace App\Reports;
+
+class LedgerReport
+{
+    public function render()
+    {
+        foreach (Cache::get('ledger.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/TwoBlocks.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        $issues = array_values($result->getIssues());
+        $this->assertSame(23, $issues[0]->location?->line);
     }
 }

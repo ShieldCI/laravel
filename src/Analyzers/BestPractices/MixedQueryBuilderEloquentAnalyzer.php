@@ -16,6 +16,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Support\EloquentModelDetector;
 
 /**
@@ -415,6 +416,8 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
  */
 class MixedQueryVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -437,6 +440,22 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     private array $variableTracking = [];
 
     private ?string $currentClassName = null;
+
+    /**
+     * Saved class scopes, pushed on entering a class and popped on leaving it. A method body
+     * can declare a class of its own, whose own evidence is not the enclosing class's, and
+     * whose exit would otherwise publish a verdict on evidence gathered before it and take
+     * the rest of that evidence with it.
+     *
+     * @var list<array{
+     *   currentClassName: string|null,
+     *   tableUsage: array<string, array{type: string, line: int}>,
+     *   variableTracking: array<string, string>,
+     *   classHasQueryBuilderWrite: bool,
+     *   classManagesGlobalScopes: bool
+     * }>
+     */
+    private array $classScopeStack = [];
 
     /** @var bool Whether the current class writes via the query builder (DB::table()->insert/update/delete/...). */
     private bool $classHasQueryBuilderWrite = false;
@@ -471,12 +490,35 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     {
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
-            $this->currentClassName = $node->name?->toString();
+            $isNested = $this->classScopeStack !== [];
+
+            $this->classScopeStack[] = [
+                'currentClassName' => $this->currentClassName,
+                'tableUsage' => $this->tableUsage,
+                'variableTracking' => $this->variableTracking,
+                'classHasQueryBuilderWrite' => $this->classHasQueryBuilderWrite,
+                'classManagesGlobalScopes' => $this->classManagesGlobalScopes,
+            ];
+
+            $this->currentClassName = $this->declarationName($node, $this->currentClassName);
+
+            // Only a class declared inside another starts from nothing: the evidence read so
+            // far is the enclosing class's. The outermost class in a file keeps what the file
+            // gathered ahead of it, which is where a composed trait or a helper function
+            // queries from, and which is half of the mixing it is judged on.
+            if ($isNested) {
+                $this->tableUsage = [];
+            }
+
+            $this->variableTracking = [];
             $this->classHasQueryBuilderWrite = false;
             $this->classManagesGlobalScopes = false;
         }
 
-        // Reset variable tracking at method boundaries for proper scoping
+        // Reset variable tracking at method boundaries for proper scoping. Nothing is saved
+        // here: entering a class resets the map too, and a class body cannot assign outside
+        // a method, so there is never an enclosing method's map to hand back. What a method
+        // of a class declared inside another method needs is restored on leaving that class.
         if ($node instanceof Node\Stmt\ClassMethod) {
             $this->variableTracking = [];
         }
@@ -674,14 +716,21 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // When leaving a class, check for mixed usage
         if ($node instanceof Node\Stmt\Class_) {
-            // Skip check if class is whitelisted
+            // Skip check if class is whitelisted. An anonymous class is checked like any
+            // other: the mixing is real, and it reports under the subject PHP would name it
+            // by, so the reader has somewhere to go.
             $isWhitelisted = $this->currentClassName && in_array($this->currentClassName, $this->whitelist, true);
 
             if (! $isWhitelisted) {
                 $this->checkMixedUsage();
             }
-            $this->tableUsage = []; // Reset for next class
-            $this->variableTracking = []; // Reset variable tracking
+
+            $frame = array_pop($this->classScopeStack);
+            $this->currentClassName = $frame['currentClassName'] ?? null;
+            $this->tableUsage = $frame['tableUsage'] ?? [];
+            $this->variableTracking = $frame['variableTracking'] ?? [];
+            $this->classHasQueryBuilderWrite = $frame['classHasQueryBuilderWrite'] ?? false;
+            $this->classManagesGlobalScopes = $frame['classManagesGlobalScopes'] ?? false;
         }
 
         return null;
@@ -943,6 +992,13 @@ class MixedQueryVisitor extends NodeVisitorAbstract
  */
 class TableExtractorVisitor extends NodeVisitorAbstract
 {
+    /**
+     * Nesting depth of class declarations. Only the file's own top-level class describes the
+     * model; a class declared inside one of its methods would otherwise overwrite the name
+     * with null and drop the model from the registry altogether.
+     */
+    private int $classDepth = 0;
+
     private ?string $className = null;
 
     private ?string $namespace = null;
@@ -964,14 +1020,25 @@ class TableExtractorVisitor extends NodeVisitorAbstract
         }
 
         if ($node instanceof Node\Stmt\Class_) {
-            $this->className = $node->name?->toString();
-            $this->parentClass = $node->extends?->toString();
-            $this->isAbstract = $node->isAbstract();
+            $this->classDepth++;
 
-            // Reset per model class
-            $this->tableName = null;
-            $this->getTableReturnValue = null;
-            $this->getTableHasDynamicReturn = false;
+            if ($this->classDepth === 1) {
+                $this->className = $node->name?->toString();
+                $this->parentClass = $node->extends?->toString();
+                $this->isAbstract = $node->isAbstract();
+
+                // Reset per model class
+                $this->tableName = null;
+                $this->getTableReturnValue = null;
+                $this->getTableHasDynamicReturn = false;
+            }
+
+            return null;
+        }
+
+        // Members of a class declared inside a method body are not the model's own.
+        if ($this->classDepth > 1) {
+            return null;
         }
 
         // Look for: protected $table = 'table_name';
@@ -990,6 +1057,15 @@ class TableExtractorVisitor extends NodeVisitorAbstract
             if ($node->name->toString() === 'getTable') {
                 $this->analyzeGetTableMethod($node);
             }
+        }
+
+        return null;
+    }
+
+    public function leaveNode(Node $node): ?Node
+    {
+        if ($node instanceof Node\Stmt\Class_) {
+            $this->classDepth--;
         }
 
         return null;

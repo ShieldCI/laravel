@@ -20,6 +20,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
+use ShieldCI\Concerns\NamesDeclarations;
 
 /**
  * Flags public methods without documentation.
@@ -574,6 +575,8 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
  */
 class DocBlockVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /**
      * @var array<int, array{message: string, line: int, type: string, method: string, class: string, needsParam?: bool, needsReturn?: bool, needsThrows?: bool}>
      */
@@ -583,6 +586,16 @@ class DocBlockVisitor extends NodeVisitorAbstract
      * Current class name.
      */
     private ?string $currentClass = null;
+
+    /**
+     * Saved names of enclosing class-like declarations. A method body can declare a class
+     * of its own, and without this every method written after it is reported under the
+     * fallback name rather than the class it belongs to, which also folds two real methods
+     * into one entry in the affected-method tally.
+     *
+     * @var list<string|null>
+     */
+    private array $classStack = [];
 
     /**
      * @param  array<string>  $excludePatterns
@@ -597,8 +610,9 @@ class DocBlockVisitor extends NodeVisitorAbstract
     public function enterNode(Node $node)
     {
         // Track current class context (classes, traits, interfaces, and enums)
-        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Enum_) {
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+        if ($node instanceof Stmt\ClassLike) {
+            $this->classStack[] = $this->currentClass;
+            $this->currentClass = $this->declarationName($node, $this->currentClass);
 
             return null;
         }
@@ -662,9 +676,9 @@ class DocBlockVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
-        // Clear class context on exit
-        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_ || $node instanceof Stmt\Interface_ || $node instanceof Stmt\Enum_) {
-            $this->currentClass = null;
+        // Restore the enclosing declaration's context on exit
+        if ($node instanceof Stmt\ClassLike) {
+            $this->currentClass = array_pop($this->classStack);
         }
 
         return null;

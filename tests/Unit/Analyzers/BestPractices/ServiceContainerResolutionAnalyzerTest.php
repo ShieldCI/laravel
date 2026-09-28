@@ -3525,4 +3525,90 @@ PHP;
 
         $this->assertHasIssueContaining('app()', $result);
     }
+
+    public function test_a_form_request_keeps_its_downgrade_after_an_inline_validation_rule(): void
+    {
+        // An inline rule object is idiomatic inside rules(); it must not cost the method
+        // the FormRequest downgrade that applies to everything resolved there.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+class StorePlanRequest extends FormRequest
+{
+    public function rules(): array
+    {
+        $unique = new class
+        {
+            public function passes(): bool
+            {
+                return true;
+            }
+        };
+
+        $tenant = app(TenantContext::class);
+
+        return ['name' => ['required', $unique, $tenant->rule()]];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Requests/StorePlanRequest.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::Low, $issues[0]->severity);
+    }
+
+    public function test_a_resolution_after_an_anonymous_class_reports_the_real_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class PlanService
+{
+    public function build(): object
+    {
+        $stamp = new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+
+        $tenant = app(TenantContext::class);
+
+        return $tenant->plan($stamp->at());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/PlanService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('PlanService', $issues[0]->metadata['class'] ?? null);
+    }
 }

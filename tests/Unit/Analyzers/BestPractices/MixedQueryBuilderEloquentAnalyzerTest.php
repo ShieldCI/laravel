@@ -2402,4 +2402,477 @@ PHP;
         // excluded, so ActiveScope is not treated as a model and there is no mixing.
         $this->assertPassed($result);
     }
+
+    public function test_an_anonymous_class_does_not_split_a_class_mixing_verdict(): void
+    {
+        // The query-builder read is on one side of the anonymous class and the Eloquent
+        // read on the other. Both are evidence about the same class and the same table.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
+
+class ProductRepository
+{
+    public function summary()
+    {
+        $count = DB::table('products')->count();
+
+        $stamp = new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+
+        return [$count, Product::all(), $stamp->at()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/ProductRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "products"', $result);
+        $this->assertHasIssueContaining('Class "ProductRepository"', $result);
+    }
+
+    public function test_a_mixing_verdict_is_not_attributed_to_an_anonymous_class(): void
+    {
+        // Both reads precede the anonymous class, so the verdict is already decided when
+        // it is entered. Leaving it must not publish that verdict under its own name.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
+
+class ProductRepository
+{
+    public function summary()
+    {
+        $count = DB::table('products')->count();
+        $all = Product::all();
+
+        $stamp = new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+
+        return [$count, $all, $stamp->at()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/ProductRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Class "ProductRepository"', $issues[0]->message);
+    }
+
+    public function test_a_model_whose_method_declares_an_anonymous_class_keeps_its_table(): void
+    {
+        $model = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Member extends Model
+{
+    protected $table = 'people';
+
+    public function stamper(): object
+    {
+        return new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+    }
+}
+PHP;
+
+        $repository = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Member;
+use Illuminate\Support\Facades\DB;
+
+class MemberRepository
+{
+    public function all()
+    {
+        return Member::all();
+    }
+
+    public function count()
+    {
+        return DB::table('people')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Member.php' => $model,
+            'app/Repositories/MemberRepository.php' => $repository,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // Without the model's own $table the Eloquent read is filed under "members",
+        // so the shared table never looks shared.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "people"', $result);
+    }
+
+    public function test_an_anonymous_class_that_mixes_on_its_own_is_reported_under_its_enclosing_class(): void
+    {
+        // An anonymous class has no name of its own, but the mixing is still real and the
+        // reader still has somewhere to go. It is reported after the declaration that
+        // encloses it, so the subject names something that can be opened.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Product;
+use Illuminate\Support\Facades\DB;
+
+class ProductRepository
+{
+    public function summary()
+    {
+        $probe = new class
+        {
+            public function check(): array
+            {
+                return [DB::table('products')->count(), Product::all()];
+            }
+        };
+
+        return $probe->check();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/ProductRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "products"', $result);
+        $this->assertHasIssueContaining('Class "ProductRepository@anonymous"', $result);
+    }
+
+    public function test_an_anonymous_class_is_named_after_what_it_extends(): void
+    {
+        // PHP names an anonymous class after its parent, so a migration reads as
+        // Migration@anonymous in a stack trace. The report uses the same subject.
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Order;
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+
+return new class extends Migration
+{
+    public function up()
+    {
+        DB::table('orders')->update(['migrated' => true]);
+
+        return Order::all();
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory(['migrate_orders.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "orders"', $result);
+        $this->assertHasIssueContaining('Migration@anonymous', $result);
+    }
+
+    public function test_an_anonymous_class_is_named_after_the_interface_it_implements(): void
+    {
+        // With no parent to borrow from, PHP uses the first interface instead.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Payment;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Support\Facades\DB;
+
+class PaymentDispatcher
+{
+    public function make(): ShouldQueue
+    {
+        return new class implements ShouldQueue
+        {
+            public function handle(): void
+            {
+                DB::table('payments')->update(['queued' => true]);
+
+                Payment::all();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Jobs/PaymentDispatcher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('ShouldQueue@anonymous', $result);
+    }
+
+    public function test_an_anonymous_class_with_nothing_to_name_it_after_falls_back(): void
+    {
+        // No parent, no interface and no enclosing declaration. The subject still has to be
+        // stable, because the message text is what a baseline hashes.
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Invoice;
+use Illuminate\Support\Facades\DB;
+
+return new class
+{
+    public function run()
+    {
+        DB::table('invoices')->update(['seen' => true]);
+
+        return Invoice::all();
+    }
+};
+PHP;
+
+        $tempDir = $this->createTempDirectory(['run_invoices.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Class "class@anonymous"', $result);
+    }
+
+    public function test_a_trait_declared_above_the_class_counts_toward_its_verdict(): void
+    {
+        // The trait's query runs as part of the class that composes it, so the two halves of
+        // the mixing belong to one verdict even though the declarations are separate.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+trait QueriesUsers
+{
+    public function raw()
+    {
+        return DB::table('users')->count();
+    }
+}
+
+class UserRepository
+{
+    use QueriesUsers;
+
+    public function all()
+    {
+        return User::all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_a_function_declared_above_the_class_counts_toward_its_verdict(): void
+    {
+        // Same evidence, reached through a file-level function rather than a trait.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Order;
+use Illuminate\Support\Facades\DB;
+
+function rawOrderCount()
+{
+    return DB::table('orders')->count();
+}
+
+class OrderRepository
+{
+    public function all()
+    {
+        return Order::all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/OrderRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "orders"', $result);
+    }
+
+    public function test_a_second_class_does_not_inherit_the_first_class_evidence(): void
+    {
+        // The counterpart to the two tests above: inheriting file-level evidence must not
+        // become inheriting a sibling's, or every later class in the file reads as mixing.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Invoice;
+use Illuminate\Support\Facades\DB;
+
+class InvoiceWriter
+{
+    public function bump()
+    {
+        return DB::table('invoices')->increment('version');
+    }
+}
+
+class InvoiceReader
+{
+    public function all()
+    {
+        return Invoice::all();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Invoices.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_nested_class_does_not_lose_the_methods_variable_tracking(): void
+    {
+        // query() is not itself a recorded Eloquent method, so the only evidence on the
+        // Eloquent side is the read through $query AFTER the anonymous class. If the nested
+        // declaration takes the method's variable map with it, the mixing goes unseen.
+        // The model is written fully qualified because the variable-tracking pass runs
+        // before names are resolved and only recognises a qualified one.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        $query = \App\Models\User::query();
+
+        $stamp = new class
+        {
+            public function at(): string
+            {
+                return 'now';
+            }
+        };
+
+        $query->where('active', 1);
+
+        return [DB::table('users')->count(), $stamp->at()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('both Eloquent and Query Builder for table "users"', $result);
+    }
 }

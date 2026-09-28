@@ -1753,4 +1753,45 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
     }
+
+    public function test_a_closure_sees_the_collection_it_captured_by_reference(): void
+    {
+        // The other direction of the same capture: what travels in, rather than out. The
+        // closure did not fetch this collection, it was handed the caller's variable, so a
+        // loop over it inside the closure reads the same unbounded result set.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+
+class UserService
+{
+    public function process()
+    {
+        $users = User::all();
+
+        $warm = function () use (&$users): void {
+            foreach ($users as $user) {
+                echo $user->name;
+            }
+        };
+
+        $warm();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/UserService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
+    }
 }

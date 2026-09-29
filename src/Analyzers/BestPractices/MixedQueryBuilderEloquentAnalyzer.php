@@ -457,6 +457,15 @@ class MixedQueryVisitor extends NodeVisitorAbstract
      */
     private array $classScopeStack = [];
 
+    /**
+     * Saved variable maps, pushed on entering a function-like scope and popped on leaving it.
+     * A closure, arrow function or function declaration binds names of its own, and a
+     * parameter that merely reuses a name is not the variable the enclosing method assigned.
+     *
+     * @var list<array<string, string>>
+     */
+    private array $functionScopeStack = [];
+
     /** @var bool Whether the current class writes via the query builder (DB::table()->insert/update/delete/...). */
     private bool $classHasQueryBuilderWrite = false;
 
@@ -521,6 +530,28 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // of a class declared inside another method needs is restored on leaving that class.
         if ($node instanceof Node\Stmt\ClassMethod) {
             $this->variableTracking = [];
+        }
+
+        // A function-like scope binds names of its own, so the enclosing method's
+        // attributions are not simply visible inside it. Entering one without saying so lets
+        // a parameter that reuses a name stand for the model assigned outside it, which books
+        // an Eloquent read on a table the callback never touches.
+        if ($node instanceof Node\Expr\Closure
+            || $node instanceof Node\Expr\ArrowFunction
+            || $node instanceof Node\Stmt\Function_) {
+            $this->functionScopeStack[] = $this->variableTracking;
+            $this->variableTracking = $this->inheritedTracking($node);
+        }
+
+        // A foreach value binds in the enclosing scope rather than a new one, so it really
+        // does overwrite the name, and keeps it overwritten after the loop. Nothing here
+        // knows what is being iterated, so the attribution goes and does not come back.
+        if ($node instanceof Node\Stmt\Foreach_) {
+            foreach ([$node->keyVar, $node->valueVar] as $bound) {
+                if ($bound instanceof Node\Expr\Variable && is_string($bound->name)) {
+                    unset($this->variableTracking[$bound->name]);
+                }
+            }
         }
 
         // Detect deliberate global-scope management. A read-only class that explicitly
@@ -668,17 +699,20 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // judge the name as written, an imported `User` matches none of its rules, and the
         // variable is never tracked, which takes the Eloquent side of every query()-rooted
         // chain with it.
-        if ($node instanceof Node\Expr\Assign) {
-            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-                // Check if RHS is a static call to a model
-                if ($node->expr instanceof Node\Expr\StaticCall) {
-                    if ($node->expr->class instanceof Node\Name) {
-                        if ($this->looksLikeModel($node->expr->class)) {
-                            // Track this variable as being associated with this model
-                            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
-                        }
-                    }
-                }
+        if ($node instanceof Node\Expr\Assign
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)) {
+            // An assignment rebinds the name whatever it assigns, so any attribution the name
+            // already carried is dropped first. Only the assignment that names a model puts
+            // one back. A stale entry left behind books an Eloquent read through a variable
+            // that no longer holds a model, and that read is all it takes to call a class
+            // mixed.
+            unset($this->variableTracking[$node->var->name]);
+
+            if ($node->expr instanceof Node\Expr\StaticCall
+                && $node->expr->class instanceof Node\Name
+                && $this->looksLikeModel($node->expr->class)) {
+                $this->variableTracking[$node->var->name] = $node->expr->class->toString();
             }
         }
 
@@ -729,6 +763,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     }
                 }
             }
+        }
+
+        if ($node instanceof Node\Expr\Closure
+            || $node instanceof Node\Expr\ArrowFunction
+            || $node instanceof Node\Stmt\Function_) {
+            $this->variableTracking = array_pop($this->functionScopeStack) ?? [];
         }
 
         // When leaving a class, check for mixed usage
@@ -976,6 +1016,43 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         return $expr instanceof Node\Expr\StaticCall ? $expr : null;
+    }
+
+    /**
+     * The attributions a function-like scope starts from.
+     *
+     * A closure sees only what it imports, and PHP rejects a parameter sharing a name with an
+     * imported variable, so the import list is the whole of it. An arrow function captures the
+     * enclosing scope on its own, so it keeps everything its parameters do not shadow. A
+     * function declaration captures nothing.
+     *
+     * @return array<string, string>
+     */
+    private function inheritedTracking(Node\Expr\Closure|Node\Expr\ArrowFunction|Node\Stmt\Function_ $node): array
+    {
+        if ($node instanceof Node\Stmt\Function_) {
+            return [];
+        }
+
+        if ($node instanceof Node\Expr\Closure) {
+            $imported = [];
+            foreach ($node->uses as $use) {
+                if (is_string($use->var->name) && isset($this->variableTracking[$use->var->name])) {
+                    $imported[$use->var->name] = $this->variableTracking[$use->var->name];
+                }
+            }
+
+            return $imported;
+        }
+
+        $inherited = $this->variableTracking;
+        foreach ($node->params as $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                unset($inherited[$param->var->name]);
+            }
+        }
+
+        return $inherited;
     }
 
     /**

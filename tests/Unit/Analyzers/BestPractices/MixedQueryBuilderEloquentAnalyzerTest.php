@@ -2833,8 +2833,6 @@ PHP;
         // query() is not itself a recorded Eloquent method, so the only evidence on the
         // Eloquent side is the read through $query AFTER the anonymous class. If the nested
         // declaration takes the method's variable map with it, the mixing goes unseen.
-        // The model is written fully qualified because the variable-tracking pass runs
-        // before names are resolved and only recognises a qualified one.
         $code = <<<'PHP'
 <?php
 
@@ -2847,7 +2845,7 @@ class UserRepository
 {
     public function audit()
     {
-        $query = \App\Models\User::query();
+        $query = User::query();
 
         $stamp = new class
         {
@@ -2874,5 +2872,118 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_tracks_a_model_assigned_through_an_imported_spelling(): void
+    {
+        // The model is written the way application code writes it, imported rather than spelled
+        // out. Nothing else in the class books the Eloquent side: query() is skipped by the
+        // direct path on purpose, so the variable map is the only thing that can see this, and
+        // the map is only populated if the assignment's class name is read after resolution.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        $query = User::query();
+        $query->where('active', 1);
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_tracks_a_model_assigned_through_a_dynamic_static_call(): void
+    {
+        // $modelClass::where() has no other source than the variable map: the receiver is a
+        // variable, so the direct path cannot read a class name off it at all.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class DynamicRepository
+{
+    public function audit()
+    {
+        $modelClass = User::query();
+        $modelClass::where('active', 1);
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/DynamicRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_counts_a_query_builder_write_through_an_aliased_db_import(): void
+    {
+        // A class that manages global scopes is spared unless it also writes through the query
+        // builder, and that write is recognised from the root of the chain, below the node the
+        // check runs on. Aliasing the facade is what tells the two apart: read before
+        // resolution the root spells "Database", which is no facade, and the write goes
+        // uncounted, so the class keeps an exemption it has not earned.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB as Database;
+
+class TenantRepository
+{
+    public function purge()
+    {
+        User::where('stale', 1)->get();
+        User::withoutGlobalScope('tenant')->get();
+
+        Database::table('users')->update(['active' => 0]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/TenantRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
     }
 }

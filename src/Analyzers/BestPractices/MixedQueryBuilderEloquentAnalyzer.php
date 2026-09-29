@@ -523,21 +523,13 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->variableTracking = [];
         }
 
-        // Detect query-builder writes on a DB::table() chain, and deliberate global-scope
-        // management. A read-only class that explicitly manages scopes is doing intentional
-        // cross-cutting reads (e.g. cross-tenant analytics), not accidental scope bypass.
+        // Detect deliberate global-scope management. A read-only class that explicitly
+        // manages scopes is doing intentional cross-cutting reads (e.g. cross-tenant
+        // analytics), not accidental scope bypass. The query-builder write that cancels this
+        // is recognised in leaveNode, because it is named at the root of the chain rather
+        // than on this node.
         if ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
             $method = $node->name->toString();
-            if (in_array($method, self::QUERY_BUILDER_WRITE_METHODS, true)) {
-                $root = $this->findRootStaticCall($node->var);
-                if ($root !== null
-                    && $root->class instanceof Node\Name
-                    && $this->isDbFacade($root->class)
-                    && $root->name instanceof Node\Identifier
-                    && $root->name->toString() === 'table') {
-                    $this->classHasQueryBuilderWrite = true;
-                }
-            }
             if (in_array($method, ['withoutGlobalScope', 'withoutGlobalScopes'], true)) {
                 $this->classManagesGlobalScopes = true;
             }
@@ -645,21 +637,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             // determine if a method call chain represents a relationship query.
         }
 
-        // P3.11: Track variable assignments ($query = User::where(...))
-        if ($node instanceof Node\Expr\Assign) {
-            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-                // Check if RHS is a static call to a model
-                if ($node->expr instanceof Node\Expr\StaticCall) {
-                    if ($node->expr->class instanceof Node\Name) {
-                        if ($this->looksLikeModel($node->expr->class)) {
-                            // Track this variable as being associated with this model
-                            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
-                        }
-                    }
-                }
-            }
-        }
-
         // P3.12: Detect dynamic model references ($modelClass::where())
         if ($node instanceof Node\Expr\StaticCall) {
             if ($node->class instanceof Node\Expr\Variable && is_string($node->class->name)) {
@@ -683,6 +660,46 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        // P3.11: Track variable assignments ($query = User::query()). The model is named by
+        // the static call on the right-hand side, a child of this assignment, so the name is
+        // read here rather than on the way in: a resolver sharing this traverser annotates
+        // each node as it arrives, and the child has not arrived yet while the assignment is
+        // being entered. Moving this back to enterNode is silent. looksLikeModel() would
+        // judge the name as written, an imported `User` matches none of its rules, and the
+        // variable is never tracked, which takes the Eloquent side of every query()-rooted
+        // chain with it.
+        if ($node instanceof Node\Expr\Assign) {
+            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                // Check if RHS is a static call to a model
+                if ($node->expr instanceof Node\Expr\StaticCall) {
+                    if ($node->expr->class instanceof Node\Name) {
+                        if ($this->looksLikeModel($node->expr->class)) {
+                            // Track this variable as being associated with this model
+                            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
+                        }
+                    }
+                }
+            }
+        }
+
+        // A query-builder write cancels the global-scope exemption in checkMixedUsage(). The
+        // facade is named at the root of the chain, below this node, so this read belongs on
+        // the way out for the same reason as the assignment above: read on the way in, an
+        // aliased DB spells something isDbFacade() does not recognise and the write goes
+        // uncounted. The flag is read when the class is left, which is later still.
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->toString(), self::QUERY_BUILDER_WRITE_METHODS, true)) {
+            $root = $this->findRootStaticCall($node->var);
+            if ($root !== null
+                && $root->class instanceof Node\Name
+                && $this->isDbFacade($root->class)
+                && $root->name instanceof Node\Identifier
+                && $root->name->toString() === 'table') {
+                $this->classHasQueryBuilderWrite = true;
+            }
+        }
+
         // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase())
         // We use leaveNode so that NameResolver has already processed all child nodes
         if ($node instanceof Node\Expr\MethodCall) {

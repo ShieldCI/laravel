@@ -70,10 +70,21 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
         $phpFiles = $this->getPhpFiles();
 
-        // Phase 0: index every class-like declaration in the project, so that the pass
-        // below can ask about declarations it is not itself looking at.
+        // Phase 0: index every class-like declaration the pass below is willing to judge,
+        // so that it can ask about declarations it is not itself looking at.
+        //
+        // The same files are skipped here as there. The index answers in both directions:
+        // what a declaration inherits, and what the declarations drawing from it hold. The
+        // second of those lets one file decide whether another is reported, so indexing a
+        // file the pass below refuses to judge would let a test double or a seeder settle a
+        // finding against production code, in either direction, and adding or renaming one
+        // would move findings that no production edit touched.
         $classScanner = new ClassHierarchyScanner;
         foreach ($phpFiles as $file) {
+            if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
+                continue;
+            }
+
             try {
                 $ast = $this->parser->parseFile($file);
                 if (empty($ast)) {
@@ -1452,16 +1463,27 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
     /** @var array<string, array<string, string>> class key => flattened inherited property types */
     private array $inheritedCache = [];
 
-    /** @var array<string, list<string>> class or trait key => keys of the declarations that draw from it */
-    private array $descendants = [];
+    /**
+     * Stands in for the type of a property that has one the registry cannot reduce to a
+     * single FQN: none at all, a scalar, a union or an intersection. It is not a class name
+     * and cannot collide with one, so a walk weighing candidate types sees it as the one
+     * thing it is, a type that is not a known client.
+     */
+    private const UNTYPABLE = '?untypable';
 
     /**
-     * The same map as $propertyTypes with private properties kept. Read only by the walk
-     * inwards, where they count: see scatter().
+     * Every property a declaration holds, private included and UNTYPABLE where there is no
+     * single type to record. Read only by the walk inwards: see scatter().
      *
      * @var array<string, array<string, string>> class or trait key => property name => type FQN
      */
     private array $allPropertyTypes = [];
+
+    /** @var array<string, list<string>> trait key => keys of the declarations using it */
+    private ?array $traitUsers = null;
+
+    /** @var array<string, list<string>> parent key => keys of the declarations extending it */
+    private ?array $children = null;
 
     /** @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types */
     private array $descendantCache = [];
@@ -1493,21 +1515,16 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
                 $traits[] = self::nameFqn($trait);
             }
         }
-        if ($traits !== []) {
-            $this->traitUses[$key] = $traits;
-        }
+        $this->traitUses[$key] = $traits;
 
-        // The inverse of the two edges above. They answer what a declaration inherits; a
-        // method declared in a trait or a parent needs the other direction, because the
-        // property it writes through is declared by whatever draws from it.
-        foreach (self::declaredAncestorsOf($node) as $ancestor) {
-            $this->descendants[self::key($ancestor)][] = $key;
-        }
-
-        // Written whatever it holds, so a name declared twice cannot leave one
-        // declaration's parent standing beside another declaration's properties.
-        $this->propertyTypes[$key] = self::propertyTypesOf($node, skipPrivate: true);
-        $this->allPropertyTypes[$key] = self::propertyTypesOf($node);
+        // Both views come off one walk of the statements, and every map here is written
+        // whatever it holds, so a name declared twice cannot leave one declaration's parent
+        // standing beside another declaration's properties. The reverse edges are derived
+        // from these maps rather than recorded alongside them, for the same reason: an
+        // index appended to cannot drop what a redeclaration retracted. See reverseEdges().
+        $views = self::propertyViews($node);
+        $this->propertyTypes[$key] = $views['inheritable'];
+        $this->allPropertyTypes[$key] = $views['declared'];
 
         return null;
     }
@@ -1617,48 +1634,163 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
     }
 
     /**
-     * Breadth first inwards from one declaration, collecting what each declaration drawing
-     * from it declares. Every candidate is kept rather than the nearest, because two classes
-     * drawing from one trait are two different runtime types and neither is nearer than the
-     * other; the caller has to weigh them all.
+     * Breadth first inwards from one declaration, collecting the type each declaration
+     * drawing from it sees for each property. Every candidate is kept rather than the
+     * nearest, because two classes drawing from one trait are two different runtime types
+     * and neither is nearer than the other; the caller has to weigh them all.
      *
-     * Private properties count here, unlike in the walk outwards: a trait's methods are
-     * inlined into the class using it and do read its private properties. A parent's method
-     * cannot read a child's private property, so this over-reaches on that edge, but only onto
-     * code PHP itself rejects, because such a read reaches a dynamic property rather than the
-     * child's, so no real write can be hiding behind it.
+     * What a descendant sees is its own declarations over what it inherits, the same
+     * composition the second pass applies to the node it enters. Its own alone would not do:
+     * a class that picks the property up from a second trait declares nothing for it, and
+     * counting that as no candidate would let it agree by silence with a sibling that does
+     * declare one.
+     *
+     * Private properties count across a trait edge and not across an extends edge, which is
+     * PHP's own rule. A trait's methods are inlined into the class using it and share its
+     * scope, so they read its private properties; a parent's methods keep the parent's scope
+     * and a read of the same name reaches a dynamic property instead, which the parent may
+     * well have put a model in. So a descendant contributes its private properties only when
+     * every edge on the path to it was a trait use, and a path that crosses one extends edge
+     * carries that restriction the rest of the way. A declaration reachable both ways is
+     * read on the trait-only path, since the wider view subsumes the narrower one.
      *
      * The visited set makes the walk terminate on a hierarchy that refers back to itself,
      * which an AST can express even though PHP could not load it. Keys arrive folded, both
-     * the seed and everything $descendants holds, so nothing is folded again here.
+     * the seed and everything reverseEdges() holds, so nothing is folded again here.
      *
      * @return array<string, non-empty-list<string>>
      */
     private function scatter(string $key): array
     {
-        $candidates = [];
-        $queue = [$key];
-        $seen = [$key => true];
+        [$traitUsers, $children] = $this->reverseEdges();
+
+        // Reached first, read second. A declaration two paths arrive at is one declaration
+        // with one answer, and reading it as each path arrives would leave the blinder
+        // path's answer standing beside the fuller one, where it would dissent from it.
+        /** @var array<string, bool> $reached key => whether some path to it was all trait uses */
+        $reached = [];
+        /** @var list<array{string, bool}> $queue key => whether every edge so far was a trait use */
+        $queue = [[$key, true]];
 
         while ($queue !== []) {
-            $current = array_shift($queue);
+            [$current, $viaTraitsOnly] = array_shift($queue);
 
-            foreach ($this->descendants[$current] ?? [] as $descendant) {
-                if (isset($seen[$descendant])) {
+            $next = [];
+            foreach ($traitUsers[$current] ?? [] as $user) {
+                $next[] = [$user, $viaTraitsOnly];
+            }
+            foreach ($children[$current] ?? [] as $child) {
+                $next[] = [$child, false];
+            }
+
+            foreach ($next as [$descendant, $descendantViaTraitsOnly]) {
+                if ($descendant === $key) {
+                    // A hierarchy that refers back to itself, which an AST can express even
+                    // though PHP could not load it. The seed is not its own descendant.
                     continue;
                 }
-                $seen[$descendant] = true;
-                $queue[] = $descendant;
 
-                foreach ($this->allPropertyTypes[$descendant] ?? [] as $property => $type) {
-                    if (! in_array($type, $candidates[$property] ?? [], true)) {
-                        $candidates[$property][] = $type;
-                    }
+                // Requeued only on a path that grants a view the earlier one did not, which
+                // bounds the walk at two visits per declaration.
+                if (isset($reached[$descendant])
+                    && ($reached[$descendant] || ! $descendantViaTraitsOnly)
+                ) {
+                    continue;
+                }
+
+                $reached[$descendant] = $descendantViaTraitsOnly;
+                $queue[] = [$descendant, $descendantViaTraitsOnly];
+            }
+        }
+
+        $candidates = [];
+
+        foreach ($reached as $descendant => $inlined) {
+            foreach ($this->descendantView($descendant, $inlined) as $property => $type) {
+                if (! in_array($type, $candidates[$property] ?? [], true)) {
+                    $candidates[$property][] = $type;
                 }
             }
         }
 
         return $candidates;
+    }
+
+    /**
+     * The type one descendant sees for each of its properties: what it declares itself over
+     * what it inherits, with its own private declarations counted only when the declaration
+     * asking shares its scope.
+     *
+     * Out of scope, a private property does not become no property. The method asking is
+     * reading a name the descendant has declared and it cannot reach, so what it reads is a
+     * dynamic property that anything may have been put in, a model included. That is
+     * UNTYPABLE, the same answer an untyped declaration gives, and either must be a
+     * candidate or the descendant agrees by silence with a sibling that named a client.
+     *
+     * The inherited half is the visible one either way. A property the descendant picks up
+     * from somewhere this walk cannot reduce to a single type is the gap left: it is absent
+     * rather than UNTYPABLE, and an absent candidate cannot dissent.
+     *
+     * @return array<string, string>
+     */
+    private function descendantView(string $key, bool $inlined): array
+    {
+        // Indexed without a fallback: reverseEdges() only ever names a declaration that was
+        // entered, and entering one writes all three maps. A key reaching here that they do
+        // not hold would mean an edge built from something other than the forward maps.
+        $own = $this->allPropertyTypes[$key];
+
+        if (! $inlined) {
+            // Whatever is declared but not inheritable is private, untyped or composite,
+            // and from outside the scope those come to the same thing: a name the reader
+            // cannot put a type to.
+            $visible = $this->propertyTypes[$key];
+
+            foreach ($own as $property => $type) {
+                if (! isset($visible[$property])) {
+                    $own[$property] = self::UNTYPABLE;
+                }
+            }
+        }
+
+        return $own + $this->inheritedPropertyTypes($key);
+    }
+
+    /**
+     * The hierarchy edges read inwards, derived once from the forward maps rather than
+     * recorded beside them.
+     *
+     * Deriving them is what keeps the two directions honest. The forward maps are written
+     * whatever a declaration holds, so a name declared twice leaves only the last
+     * declaration's parent and traits standing; an index appended to as declarations were
+     * entered would keep the earlier declaration's edges too, and a parent no longer
+     * extended would go on being answered for by a class that no longer extends it.
+     *
+     * Built on first use, which is after the indexing pass has finished, for the same reason
+     * the flattening caches are.
+     *
+     * @return array{array<string, list<string>>, array<string, list<string>>}
+     */
+    private function reverseEdges(): array
+    {
+        if ($this->traitUsers === null || $this->children === null) {
+            $this->traitUsers = [];
+            $this->children = [];
+
+            foreach ($this->traitUses as $key => $traits) {
+                foreach ($traits as $trait) {
+                    $this->traitUsers[self::key($trait)][] = $key;
+                }
+            }
+
+            foreach ($this->parents as $key => $parent) {
+                if ($parent !== null) {
+                    $this->children[self::key($parent)][] = $key;
+                }
+            }
+        }
+
+        return [$this->traitUsers, $this->children];
     }
 
     /**
@@ -1750,26 +1882,49 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      * type, or a scalar or composite type, are omitted so they stay conservative
      * (flaggable).
      *
-     * $skipPrivate leaves out what another declaration could not see. A class reads its
-     * own private properties, so the node being entered keeps them; the registry, which
-     * exists to answer what a different declaration inherits, does not.
-     *
      * @return array<string, string>
      */
-    public static function propertyTypesOf(Node\Stmt\ClassLike $class, bool $skipPrivate = false): array
+    public static function propertyTypesOf(Node\Stmt\ClassLike $class): array
     {
-        $types = [];
+        return array_filter(
+            self::propertyViews($class)['declared'],
+            static fn (string $type): bool => $type !== self::UNTYPABLE,
+        );
+    }
+
+    /**
+     * The two views of a declaration's own properties the registry needs, from one walk of
+     * its statements.
+     *
+     * `inheritable` is what a different declaration can see and put a name to: no private
+     * entries, and nothing whose type is missing or composite. It answers what a class
+     * inherits, where an entry that cannot be resolved to one FQN is better left out so the
+     * property stays flaggable.
+     *
+     * `declared` is every property the declaration holds, private included, with UNTYPABLE
+     * standing in where there is no single type FQN to record. It answers the opposite
+     * question, what the declarations drawing from this one hold, and there an entry that
+     * cannot be resolved must still be present: that walk exempts a property only when every
+     * candidate for it is a known client, so a property omitted for want of a type would be
+     * read as agreement rather than as the unknown it is.
+     *
+     * @return array{inheritable: array<string, string>, declared: array<string, string>}
+     */
+    private static function propertyViews(Node\Stmt\ClassLike $class): array
+    {
+        $inheritable = [];
+        $declared = [];
 
         foreach ($class->stmts as $stmt) {
             if ($stmt instanceof Node\Stmt\Property) {
-                if ($skipPrivate && $stmt->isPrivate()) {
-                    continue;
-                }
-
                 $type = self::typeFqn($stmt->type);
-                if ($type !== null) {
-                    foreach ($stmt->props as $prop) {
-                        $types[$prop->name->toString()] = $type;
+
+                foreach ($stmt->props as $prop) {
+                    $name = $prop->name->toString();
+
+                    $declared[$name] = $type ?? self::UNTYPABLE;
+                    if ($type !== null && ! $stmt->isPrivate()) {
+                        $inheritable[$name] = $type;
                     }
                 }
 
@@ -1781,22 +1936,24 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             }
 
             foreach ($stmt->params as $param) {
-                if ($skipPrivate && ($param->flags & Modifiers::PRIVATE) !== 0) {
+                if ($param->flags === 0
+                    || ! $param->var instanceof Node\Expr\Variable
+                    || ! is_string($param->var->name)
+                ) {
                     continue;
                 }
 
                 $type = self::typeFqn($param->type);
-                if ($param->flags !== 0
-                    && $type !== null
-                    && $param->var instanceof Node\Expr\Variable
-                    && is_string($param->var->name)
-                ) {
-                    $types[$param->var->name] = $type;
+                $name = $param->var->name;
+
+                $declared[$name] = $type ?? self::UNTYPABLE;
+                if ($type !== null && ($param->flags & Modifiers::PRIVATE) === 0) {
+                    $inheritable[$name] = $type;
                 }
             }
         }
 
-        return $types;
+        return ['inheritable' => $inheritable, 'declared' => $declared];
     }
 
     /**

@@ -4691,4 +4691,602 @@ PHP,
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('Method "FlushesCache::persist()"', $result);
     }
+
+    /**
+     * A user of the trait that leaves the property untyped cannot say what it holds, and a
+     * property nobody can put a type to is not a property everybody agrees is a client.
+     */
+    public function test_still_flags_a_trait_method_when_one_user_leaves_the_property_untyped(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+            'Services/RowService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use App\Models\CacheRow;
+
+class RowService
+{
+    use FlushesCache;
+
+    protected $cache;
+
+    public function __construct(CacheRow $row)
+    {
+        $this->cache = $row;
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    /**
+     * A union type is no more resolvable to one client than no type is, so it dissents the
+     * same way.
+     */
+    public function test_still_flags_a_trait_method_when_one_user_gives_the_property_a_union_type(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+            'Services/RowService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use App\Models\CacheRow;
+use Illuminate\Contracts\Cache\Repository;
+
+class RowService
+{
+    use FlushesCache;
+
+    protected CacheRow|Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    /**
+     * The dissenting user declares nothing itself and picks the model up from a second
+     * trait. What it sees for the property is still a model, so it still dissents.
+     */
+    public function test_still_flags_a_trait_method_when_one_user_takes_the_property_from_another_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Concerns/HasCacheRow.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+use App\Models\CacheRow;
+
+trait HasCacheRow
+{
+    protected CacheRow $cache;
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+            'Services/RowService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use App\Concerns\HasCacheRow;
+
+class RowService
+{
+    use FlushesCache;
+    use HasCacheRow;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    /**
+     * A parent's method cannot read a child's private property. What it reads is a dynamic
+     * property of the same name, which the parent may itself have put a model in, so the
+     * child's private client says nothing about it.
+     */
+    public function test_still_flags_a_parent_method_when_only_a_child_private_property_names_the_client(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Widget;
+
+abstract class BaseService
+{
+    public function bind(Widget $widget)
+    {
+        $this->cache = $widget;
+    }
+
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    private Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * The counterpart: every edge on the path is a trait use, so the trait holding the
+     * method is inlined into the class all the way down and does read its private property.
+     */
+    public function test_ignores_a_private_client_reached_through_a_trait_that_uses_another_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Concerns/ManagesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait ManagesCache
+{
+    use FlushesCache;
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\ManagesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use ManagesCache;
+
+    private Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The index is built from the files the analysis pass is willing to judge. A test double
+     * is not one, so it cannot settle a finding against the production class it extends.
+     */
+    public function test_a_test_double_does_not_supply_a_client_to_the_class_it_extends(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'tests/Doubles/FakeService.php' => <<<'PHP'
+<?php
+
+namespace Tests\Doubles;
+
+use App\Services\BaseService;
+use Illuminate\Contracts\Cache\Repository;
+
+class FakeService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * The same exclusion in the other direction: a double must not withdraw an exemption the
+     * production code earns, or adding one would move findings no production edit touched.
+     */
+    public function test_a_test_double_does_not_withdraw_a_client_a_production_child_supplies(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+            'tests/Doubles/RecordingService.php' => <<<'PHP'
+<?php
+
+namespace Tests\Doubles;
+
+use App\Models\CacheRow;
+use App\Services\BaseService;
+
+class RecordingService extends BaseService
+{
+    protected CacheRow $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Seeders and factories are skipped by the analysis pass on the same footing as tests, so
+     * they are skipped by the index too.
+     */
+    public function test_a_seeder_does_not_supply_a_client_to_the_class_it_extends(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'database/seeders/WarmCacheSeeder.php' => <<<'PHP'
+<?php
+
+namespace Database\Seeders;
+
+use App\Services\BaseService;
+use Illuminate\Contracts\Cache\Repository;
+
+class WarmCacheSeeder extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * One name declared in two files leaves the last declaration standing. The parent the
+     * earlier one extended must not go on being answered for by a class that no longer
+     * extends it.
+     */
+    public function test_a_redeclared_class_does_not_supply_a_client_to_the_parent_it_no_longer_extends(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/OtherBase.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class OtherBase
+{
+}
+PHP,
+            'a/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\CacheRow;
+
+class TagService extends BaseService
+{
+    protected CacheRow $cache;
+}
+PHP,
+            'b/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends OtherBase
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * One class reached both ways: it uses the trait through a second trait and also extends
+     * a class that uses it. The trait is inlined into it either way, so the private client
+     * counts, and the longer path through the parent must not leave a second, blinder answer
+     * standing beside it.
+     */
+    public function test_ignores_a_private_client_on_a_class_reached_by_a_trait_and_a_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Base/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Base;
+
+use App\Concerns\FlushesCache;
+
+class BaseService
+{
+    use FlushesCache;
+}
+PHP,
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Concerns/ManagesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait ManagesCache
+{
+    use FlushesCache;
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Base\BaseService;
+use App\Concerns\ManagesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    use ManagesCache;
+
+    private Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

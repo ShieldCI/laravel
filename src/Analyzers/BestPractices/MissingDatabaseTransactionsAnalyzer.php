@@ -392,12 +392,14 @@ class TransactionVisitor extends NodeVisitorAbstract
             $this->propertyTypeStack[] = $this->propertyTypes;
             $this->currentClassName = $this->declarationName($node, $this->currentClassName);
             // Own declarations first: array + array keeps the left-hand entry, so a
-            // property the class redeclares wins over the one it would have inherited.
+            // property the class redeclares wins over the one it would have inherited,
+            // and what a declaration drawing from this one says is the last resort.
             // Own properties are read from the node, and the inherited half is seeded
             // from it too, because an anonymous class has no name for the registry to
             // have filed it under.
             $this->propertyTypes = ClassHierarchyScanner::propertyTypesOf($node)
-                + $this->classes->inheritedPropertyTypesFor($node);
+                + $this->classes->inheritedPropertyTypesFor($node)
+                + $this->descendantClientTypes($node);
         }
 
         // Track current method
@@ -992,6 +994,32 @@ class TransactionVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * The non-database client types the declarations drawing from this one agree on, keyed by
+     * property name so the receiver check above reads them like any other declared type.
+     *
+     * A method declared in a trait or a parent writes through a property the using or child
+     * class declares, which the declaration holding the method cannot see, so those writes
+     * were reported. Those declarations are not one type, so a property only counts when
+     * every type any of them declares for it is a non-database client. One of them naming a
+     * model leaves the property out, and the writes stay reported. Every candidate therefore
+     * satisfies the check below, which is why any of them can stand for the property.
+     *
+     * @return array<string, string>
+     */
+    private function descendantClientTypes(Node\Stmt\ClassLike $node): array
+    {
+        $agreed = [];
+
+        foreach ($this->classes->descendantPropertyTypesFor($node) as $property => $types) {
+            if (array_diff($types, self::NON_DB_CLIENT_TYPES) === []) {
+                $agreed[$property] = $types[0];
+            }
+        }
+
+        return $agreed;
+    }
+
+    /**
      * True when a chain bottoms out in a static call on a non-database facade,
      * e.g. the right-hand side of $disk = Storage::disk('s3').
      *
@@ -1424,6 +1452,20 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
     /** @var array<string, array<string, string>> class key => flattened inherited property types */
     private array $inheritedCache = [];
 
+    /** @var array<string, list<string>> class or trait key => keys of the declarations that draw from it */
+    private array $descendants = [];
+
+    /**
+     * The same map as $propertyTypes with private properties kept. Read only by the walk
+     * inwards, where they count: see scatter().
+     *
+     * @var array<string, array<string, string>> class or trait key => property name => type FQN
+     */
+    private array $allPropertyTypes = [];
+
+    /** @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types */
+    private array $descendantCache = [];
+
     public function enterNode(Node $node): ?Node
     {
         if (! ($node instanceof Node\Stmt\ClassLike)) {
@@ -1455,9 +1497,17 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             $this->traitUses[$key] = $traits;
         }
 
+        // The inverse of the two edges above. They answer what a declaration inherits; a
+        // method declared in a trait or a parent needs the other direction, because the
+        // property it writes through is declared by whatever draws from it.
+        foreach (self::declaredAncestorsOf($node) as $ancestor) {
+            $this->descendants[self::key($ancestor)][] = $key;
+        }
+
         // Written whatever it holds, so a name declared twice cannot leave one
         // declaration's parent standing beside another declaration's properties.
         $this->propertyTypes[$key] = self::propertyTypesOf($node, skipPrivate: true);
+        $this->allPropertyTypes[$key] = self::propertyTypesOf($node);
 
         return null;
     }
@@ -1531,6 +1581,84 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
         }
 
         return $types;
+    }
+
+    /**
+     * The property types the declarations drawing from a node hold, as the set of candidate
+     * types per property name.
+     *
+     * The mirror of inheritedPropertyTypesFor(). An anonymous class has no key to have been
+     * filed under and can only ever be a leaf, so it supplies nothing here; that is the one
+     * asymmetry with the upward walk, which does seed itself from the node for that case.
+     *
+     * @return array<string, non-empty-list<string>>
+     */
+    public function descendantPropertyTypesFor(Node\Stmt\ClassLike $class): array
+    {
+        $fqn = self::declarationFqn($class);
+
+        return $fqn !== null ? $this->descendantPropertyTypes($fqn) : [];
+    }
+
+    /**
+     * The property types the declarations drawing from $fqn hold, gathered from the classes
+     * using it as a trait and the classes extending it.
+     *
+     * Memoized for the reason the upward walk is: every declaration above a shared subtree
+     * would otherwise re-walk it.
+     *
+     * @return array<string, non-empty-list<string>>
+     */
+    public function descendantPropertyTypes(string $fqn): array
+    {
+        $key = self::key($fqn);
+
+        return $this->descendantCache[$key] ??= $this->scatter($key);
+    }
+
+    /**
+     * Breadth first inwards from one declaration, collecting what each declaration drawing
+     * from it declares. Every candidate is kept rather than the nearest, because two classes
+     * drawing from one trait are two different runtime types and neither is nearer than the
+     * other; the caller has to weigh them all.
+     *
+     * Private properties count here, unlike in the walk outwards: a trait's methods are
+     * inlined into the class using it and do read its private properties. A parent's method
+     * cannot read a child's private property, so this over-reaches on that edge, but only onto
+     * code PHP itself rejects, because such a read reaches a dynamic property rather than the
+     * child's, so no real write can be hiding behind it.
+     *
+     * The visited set makes the walk terminate on a hierarchy that refers back to itself,
+     * which an AST can express even though PHP could not load it. Keys arrive folded, both
+     * the seed and everything $descendants holds, so nothing is folded again here.
+     *
+     * @return array<string, non-empty-list<string>>
+     */
+    private function scatter(string $key): array
+    {
+        $candidates = [];
+        $queue = [$key];
+        $seen = [$key => true];
+
+        while ($queue !== []) {
+            $current = array_shift($queue);
+
+            foreach ($this->descendants[$current] ?? [] as $descendant) {
+                if (isset($seen[$descendant])) {
+                    continue;
+                }
+                $seen[$descendant] = true;
+                $queue[] = $descendant;
+
+                foreach ($this->allPropertyTypes[$descendant] ?? [] as $property => $type) {
+                    if (! in_array($type, $candidates[$property] ?? [], true)) {
+                        $candidates[$property][] = $type;
+                    }
+                }
+            }
+        }
+
+        return $candidates;
     }
 
     /**

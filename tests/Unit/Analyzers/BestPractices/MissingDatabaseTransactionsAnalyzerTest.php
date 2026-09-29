@@ -4041,4 +4041,654 @@ PHP;
         $this->assertNotNull($issues[0]->location);
         $this->assertSame($closureLine, $issues[0]->location->line);
     }
+
+    /**
+     * #427 taught the receiver check to find a property declared on a trait the writing
+     * class uses. This is the mirror: the trait holds the method and the class using it
+     * declares the client, so the trait's own declaration has nothing to look up.
+     */
+    public function test_ignores_a_cache_client_the_class_using_a_trait_declares(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The template method pattern: the base declares the algorithm and the child supplies
+     * the collaborator it runs against.
+     */
+    public function test_ignores_a_cache_client_the_child_of_an_abstract_parent_declares(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A concrete parent has the same gap as an abstract one, so the lookup is not gated on
+     * whether the declaration could have been instantiated on its own.
+     */
+    public function test_ignores_a_cache_client_the_child_of_a_concrete_parent_declares(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A trait's methods are inlined into the class using it and do read its private
+     * properties, and a promoted constructor property is the commonest spelling of an
+     * injected client, so a private one has to count here.
+     */
+    public function test_ignores_a_private_cache_client_the_class_using_a_trait_promotes(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    public function __construct(private Repository $cache) {}
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_ignores_a_cache_client_declared_two_levels_below_a_trait(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+
+abstract class BaseService
+{
+    use FlushesCache;
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Two classes using one trait name the same collaborator at different cache contracts.
+     * Neither reaches the database, so the trait's writes are exempt even though the two
+     * declared types are not the same type.
+     */
+    public function test_ignores_a_client_two_users_of_a_trait_spell_as_different_contracts(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+            'Services/PsrService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Psr\SimpleCache\CacheInterface;
+
+class PsrService
+{
+    use FlushesCache;
+
+    protected CacheInterface $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The downward mirror of the casing case: a child naming its parent in a different case
+     * than the parent was declared still supplies that parent with its client.
+     */
+    public function test_a_child_referenced_with_different_casing_still_supplies_its_client(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BASESERVICE
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The same shape as the exempt trait case with one thing changed: the class using the
+     * trait declares the property at a model. The writes are real and stay reported.
+     */
+    public function test_still_flags_a_model_property_the_class_using_a_trait_declares(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/SavesTwice.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait SavesTwice
+{
+    public function persist(array $data)
+    {
+        $this->model->save();
+        $this->model->update($data);
+    }
+}
+PHP,
+            'Services/Thing.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\SavesTwice;
+use App\Models\Widget;
+
+class Thing
+{
+    use SavesTwice;
+
+    protected Widget $model;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "SavesTwice::persist()"', $result);
+    }
+
+    /**
+     * One class using the trait declares the property at a cache contract and another at a
+     * model, so there is no single answer for the trait's method and no exemption.
+     */
+    public function test_still_flags_a_trait_method_when_one_user_declares_the_property_as_a_model(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+            'Services/RowService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use App\Models\CacheRow;
+
+class RowService
+{
+    use FlushesCache;
+
+    protected CacheRow $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    public function test_still_flags_a_trait_method_whose_property_no_user_declares(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+
+class TagService
+{
+    use FlushesCache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    /**
+     * What a declaration says about its own property is the answer, whatever a child says
+     * about a property of the same name.
+     */
+    public function test_a_child_client_does_not_override_the_model_the_parent_declares_itself(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Widget;
+
+abstract class BaseService
+{
+    protected Widget $cache;
+
+    public function flush(array $data)
+    {
+        $this->cache->save();
+        $this->cache->update($data);
+    }
+}
+PHP,
+            'Services/TagService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class TagService extends BaseService
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * An anonymous class has no name for the registry to file it under, so it supplies
+     * nothing to the parent it extends. It can only ever be a leaf, which is why the
+     * registry does not carry the synthetic key it would take to reach one.
+     */
+    public function test_an_anonymous_subclass_does_not_supply_a_client_to_its_parents_method(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/BaseService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+abstract class BaseService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'Services/Builder.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Contracts\Cache\Repository;
+
+class Builder
+{
+    public function build(Repository $store)
+    {
+        return new class($store) extends BaseService
+        {
+            public function __construct(protected Repository $cache) {}
+        };
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "BaseService::flush()"', $result);
+    }
+
+    /**
+     * Alpha and Beta each name the other as their parent, so walking inwards from the trait
+     * they both draw from reaches Alpha, then Beta, then Alpha again. An AST can express that
+     * even though PHP could not load it, and the walk has to stop rather than circle.
+     *
+     * The trait carries a second method whose writes nothing exempts, so the run has to report
+     * that one. Terminating by throwing would be swallowed by the per-file catch in
+     * runAnalysis() and would leave the file contributing nothing, which a bare assertPassed
+     * could not tell apart from the walk having worked.
+     */
+    public function test_terminates_on_a_reverse_hierarchy_that_refers_back_to_itself(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+use App\Models\Widget;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+
+    public function persist(Widget $widget, array $data)
+    {
+        $widget->save();
+        $widget->update($data);
+    }
+}
+PHP,
+            'Services/Looping.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class Alpha extends Beta
+{
+    use FlushesCache;
+}
+
+class Beta extends Alpha
+{
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // The cycle resolved and exempted flush(); persist() is the file's one real finding,
+        // which also proves the file was analysed rather than abandoned.
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Method "FlushesCache::persist()"', $result);
+    }
 }

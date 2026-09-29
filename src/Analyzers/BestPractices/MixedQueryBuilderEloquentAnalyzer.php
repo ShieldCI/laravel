@@ -547,11 +547,15 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // does overwrite the name, and keeps it overwritten after the loop. Nothing here
         // knows what is being iterated, so the attribution goes and does not come back.
         if ($node instanceof Node\Stmt\Foreach_) {
-            foreach ([$node->keyVar, $node->valueVar] as $bound) {
-                if ($bound instanceof Node\Expr\Variable && is_string($bound->name)) {
-                    unset($this->variableTracking[$bound->name]);
-                }
-            }
+            $this->forgetBoundNames($node->keyVar);
+            $this->forgetBoundNames($node->valueVar);
+        }
+
+        // A catch clause binds its variable in the enclosing scope too, and leaves it bound
+        // after the block. A name reused there stops standing for the builder it held, and a
+        // read through it afterwards is a read of whatever the clause caught.
+        if ($node instanceof Node\Stmt\Catch_) {
+            $this->forgetBoundNames($node->var);
         }
 
         // Detect deliberate global-scope management. A read-only class that explicitly
@@ -691,6 +695,15 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        // An assignment rebinds every name it binds, whatever it assigns, so any attribution
+        // those names carried is dropped first. A stale entry books an Eloquent read through a
+        // variable that no longer holds a model, and that read is all it takes to call a class
+        // mixed. Binding a reference replaces what the name stands for just as surely, and
+        // destructuring does it to several names at once, so both are named here.
+        if ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignRef) {
+            $this->forgetBoundNames($node->var);
+        }
+
         // P3.11: Track variable assignments ($query = User::query()). The model is named by
         // the static call on the right-hand side, a child of this assignment, so the name is
         // read here rather than on the way in: a resolver sharing this traverser annotates
@@ -699,21 +712,17 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         // judge the name as written, an imported `User` matches none of its rules, and the
         // variable is never tracked, which takes the Eloquent side of every query()-rooted
         // chain with it.
+        //
+        // Only a model's static call puts an attribution back, and only for a plain variable: a
+        // destructuring target takes the call apart, so no one name it binds holds what the
+        // call returned.
         if ($node instanceof Node\Expr\Assign
             && $node->var instanceof Node\Expr\Variable
-            && is_string($node->var->name)) {
-            // An assignment rebinds the name whatever it assigns, so any attribution the name
-            // already carried is dropped first. Only the assignment that names a model puts
-            // one back. A stale entry left behind books an Eloquent read through a variable
-            // that no longer holds a model, and that read is all it takes to call a class
-            // mixed.
-            unset($this->variableTracking[$node->var->name]);
-
-            if ($node->expr instanceof Node\Expr\StaticCall
-                && $node->expr->class instanceof Node\Name
-                && $this->looksLikeModel($node->expr->class)) {
-                $this->variableTracking[$node->var->name] = $node->expr->class->toString();
-            }
+            && is_string($node->var->name)
+            && $node->expr instanceof Node\Expr\StaticCall
+            && $node->expr->class instanceof Node\Name
+            && $this->looksLikeModel($node->expr->class)) {
+            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
         }
 
         // A query-builder write cancels the global-scope exemption in checkMixedUsage(). The
@@ -1016,6 +1025,37 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         return $expr instanceof Node\Expr\StaticCall ? $expr : null;
+    }
+
+    /**
+     * Drop the attributions of every variable a binding target names.
+     *
+     * A target is usually one variable, but destructuring binds several and nests, and
+     * php-parser gives one node for every spelling of it, so `list($a, [$b])` and `[$a, [$b]]`
+     * arrive the same way. An item may be absent, for a skipped element, and an item's value
+     * may be something other than a variable, as in `[$a, $obj->prop] = ...`; neither names a
+     * variable this map tracks.
+     *
+     * A compound assignment is deliberately not routed here. `??=` leaves a non-null value
+     * alone, so an attribution it does not overwrite stays true, and clearing it would lose a
+     * real finding; every other compound operator needs a string or a number on the left, so
+     * reaching one with a builder there is a program that cannot run.
+     */
+    private function forgetBoundNames(?Node $target): void
+    {
+        if ($target instanceof Node\Expr\Variable && is_string($target->name)) {
+            unset($this->variableTracking[$target->name]);
+
+            return;
+        }
+
+        if ($target instanceof Node\Expr\List_) {
+            foreach ($target->items as $item) {
+                if ($item !== null) {
+                    $this->forgetBoundNames($item->value);
+                }
+            }
+        }
     }
 
     /**

@@ -3271,4 +3271,203 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
     }
+
+    public function test_a_destructured_rebind_loses_the_model_attribution(): void
+    {
+        // Destructuring rebinds every name it names, so an attribution one of them carried is
+        // as stale afterwards as it would be after a plain assignment. php-parser gives the
+        // same node for every spelling of it, list() and [] alike.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+        [$query, $label] = $rows;
+
+        DB::table('users')->count();
+
+        return [$query->count(), $label];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_nested_destructured_rebind_loses_the_model_attribution(): void
+    {
+        // A destructuring target nests, so the names it binds are not all one level down.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+        [[$query], $label] = $rows;
+
+        DB::table('users')->count();
+
+        return [$query->count(), $label];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_destructured_foreach_value_loses_the_model_attribution(): void
+    {
+        // The foreach value is a destructuring target rather than a plain variable, and it
+        // binds in the enclosing scope just the same.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+
+        foreach ($rows as [$query, $label]) {
+            $query->count();
+        }
+
+        DB::table('users')->count();
+
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_rebind_by_reference_loses_the_model_attribution(): void
+    {
+        // Binding a reference replaces what the name stands for as surely as assigning a value
+        // to it, and it is a different node, so the invalidation has to name it too. What the
+        // name now holds is the query builder, so the count() read through it is a query-builder
+        // read; attributing it to the model books an Eloquent read the method never issues.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals()
+    {
+        $query = User::query();
+        $rows = DB::table('users');
+        $query = &$rows;
+
+        return $query->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_caught_exception_loses_the_model_attribution(): void
+    {
+        // A catch clause binds its variable in the enclosing scope and leaves it bound, so a
+        // name reused there stops standing for the builder it held. The read is placed after
+        // the block on purpose: inside it the name holds an exception, and a query through
+        // that is a program that cannot run.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals()
+    {
+        $query = User::query();
+
+        try {
+            $count = DB::table('users')->count();
+        } catch (\RuntimeException $query) {
+            $count = $query->getMessage();
+        }
+
+        return [$count, $query->count()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
 }

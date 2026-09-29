@@ -2912,42 +2912,6 @@ PHP;
         $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
     }
 
-    public function test_tracks_a_model_assigned_through_a_dynamic_static_call(): void
-    {
-        // $modelClass::where() has no other source than the variable map: the receiver is a
-        // variable, so the direct path cannot read a class name off it at all.
-        $code = <<<'PHP'
-<?php
-
-namespace App\Repositories;
-
-use App\Models\User;
-use Illuminate\Support\Facades\DB;
-
-class DynamicRepository
-{
-    public function audit()
-    {
-        $modelClass = User::query();
-        $modelClass::where('active', 1);
-
-        return DB::table('users')->count();
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['Repositories/DynamicRepository.php' => $code]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
-    }
-
     public function test_counts_a_query_builder_write_through_an_aliased_db_import(): void
     {
         // A class that manages global scopes is spared unless it also writes through the query

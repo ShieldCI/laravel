@@ -89,6 +89,7 @@
         "preferred-install": "dist",
         "audit": {
             "ignore": {
+                "PKSA-d5tc-s1qs-h781": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
                 "PKSA-m5cs-t1y6-qpcs": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
                 "PKSA-3r5d-mb8f-1qw9": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
                 "PKSA-8qx3-n5y5-vvnd": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",

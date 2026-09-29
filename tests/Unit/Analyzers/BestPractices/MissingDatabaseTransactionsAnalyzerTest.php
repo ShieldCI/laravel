@@ -5289,4 +5289,143 @@ PHP,
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    /**
+     * isDevelopmentFile() matches on a filename suffix as well as a directory, so a class
+     * written in the factory pattern trips it. What a class inherits does not depend on
+     * where its parent was written, so the walk outwards has to read the file anyway.
+     */
+    public function test_a_parent_in_a_file_named_like_a_factory_still_supplies_its_client(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Support/GatewayFactory.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class GatewayFactory
+{
+    protected Repository $cache;
+}
+PHP,
+            'app/Services/StripeGateway.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Support\GatewayFactory;
+
+class StripeGateway extends GatewayFactory
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The same, through a trait, in a file whose name ends the way a seeder's does.
+     */
+    public function test_a_trait_in_a_file_named_like_a_seeder_still_supplies_its_client(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Jobs/ImportSeeder.php' => <<<'PHP'
+<?php
+
+namespace App\Jobs;
+
+use Illuminate\Contracts\Cache\Repository;
+
+trait HoldsCache
+{
+    protected Repository $cache;
+}
+PHP,
+            'app/Services/Importer.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Jobs\HoldsCache;
+
+class Importer
+{
+    use HoldsCache;
+
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The same as the test double that extends, across a trait edge. A fixture using a trait
+     * is the only declaration naming the client, and it does not get to settle a finding
+     * against the trait the production code also uses.
+     */
+    public function test_a_test_double_using_a_trait_does_not_supply_its_client(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Concerns/FlushesCache.php' => <<<'PHP'
+<?php
+
+namespace App\Concerns;
+
+trait FlushesCache
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+            'tests/Doubles/FakeTagServiceTest.php' => <<<'PHP'
+<?php
+
+namespace App\Tests\Doubles;
+
+use App\Concerns\FlushesCache;
+use Illuminate\Contracts\Cache\Repository;
+
+class FakeTagServiceTest
+{
+    use FlushesCache;
+
+    protected Repository $cache;
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
 }

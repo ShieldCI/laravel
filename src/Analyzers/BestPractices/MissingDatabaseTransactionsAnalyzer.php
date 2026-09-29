@@ -70,20 +70,23 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
 
         $phpFiles = $this->getPhpFiles();
 
-        // Phase 0: index every class-like declaration the pass below is willing to judge,
-        // so that it can ask about declarations it is not itself looking at.
+        // Phase 0: index every class-like declaration in the project, so that the pass
+        // below can ask about declarations it is not itself looking at.
         //
-        // The same files are skipped here as there. The index answers in both directions:
-        // what a declaration inherits, and what the declarations drawing from it hold. The
-        // second of those lets one file decide whether another is reported, so indexing a
-        // file the pass below refuses to judge would let a test double or a seeder settle a
-        // finding against production code, in either direction, and adding or renaming one
-        // would move findings that no production edit touched.
+        // Every file is indexed, and each declaration is marked with whether the pass below
+        // would judge the file it came from. The index answers in two directions and they
+        // want different things of that mark. What a declaration inherits is a property of
+        // the language rather than of where its parent was written, so the walk outwards
+        // reads every file; skipping any would withdraw a client from production code that
+        // merely extends a parent whose filename reads as a fixture, `PaymentGatewayFactory`
+        // among them. The walk inwards lets one file decide whether another is reported, so
+        // there a declaration the pass refuses to judge must not speak: otherwise a test
+        // double or a seeder settles a finding against the production class it extends, and
+        // adding or renaming one moves findings no production edit touched. Only the reverse
+        // edges are filtered, in reverseEdges().
         $classScanner = new ClassHierarchyScanner;
         foreach ($phpFiles as $file) {
-            if ($this->isTestFile($file) || $this->isDevelopmentFile($file)) {
-                continue;
-            }
+            $classScanner->indexing(judged: ! $this->isTestFile($file) && ! $this->isDevelopmentFile($file));
 
             try {
                 $ast = $this->parser->parseFile($file);
@@ -1479,6 +1482,19 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     private array $allPropertyTypes = [];
 
+    /**
+     * Whether each declaration came from a file the analysis pass will judge. Read only when
+     * deriving the reverse edges, where a declaration the pass skips must not answer for one
+     * it reports on. Written last-wins like every other map here, so a name declared twice is
+     * marked for the declaration whose edges the forward maps kept.
+     *
+     * @var array<string, bool> class or trait key => whether the pass judges its file
+     */
+    private array $judged = [];
+
+    /** Whether the file currently being indexed is one the analysis pass will judge. */
+    private bool $judging = true;
+
     /** @var array<string, list<string>> trait key => keys of the declarations using it */
     private ?array $traitUsers = null;
 
@@ -1487,6 +1503,15 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
 
     /** @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types */
     private array $descendantCache = [];
+
+    /**
+     * Declare the standing of the file about to be traversed. Called once per file, before
+     * the traversal, because a visitor cannot see which file it is walking.
+     */
+    public function indexing(bool $judged): void
+    {
+        $this->judging = $judged;
+    }
 
     public function enterNode(Node $node): ?Node
     {
@@ -1525,6 +1550,7 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
         $views = self::propertyViews($node);
         $this->propertyTypes[$key] = $views['inheritable'];
         $this->allPropertyTypes[$key] = $views['declared'];
+        $this->judged[$key] = $this->judging;
 
         return null;
     }
@@ -1766,6 +1792,11 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      * entered would keep the earlier declaration's edges too, and a parent no longer
      * extended would go on being answered for by a class that no longer extends it.
      *
+     * A declaration the analysis pass will not judge is left out, and only here. It may
+     * still be inherited from, because what a class inherits does not depend on where its
+     * parent was written; it may not answer for what a class it draws from holds, because
+     * that would let a fixture decide whether production code is reported.
+     *
      * Built on first use, which is after the indexing pass has finished, for the same reason
      * the flattening caches are.
      *
@@ -1777,14 +1808,20 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             $this->traitUsers = [];
             $this->children = [];
 
+            // Indexed without a fallback: entering a declaration writes all four maps, so
+            // a key one holds the others hold too.
             foreach ($this->traitUses as $key => $traits) {
+                if (! $this->judged[$key]) {
+                    continue;
+                }
+
                 foreach ($traits as $trait) {
                     $this->traitUsers[self::key($trait)][] = $key;
                 }
             }
 
             foreach ($this->parents as $key => $parent) {
-                if ($parent !== null) {
+                if ($parent !== null && $this->judged[$key]) {
                     $this->children[self::key($parent)][] = $key;
                 }
             }

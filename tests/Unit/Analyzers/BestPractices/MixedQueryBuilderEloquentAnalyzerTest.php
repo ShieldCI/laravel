@@ -2833,8 +2833,6 @@ PHP;
         // query() is not itself a recorded Eloquent method, so the only evidence on the
         // Eloquent side is the read through $query AFTER the anonymous class. If the nested
         // declaration takes the method's variable map with it, the mixing goes unseen.
-        // The model is written fully qualified because the variable-tracking pass runs
-        // before names are resolved and only recognises a qualified one.
         $code = <<<'PHP'
 <?php
 
@@ -2847,7 +2845,7 @@ class UserRepository
 {
     public function audit()
     {
-        $query = \App\Models\User::query();
+        $query = User::query();
 
         $stamp = new class
         {
@@ -2874,5 +2872,602 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_tracks_a_model_assigned_through_an_imported_spelling(): void
+    {
+        // The model is written the way application code writes it, imported rather than spelled
+        // out. Nothing else in the class books the Eloquent side: query() is skipped by the
+        // direct path on purpose, so the variable map is the only thing that can see this, and
+        // the map is only populated if the assignment's class name is read after resolution.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        $query = User::query();
+        $query->where('active', 1);
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_counts_a_query_builder_write_through_an_aliased_db_import(): void
+    {
+        // A class that manages global scopes is spared unless it also writes through the query
+        // builder, and that write is recognised from the root of the chain, below the node the
+        // check runs on. Aliasing the facade is what tells the two apart: read before
+        // resolution the root spells "Database", which is no facade, and the write goes
+        // uncounted, so the class keeps an exemption it has not earned.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB as Database;
+
+class TenantRepository
+{
+    public function purge()
+    {
+        User::where('stale', 1)->get();
+        User::withoutGlobalScope('tenant')->get();
+
+        Database::table('users')->update(['active' => 0]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/TenantRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_a_variable_rebound_to_an_untracked_expression_loses_its_model_attribution(): void
+    {
+        // The model builder is replaced before anything is queried through it, so the only
+        // query this method issues is the Query Builder one. An attribution that outlives the
+        // assignment that created it books an Eloquent read that never happens, and that is
+        // the whole Eloquent side of the mixing verdict.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals()
+    {
+        $query = User::query();
+        $query = $this->buildRawQuery();
+
+        DB::table('users')->count();
+
+        return $query->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_closure_parameter_does_not_inherit_the_enclosing_model_attribution(): void
+    {
+        // $query names a parameter of the closure, which is a binding of its own and has
+        // nothing to do with the builder the method assigned. Reusing the name is ordinary,
+        // and reading the outer attribution through it invents an Eloquent read on users.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+        $this->applyFilters($query);
+
+        DB::table('users')->count();
+
+        return collect($rows)->map(function ($query) {
+            return $query->get();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_an_arrow_function_parameter_does_not_inherit_the_enclosing_model_attribution(): void
+    {
+        // An arrow function captures the enclosing scope, so its own parameter is the one
+        // spelling of $query that definitely is not the builder assigned above it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+        $this->applyFilters($query);
+
+        DB::table('users')->count();
+
+        return array_map(fn ($query) => $query->first(), $rows);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_foreach_value_variable_loses_the_model_attribution_it_overwrites(): void
+    {
+        // A foreach value binds in the enclosing scope rather than a new one, so this really
+        // does overwrite $query. The attribution has to go with it, and stay gone after the
+        // loop, because nothing knows what the iterated values are.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+        $this->applyFilters($query);
+
+        DB::table('users')->count();
+
+        foreach ($rows as $query) {
+            $query->get();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_function_parameter_does_not_inherit_a_file_level_model_attribution(): void
+    {
+        // A function declared beside the class has its own scope, and what the file assigned
+        // above it is not in it. The file level is worth covering because what a file gathers
+        // ahead of the outermost class is deliberately carried into that class's verdict.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+$query = User::query();
+
+function summarise($query)
+{
+    return $query->get();
+}
+
+class Repo
+{
+    public function totals()
+    {
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_closure_that_imports_a_tracked_variable_keeps_its_model_attribution(): void
+    {
+        // The closure does not reuse the name, it imports the variable, so the query it runs
+        // really is the one the method built. Scoping a closure must not cost this: the class
+        // reads users through Eloquent and through the query builder, which is the mixing the
+        // analyzer exists to report.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+
+        DB::table('users')->count();
+
+        return collect($rows)->map(function ($row) use ($query) {
+            return $query->get();
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_an_arrow_function_keeps_an_enclosing_attribution_it_does_not_shadow(): void
+    {
+        // An arrow function captures the enclosing scope without an import list, so a name it
+        // does not declare as a parameter is the enclosing one.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+
+        DB::table('users')->count();
+
+        return array_map(fn ($row) => $query->first(), $rows);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_a_variable_is_still_tracked_after_a_closure_shadowed_its_name(): void
+    {
+        // The closure's parameter is gone once the closure is, and the method's own $query is
+        // the one that was there all along. Scoping that does not hand the enclosing map back
+        // would silence every read after the first callback in the method.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals($rows)
+    {
+        $query = User::query();
+
+        collect($rows)->map(function ($query) {
+            return $query->get();
+        });
+
+        $query->where('active', 1);
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_a_destructured_rebind_loses_the_model_attribution(): void
+    {
+        // Destructuring rebinds every name it names, so an attribution one of them carried is
+        // as stale afterwards as it would be after a plain assignment. php-parser gives the
+        // same node for every spelling of it, list() and [] alike.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+        [$query, $label] = $rows;
+
+        DB::table('users')->count();
+
+        return [$query->count(), $label];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_nested_destructured_rebind_loses_the_model_attribution(): void
+    {
+        // A destructuring target nests, so the names it binds are not all one level down.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+        [[$query], $label] = $rows;
+
+        DB::table('users')->count();
+
+        return [$query->count(), $label];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_destructured_foreach_value_loses_the_model_attribution(): void
+    {
+        // The foreach value is a destructuring target rather than a plain variable, and it
+        // binds in the enclosing scope just the same.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals(array $rows)
+    {
+        $query = User::query();
+
+        foreach ($rows as [$query, $label]) {
+            $query->count();
+        }
+
+        DB::table('users')->count();
+
+        return $rows;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_rebind_by_reference_loses_the_model_attribution(): void
+    {
+        // Binding a reference replaces what the name stands for as surely as assigning a value
+        // to it, and it is a different node, so the invalidation has to name it too. What the
+        // name now holds is the query builder, so the count() read through it is a query-builder
+        // read; attributing it to the model books an Eloquent read the method never issues.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals()
+    {
+        $query = User::query();
+        $rows = DB::table('users');
+        $query = &$rows;
+
+        return $query->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_a_caught_exception_loses_the_model_attribution(): void
+    {
+        // A catch clause binds its variable in the enclosing scope and leaves it bound, so a
+        // name reused there stops standing for the builder it held. The read is placed after
+        // the block on purpose: inside it the name holds an exception, and a query through
+        // that is a program that cannot run.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Repo
+{
+    public function totals()
+    {
+        $query = User::query();
+
+        try {
+            $count = DB::table('users')->count();
+        } catch (\RuntimeException $query) {
+            $count = $query->getMessage();
+        }
+
+        return [$count, $query->count()];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Repo.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
     }
 }

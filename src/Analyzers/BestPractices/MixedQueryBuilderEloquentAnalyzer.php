@@ -457,6 +457,15 @@ class MixedQueryVisitor extends NodeVisitorAbstract
      */
     private array $classScopeStack = [];
 
+    /**
+     * Saved variable maps, pushed on entering a function-like scope and popped on leaving it.
+     * A closure, arrow function or function declaration binds names of its own, and a
+     * parameter that merely reuses a name is not the variable the enclosing method assigned.
+     *
+     * @var list<array<string, string>>
+     */
+    private array $functionScopeStack = [];
+
     /** @var bool Whether the current class writes via the query builder (DB::table()->insert/update/delete/...). */
     private bool $classHasQueryBuilderWrite = false;
 
@@ -523,21 +532,39 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->variableTracking = [];
         }
 
-        // Detect query-builder writes on a DB::table() chain, and deliberate global-scope
-        // management. A read-only class that explicitly manages scopes is doing intentional
-        // cross-cutting reads (e.g. cross-tenant analytics), not accidental scope bypass.
+        // A function-like scope binds names of its own, so the enclosing method's
+        // attributions are not simply visible inside it. Entering one without saying so lets
+        // a parameter that reuses a name stand for the model assigned outside it, which books
+        // an Eloquent read on a table the callback never touches.
+        if ($node instanceof Node\Expr\Closure
+            || $node instanceof Node\Expr\ArrowFunction
+            || $node instanceof Node\Stmt\Function_) {
+            $this->functionScopeStack[] = $this->variableTracking;
+            $this->variableTracking = $this->inheritedTracking($node);
+        }
+
+        // A foreach value binds in the enclosing scope rather than a new one, so it really
+        // does overwrite the name, and keeps it overwritten after the loop. Nothing here
+        // knows what is being iterated, so the attribution goes and does not come back.
+        if ($node instanceof Node\Stmt\Foreach_) {
+            $this->forgetBoundNames($node->keyVar);
+            $this->forgetBoundNames($node->valueVar);
+        }
+
+        // A catch clause binds its variable in the enclosing scope too, and leaves it bound
+        // after the block. A name reused there stops standing for the builder it held, and a
+        // read through it afterwards is a read of whatever the clause caught.
+        if ($node instanceof Node\Stmt\Catch_) {
+            $this->forgetBoundNames($node->var);
+        }
+
+        // Detect deliberate global-scope management. A read-only class that explicitly
+        // manages scopes is doing intentional cross-cutting reads (e.g. cross-tenant
+        // analytics), not accidental scope bypass. The query-builder write that cancels this
+        // is recognised in leaveNode, because it is named at the root of the chain rather
+        // than on this node.
         if ($node instanceof Node\Expr\MethodCall && $node->name instanceof Node\Identifier) {
             $method = $node->name->toString();
-            if (in_array($method, self::QUERY_BUILDER_WRITE_METHODS, true)) {
-                $root = $this->findRootStaticCall($node->var);
-                if ($root !== null
-                    && $root->class instanceof Node\Name
-                    && $this->isDbFacade($root->class)
-                    && $root->name instanceof Node\Identifier
-                    && $root->name->toString() === 'table') {
-                    $this->classHasQueryBuilderWrite = true;
-                }
-            }
             if (in_array($method, ['withoutGlobalScope', 'withoutGlobalScopes'], true)) {
                 $this->classManagesGlobalScopes = true;
             }
@@ -645,21 +672,6 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             // determine if a method call chain represents a relationship query.
         }
 
-        // P3.11: Track variable assignments ($query = User::where(...))
-        if ($node instanceof Node\Expr\Assign) {
-            if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-                // Check if RHS is a static call to a model
-                if ($node->expr instanceof Node\Expr\StaticCall) {
-                    if ($node->expr->class instanceof Node\Name) {
-                        if ($this->looksLikeModel($node->expr->class)) {
-                            // Track this variable as being associated with this model
-                            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
-                        }
-                    }
-                }
-            }
-        }
-
         // P3.12: Detect dynamic model references ($modelClass::where())
         if ($node instanceof Node\Expr\StaticCall) {
             if ($node->class instanceof Node\Expr\Variable && is_string($node->class->name)) {
@@ -683,6 +695,54 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        // An assignment rebinds every name it binds, whatever it assigns, so any attribution
+        // those names carried is dropped first. A stale entry books an Eloquent read through a
+        // variable that no longer holds a model, and that read is all it takes to call a class
+        // mixed. Binding a reference replaces what the name stands for just as surely, and
+        // destructuring does it to several names at once, so both are named here.
+        if ($node instanceof Node\Expr\Assign || $node instanceof Node\Expr\AssignRef) {
+            $this->forgetBoundNames($node->var);
+        }
+
+        // P3.11: Track variable assignments ($query = User::query()). The model is named by
+        // the static call on the right-hand side, a child of this assignment, so the name is
+        // read here rather than on the way in: a resolver sharing this traverser annotates
+        // each node as it arrives, and the child has not arrived yet while the assignment is
+        // being entered. Moving this back to enterNode is silent. looksLikeModel() would
+        // judge the name as written, an imported `User` matches none of its rules, and the
+        // variable is never tracked, which takes the Eloquent side of every query()-rooted
+        // chain with it.
+        //
+        // Only a model's static call puts an attribution back, and only for a plain variable: a
+        // destructuring target takes the call apart, so no one name it binds holds what the
+        // call returned.
+        if ($node instanceof Node\Expr\Assign
+            && $node->var instanceof Node\Expr\Variable
+            && is_string($node->var->name)
+            && $node->expr instanceof Node\Expr\StaticCall
+            && $node->expr->class instanceof Node\Name
+            && $this->looksLikeModel($node->expr->class)) {
+            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
+        }
+
+        // A query-builder write cancels the global-scope exemption in checkMixedUsage(). The
+        // facade is named at the root of the chain, below this node, so this read belongs on
+        // the way out for the same reason as the assignment above: read on the way in, an
+        // aliased DB spells something isDbFacade() does not recognise and the write goes
+        // uncounted. The flag is read when the class is left, which is later still.
+        if ($node instanceof Node\Expr\MethodCall
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->toString(), self::QUERY_BUILDER_WRITE_METHODS, true)) {
+            $root = $this->findRootStaticCall($node->var);
+            if ($root !== null
+                && $root->class instanceof Node\Name
+                && $this->isDbFacade($root->class)
+                && $root->name instanceof Node\Identifier
+                && $root->name->toString() === 'table') {
+                $this->classHasQueryBuilderWrite = true;
+            }
+        }
+
         // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase())
         // We use leaveNode so that NameResolver has already processed all child nodes
         if ($node instanceof Node\Expr\MethodCall) {
@@ -712,6 +772,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     }
                 }
             }
+        }
+
+        if ($node instanceof Node\Expr\Closure
+            || $node instanceof Node\Expr\ArrowFunction
+            || $node instanceof Node\Stmt\Function_) {
+            $this->variableTracking = array_pop($this->functionScopeStack) ?? [];
         }
 
         // When leaving a class, check for mixed usage
@@ -959,6 +1025,74 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         return $expr instanceof Node\Expr\StaticCall ? $expr : null;
+    }
+
+    /**
+     * Drop the attributions of every variable a binding target names.
+     *
+     * A target is usually one variable, but destructuring binds several and nests, and
+     * php-parser gives one node for every spelling of it, so `list($a, [$b])` and `[$a, [$b]]`
+     * arrive the same way. An item may be absent, for a skipped element, and an item's value
+     * may be something other than a variable, as in `[$a, $obj->prop] = ...`; neither names a
+     * variable this map tracks.
+     *
+     * A compound assignment is deliberately not routed here. `??=` leaves a non-null value
+     * alone, so an attribution it does not overwrite stays true, and clearing it would lose a
+     * real finding; every other compound operator needs a string or a number on the left, so
+     * reaching one with a builder there is a program that cannot run.
+     */
+    private function forgetBoundNames(?Node $target): void
+    {
+        if ($target instanceof Node\Expr\Variable && is_string($target->name)) {
+            unset($this->variableTracking[$target->name]);
+
+            return;
+        }
+
+        if ($target instanceof Node\Expr\List_) {
+            foreach ($target->items as $item) {
+                if ($item !== null) {
+                    $this->forgetBoundNames($item->value);
+                }
+            }
+        }
+    }
+
+    /**
+     * The attributions a function-like scope starts from.
+     *
+     * A closure sees only what it imports, and PHP rejects a parameter sharing a name with an
+     * imported variable, so the import list is the whole of it. An arrow function captures the
+     * enclosing scope on its own, so it keeps everything its parameters do not shadow. A
+     * function declaration captures nothing.
+     *
+     * @return array<string, string>
+     */
+    private function inheritedTracking(Node\Expr\Closure|Node\Expr\ArrowFunction|Node\Stmt\Function_ $node): array
+    {
+        if ($node instanceof Node\Stmt\Function_) {
+            return [];
+        }
+
+        if ($node instanceof Node\Expr\Closure) {
+            $imported = [];
+            foreach ($node->uses as $use) {
+                if (is_string($use->var->name) && isset($this->variableTracking[$use->var->name])) {
+                    $imported[$use->var->name] = $this->variableTracking[$use->var->name];
+                }
+            }
+
+            return $imported;
+        }
+
+        $inherited = $this->variableTracking;
+        foreach ($node->params as $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                unset($inherited[$param->var->name]);
+            }
+        }
+
+        return $inherited;
     }
 
     /**

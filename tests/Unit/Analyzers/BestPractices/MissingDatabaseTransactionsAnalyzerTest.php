@@ -5579,4 +5579,95 @@ PHP;
         $this->assertCount(1, $declarations);
         $this->assertFalse(isset($declarations[0]->namespacedName));
     }
+
+    /**
+     * A file whose two `use` statements land on one alias is one PHP would reject. The
+     * resolving pass threw on it and the analyzer carried on with the whole file unresolved,
+     * after which isLikelyDatabaseClass() could not tell a model from anything else and
+     * answered that everything was one. An import table keeps the first spelling and resolves
+     * the rest, so the collision costs one alias instead of the file.
+     *
+     * Both methods are in the one file so that the walk is shown to have run: a pass on a
+     * fixture with nothing to find reads the same as a file that was never reached.
+     */
+    public function test_a_colliding_import_no_longer_makes_every_static_call_a_model(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/Report.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+use App\Support\Cache;
+
+class Report
+{
+    public function build(array $a, array $b)
+    {
+        \App\Support\Ledger::create($a);
+        \App\Support\Ledger::create($b);
+    }
+
+    public function record(array $a, array $b)
+    {
+        \App\Models\Order::create($a);
+        \App\Models\Order::create($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Report::record()', $result);
+    }
+
+    /**
+     * The other side of the same degrade. isNonDbFacadeName() matches an unqualified name
+     * against the facade short names, which is right for `Storage::` in a file with no
+     * namespace and wrong for anything the resolver simply never reached. With the whole file
+     * unresolved, a model named after a facade took the exemption and silenced every later
+     * write on the variable holding it.
+     */
+    public function test_a_colliding_import_no_longer_lets_a_model_borrow_a_facade_exemption(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/SessionService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+use App\Support\Cache;
+use App\Models\Session;
+
+class SessionService
+{
+    public function touch(array $a, array $b)
+    {
+        $rows = Session::where('active', true);
+        $rows->update($a);
+        $rows->update($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('SessionService::touch()', $result);
+    }
 }

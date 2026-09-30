@@ -5428,4 +5428,82 @@ PHP,
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
     }
+
+    /**
+     * A property written `?Repository` is a NullableType wrapping the Name, so reading the Name
+     * straight off it yields nothing and the property is recorded with no type. An untyped
+     * property stays flaggable by design, so the unwrap is the whole of what keeps a nullable
+     * client exempt.
+     */
+    public function test_ignores_a_nullable_cache_client_declared_on_a_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/BaseReportService.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseReportService
+{
+    protected ?Repository $cache = null;
+}
+PHP,
+            'Support/ReportService.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class ReportService extends BaseReportService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The class a facade chain is judged by sits at the root of the chain, not at the node the
+     * write was entered on. Two calls deep is what exercises the walk: with one, the facade is
+     * already `$node->var` and the loop never runs, which a mutation confirmed. Every other
+     * facade fixture here writes straight off the facade, so nothing else reaches it.
+     */
+    public function test_ignores_a_cache_facade_reached_through_a_tagged_chain(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/TagFlusher.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Support\Facades\Cache;
+
+class TagFlusher
+{
+    public function flush(string $a, string $b)
+    {
+        Cache::store('redis')->tags('reports')->delete($a);
+        Cache::store('redis')->tags('reports')->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

@@ -999,19 +999,6 @@ class TransactionVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * The non-database client types the declarations drawing from this one agree on, keyed by
-     * property name so the receiver check above reads them like any other declared type.
-     *
-     * A method declared in a trait or a parent writes through a property the using or child
-     * class declares, which the declaration holding the method cannot see, so those writes
-     * were reported. Those declarations are not one type, so a property only counts when
-     * every type any of them declares for it is a non-database client. One of them naming a
-     * model leaves the property out, and the writes stay reported. Every candidate therefore
-     * satisfies the check below, which is why any of them can stand for the property.
-     *
-     * @return array<string, string>
-     */
-    /**
      * The declared property types the declaration being entered holds without declaring them
      * itself.
      *
@@ -1032,6 +1019,19 @@ class TransactionVisitor extends NodeVisitorAbstract
             : $this->classes->gatherFrom($this->declaredAncestorsOf($node));
     }
 
+    /**
+     * The non-database client types the declarations drawing from this one agree on, keyed by
+     * property name so the receiver check above reads them like any other declared type.
+     *
+     * A method declared in a trait or a parent writes through a property the using or child
+     * class declares, which the declaration holding the method cannot see, so those writes
+     * were reported. Those declarations are not one type, so a property only counts when
+     * every type any of them declares for it is a non-database client. One of them naming a
+     * model leaves the property out, and the writes stay reported. Every candidate therefore
+     * satisfies the check below, which is why any of them can stand for the property.
+     *
+     * @return array<string, string>
+     */
     private function descendantClientTypes(Node\Stmt\ClassLike $node): array
     {
         $agreed = [];

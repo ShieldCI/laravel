@@ -15,6 +15,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ClassifiesFiles;
+use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Concerns\ReadsClassDeclarations;
 use ShieldCI\Concerns\ReadsConfigArrays;
@@ -179,6 +180,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
  */
 class TransactionVisitor extends NodeVisitorAbstract
 {
+    use IdentifiesNonQueryClasses;
     use NamesDeclarations;
     use ReadsClassDeclarations;
     use TracksImportedNames;
@@ -186,9 +188,12 @@ class TransactionVisitor extends NodeVisitorAbstract
     /**
      * Facades that have methods looking like DB writes but aren't database operations.
      */
-    private const NON_DB_FACADES = [
-        'Cache', 'Redis', 'RateLimiter', 'Session', 'Storage', 'Queue',
-    ];
+    /**
+     * The database facade, as a candidate list so that classMatches() judges it the way it
+     * judges every other class here: an import, an alias and a fully qualified spelling all
+     * name it, and `DB` written inside a namespace that does not import it does not.
+     */
+    private const DB_FACADE = ['Illuminate\\Support\\Facades\\DB'];
 
     /**
      * The same six as fully qualified names, for the receiver-marking path where a short
@@ -914,7 +919,7 @@ class TransactionVisitor extends NodeVisitorAbstract
             return null;
         }
 
-        return $root->class->toString() === 'DB' ? $node->name->toString() : null;
+        return $this->classMatches($root->class, self::DB_FACADE) ? $node->name->toString() : null;
     }
 
     private function isTransactionCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): bool
@@ -931,26 +936,12 @@ class TransactionVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Extract short class name from a Node\Name, using resolved FQN if available.
-     */
-    private function getShortClassName(Node\Name $name): string
-    {
-        $fqn = $this->resolvedClassFqn($name);
-
-        $parts = explode('\\', $fqn);
-
-        return end($parts) ?: $fqn;
-    }
-
-    /**
      * Check if a static call is on a non-database facade.
      */
     private function isNonDbFacadeCall(Node\Expr\StaticCall $node): bool
     {
         if ($node->class instanceof Node\Name) {
-            $shortName = $this->getShortClassName($node->class);
-
-            return in_array($shortName, self::NON_DB_FACADES, true);
+            return $this->classMatches($node->class, self::NON_DB_FACADE_FQNS);
         }
 
         return false;
@@ -970,9 +961,7 @@ class TransactionVisitor extends NodeVisitorAbstract
 
         // Check if root is a static call on a non-DB facade
         if ($current instanceof Node\Expr\StaticCall && $current->class instanceof Node\Name) {
-            $shortName = $this->getShortClassName($current->class);
-
-            return in_array($shortName, self::NON_DB_FACADES, true);
+            return $this->classMatches($current->class, self::NON_DB_FACADE_FQNS);
         }
 
         // Two or more levels of property access (e.g. $this->stripe->customers->update())
@@ -1093,14 +1082,7 @@ class TransactionVisitor extends NodeVisitorAbstract
      */
     private function isNonDbFacadeName(Node\Name $class): bool
     {
-        $fqn = $this->resolvedClassFqn($class);
-
-        if (in_array($fqn, self::NON_DB_FACADE_FQNS, true)) {
-            return true;
-        }
-
-        return ! str_contains($fqn, '\\')
-            && in_array($fqn, self::NON_DB_FACADES, true);
+        return $this->classMatches($class, self::NON_DB_FACADE_FQNS);
     }
 
     /**
@@ -1137,7 +1119,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                 $method = $node->name->toString();
 
                 // First check if this is a DB class method
-                if ($node->class instanceof Node\Name && $node->class->toString() === 'DB') {
+                if ($node->class instanceof Node\Name && $this->classMatches($node->class, self::DB_FACADE)) {
                     // Exclude transaction management methods
                     if (in_array($method, ['transaction', 'beginTransaction', 'commit', 'rollBack'], true)) {
                         return false;
@@ -1295,6 +1277,11 @@ class TransactionVisitor extends NodeVisitorAbstract
  */
 class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 {
+    use IdentifiesNonQueryClasses;
+    use TracksImportedNames;
+
+    private const DB_FACADE = ['Illuminate\\Support\\Facades\\DB'];
+
     /** @var array<int, true> File positions of closures passed directly to DB::transaction(). */
     private array $transactionClosurePositions = [];
 
@@ -1323,6 +1310,10 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
+        // Before anything reads a class name: namespace and use declarations are reached
+        // ahead of the code that relies on them, so the table is complete by then.
+        $this->trackImports($node);
+
         // Track the method we are currently inside (and its visibility).
         if ($node instanceof Node\Stmt\ClassMethod) {
             $this->methodNameStack[] = $this->currentMethodName;
@@ -1383,7 +1374,7 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
         return $root instanceof Node\Expr\StaticCall
             && $root->class instanceof Node\Name
-            && $root->class->toString() === 'DB';
+            && $this->classMatches($root->class, self::DB_FACADE);
     }
 
     public function leaveNode(Node $node): ?Node

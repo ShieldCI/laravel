@@ -5670,4 +5670,147 @@ PHP,
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('SessionService::touch()', $result);
     }
+
+    /**
+     * The facade was matched on the name as written, so only the bare `DB` spelling counted as
+     * a transaction and the writes inside any other spelling were reported as unprotected.
+     */
+    public function test_recognises_a_fully_qualified_transaction(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/OrderService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function place(array $a, array $b)
+    {
+        \Illuminate\Support\Facades\DB::transaction(function () use ($a, $b) {
+            Order::create($a);
+            Order::create($b);
+        });
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_recognises_a_transaction_on_an_aliased_facade(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/LedgerService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB as Database;
+use App\Models\Entry;
+
+class LedgerService
+{
+    public function post(array $a, array $b)
+    {
+        Database::transaction(function () use ($a, $b) {
+            Entry::create($a);
+            Entry::create($b);
+        });
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The facade exemption used to be decided on the last segment of the resolved name, so a
+     * model sharing a short name with a facade took it and its writes went uncounted. The
+     * marking path had always matched the whole name for that reason; the two write paths now
+     * agree with it.
+     */
+    public function test_flags_a_model_whose_short_name_matches_a_facade(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/SessionService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Session;
+
+class SessionService
+{
+    public function open(array $a, array $b)
+    {
+        Session::create($a);
+        Session::create($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    /**
+     * A guard, not a proof: this reads the same before the change as after.
+     *
+     * classMatches() is shared with the analyzers that exempt a much longer list of facades,
+     * and taking that list along with the matcher would have quietly exempted Http, Mail, Event
+     * and some thirty others here. A chain is where that would show: a static call is gated by
+     * isLikelyDatabaseClass() as well, and reflection already answers that Http is not a model,
+     * so only the chain path rests on the candidate list alone.
+     *
+     * The finding itself is arguable, and that is the point of fixing the boundary rather than
+     * the list: what this analyzer counts as a write is a separate question from how a class is
+     * named, and only the naming was in hand here.
+     */
+    public function test_a_facade_outside_this_analyzers_list_is_still_counted_in_a_chain(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/Purger.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Http;
+
+class Purger
+{
+    public function purge(string $a, string $b)
+    {
+        Http::withToken('t')->delete($a);
+        Http::withToken('t')->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertFailed($analyzer->analyze());
+    }
 }

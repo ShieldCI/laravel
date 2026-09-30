@@ -27,17 +27,28 @@ use PhpParser\Node\Stmt;
  *
  * A resolving pass in a traverser of its own does serve a down-reaching read: it finishes
  * annotating every Name in the file before the analysis walk starts, which is the arrangement
- * missing-database-transactions and AuthenticationAnalyzer use, and it works. What it costs is
- * a second walk over every file and, because parseFile() hands back a shared tree, resolution
- * written into that tree for as long as the cache lives. So the choice for a down-reaching
- * reader is between a separate pass and an import table, not between a broken one and a
- * working one.
+ * missing-database-transactions and AuthenticationAnalyzer use. So the choice for a
+ * down-reaching reader is between a separate pass and an import table, not between a broken
+ * one and a working one.
+ *
+ * The pass costs a second walk over every file, and resolution written into the tree
+ * parseFile() shares, for as long as the cache lives. It also costs a guard: a NameResolver
+ * built with no error handler gets ErrorHandler\Throwing, so a file whose two `use`
+ * statements land on one alias errors the analyzer unless the call site catches it, which is
+ * what ResolvesClassNames::resolveNamesForMatching() is for.
  *
  * An import table does not have that problem. `namespace` and `use` are always ancestors or
  * earlier siblings of the code using them, so the table is complete before any expression
  * is entered and the answer no longer depends on which direction the reader looks, or on
- * when the traverser arrives. The one shape this gives up is a `use` written textually
- * after the code it applies to: PHP accepts it, a single forward pass does not.
+ * when the traverser arrives.
+ *
+ * Collecting as the walk arrives is also what PHP does, and nothing is given up by it. PHP
+ * adds an import where it reads the `use`, not across the enclosing block, so given
+ * `namespace A; class C { D::class } use B\D; class E { D::class }` the first class sees
+ * `A\D` and the second sees `B\D`. Filling the table from a scope's statement list before
+ * the walk would answer `B\D` for both, handing one class an exemption that belongs to
+ * another, which is #423 again. Answering as PHP does is resolvedClassFqn()'s contract
+ * below, and IdentifiesNonQueryClasses declares it in the same words.
  *
  * Only the alias collection lives here, transcribed from NameResolver::enterNode() and
  * ::addAlias(); resolution itself stays with php-parser's NameContext. Every import type is
@@ -61,17 +72,21 @@ use PhpParser\Node\Stmt;
  */
 trait TracksImportedNames
 {
-    private ?NameContext $importedNames = null;
+    /**
+     * Built by startTrackingImports() alone, which beforeTraverse() calls before php-parser
+     * reaches the first node. Left uninitialised rather than nullable so that a consumer
+     * bypassing that call fails there, instead of resolving a file against an empty table.
+     */
+    private NameContext $importedNames;
 
     /**
      * Start every traversal with an empty table.
      *
-     * Declared here rather than left to each consumer, because a consumer that forgot it would
-     * not fail: importedNames() would hand back a lazily built table that is then never reset
-     * between files, so file N would be resolved with file N-1's imports and nothing in the
-     * suite would notice. A trait method wins over the one inherited from NodeVisitorAbstract,
-     * but not over one the consumer declares itself; a consumer that needs its own
-     * beforeTraverse has to call startTrackingImports() from it.
+     * This is the only place the table is built, so a consumer that declares its own
+     * beforeTraverse and does not call startTrackingImports() from it fails on the first node
+     * of the first file, rather than resolving that file with the previous one's imports. A
+     * trait method wins over the one inherited from NodeVisitorAbstract, but not over one the
+     * consumer declares itself.
      *
      * This resets the table and nothing else. It is the trait's own state, not the consumer's,
      * so a visitor with other per-file state still has to reset that itself or be built fresh
@@ -93,10 +108,18 @@ trait TracksImportedNames
      * records it and keeps the first spelling rather than throwing part-way through a walk,
      * so a file that could never have compiled is still analysed with the imports that do
      * make sense, instead of falling back to bare names for the whole file.
+     *
+     * NameContext::$namespace is typed with no default, so startNamespace() has to run
+     * before any lookup or reading it throws.
      */
     private function startTrackingImports(): void
     {
-        $this->importedNames = $this->freshImportTable();
+        // Nothing reads this handler's errors, and that is the point. Collecting is chosen
+        // over Throwing so that a collision costs one alias instead of the file, and over a
+        // handler that reports so that a file which could never have compiled does not turn
+        // into an analyzer finding about the analyzer.
+        $this->importedNames = new NameContext(new ErrorHandler\Collecting);
+        $this->importedNames->startNamespace();
     }
 
     /**
@@ -105,14 +128,14 @@ trait TracksImportedNames
     private function trackImports(Node $node): void
     {
         if ($node instanceof Stmt\Namespace_) {
-            $this->importedNames()->startNamespace($node->name);
+            $this->importedNames->startNamespace($node->name);
 
             return;
         }
 
         if ($node instanceof Stmt\Use_) {
             foreach ($node->uses as $use) {
-                $this->importedNames()->addAlias(
+                $this->importedNames->addAlias(
                     $use->name,
                     (string) $use->getAlias(),
                     $node->type | $use->type,
@@ -127,7 +150,7 @@ trait TracksImportedNames
             foreach ($node->uses as $use) {
                 // Spelled out rather than Name::concat(), whose signature is nullable on
                 // both operands and so reads as fallible here when it is not.
-                $this->importedNames()->addAlias(
+                $this->importedNames->addAlias(
                     new Name($node->prefix->toString().'\\'.$use->name->toString()),
                     (string) $use->getAlias(),
                     $node->type | $use->type,
@@ -148,29 +171,6 @@ trait TracksImportedNames
      */
     protected function resolvedClassFqn(Name $class): string
     {
-        return ltrim($this->importedNames()->getResolvedClassName($class)->toString(), '\\');
-    }
-
-    private function importedNames(): NameContext
-    {
-        return $this->importedNames ??= $this->freshImportTable();
-    }
-
-    /**
-     * NameContext::$namespace is typed with no default, so startNamespace() has to run
-     * before any lookup or reading it throws.
-     */
-    private function freshImportTable(): NameContext
-    {
-        // Nothing reads this handler's errors, and that is the point: the only error it can
-        // collect is a colliding alias, which is an import set PHP would itself reject, and the
-        // documented answer to one is to keep the first spelling and carry on. Collecting is
-        // chosen over Throwing so that the collision costs one alias instead of the file, and
-        // over a handler that reports so that a file which could never have compiled does not
-        // turn into an analyzer finding about the analyzer.
-        $context = new NameContext(new ErrorHandler\Collecting);
-        $context->startNamespace();
-
-        return $context;
+        return ltrim($this->importedNames->getResolvedClassName($class)->toString(), '\\');
     }
 }

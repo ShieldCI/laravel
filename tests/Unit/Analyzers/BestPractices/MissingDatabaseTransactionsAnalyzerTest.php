@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\MissingDatabaseTransactionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -5505,5 +5506,77 @@ PHP,
         $analyzer->setPaths(['.']);
 
         $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_does_not_write_resolution_into_the_shared_parser_cache(): void
+    {
+        // This analyzer used to resolve names in a pass of its own, twice over every file. With
+        // replaceNodes off the Name survives, but a resolvedName attribute and a namespacedName
+        // on the declaration take its place, and parseFile() hands back a shared, mtime-cached
+        // tree, so both outlived the run. Collecting imports during each walk writes nothing,
+        // and neither of this analyzer's traversers registers ParentConnectingVisitor, so the
+        // walk is cache-clean in full rather than in part. Both halves are asserted, so
+        // reinstating a resolving pass fails here rather than in whatever later reads it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function place(array $a, array $b)
+    {
+        Order::create($a);
+        Order::create($b);
+    }
+}
+PHP;
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed rather than a second parse of the same file. The cache is keyed
+        // by path and mtime with no normalisation, so setPaths() below has to name 'Services'
+        // and not '.', or the analyzer would look up '<dir>/./Services/OrderService.php' and
+        // get its own entry.
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $path = $tempDir.'/Services/OrderService.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(2, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        // A finding rather than a pass, because runAnalysis() swallows a per-file throw and
+        // reports a pass: an assertPassed() here would read the same whether the file was
+        // walked or never reached, and an untouched tree would then prove nothing.
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        // One entry, or the analyzer parsed a second spelling of the same file and left the
+        // tree below pristine for the wrong reason.
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        /** @var array<int, Node\Expr\StaticCall> $reparsed */
+        $reparsed = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
+        $this->assertSame($calls[0], $reparsed[0]);
+
+        $class = $calls[0]->class;
+        if (! $class instanceof Node\Name) {
+            self::fail('Expected the static call to name a class.');
+        }
+
+        $this->assertNull($class->getAttribute('resolvedName'));
+
+        /** @var array<int, Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertFalse(isset($declarations[0]->namespacedName));
     }
 }

@@ -180,4 +180,29 @@ trait TracksImportedNames
     {
         return ltrim($this->importedNames->getResolvedClassName($class)->toString(), '\\');
     }
+
+    /**
+     * The fully qualified name of a class-like declaration, or null for an anonymous class,
+     * which nothing elsewhere can name to ask about.
+     *
+     * A declaration is not a reference and does not go through getResolvedClassName(): its name
+     * is always a single segment and always qualified by the namespace it is written in, never
+     * by an import. `use App\Order;` followed by `class Order {}` in `namespace App\Http`
+     * declares App\Http\Order, and resolving the name as a reference would answer App\Order.
+     *
+     * Reading the namespace off the table rather than a namespacedName property is what lets a
+     * reader answer this without a NameResolver pass having annotated the tree.
+     */
+    protected function declarationFqn(Stmt\ClassLike $class): ?string
+    {
+        if ($class->name === null) {
+            return null;
+        }
+
+        $namespace = $this->importedNames->getNamespace();
+
+        return $namespace === null
+            ? $class->name->toString()
+            : ltrim($namespace->toString(), '\\').'\\'.$class->name->toString();
+    }
 }

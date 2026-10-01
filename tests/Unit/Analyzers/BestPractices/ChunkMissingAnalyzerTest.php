@@ -2178,4 +2178,45 @@ PHP;
         $issues = array_values($result->getIssues());
         $this->assertSame(23, $issues[0]->location?->line);
     }
+
+    public function test_does_not_apply_an_import_written_after_the_code_it_would_affect(): void
+    {
+        // PHP adds an import to the table where it reads the `use`, not for the whole block:
+        // ahead of the one below, `Cache` is App\Services\Cache, and only code after it sees
+        // the facade. Collecting imports as the walk reaches them is what matches that, so the
+        // loop here is a row read and is reported. Were the table instead filled from the
+        // namespace's statement list before the walk, the facade would exempt a class PHP
+        // resolves to something else, which is the mismatch #423 was filed about.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LedgerService
+{
+    public function render()
+    {
+        foreach (Cache::get('ledger.rows', []) as $row) {
+            echo $row;
+        }
+    }
+}
+
+use Illuminate\Support\Facades\Cache;
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LedgerService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        $issues = array_values($result->getIssues());
+        $this->assertSame(9, $issues[0]->location?->line);
+    }
 }

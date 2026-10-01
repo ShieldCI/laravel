@@ -34,13 +34,15 @@ use PhpParser\Node\Stmt;
  * The pass costs a second walk over every file, and resolution written into the tree
  * parseFile() shares, for as long as the cache lives. It also costs a guard: a NameResolver
  * built with no error handler gets ErrorHandler\Throwing, so a file whose two `use`
- * statements land on one alias errors the analyzer unless the call site catches it, which is
- * what ResolvesClassNames::resolveNamesForMatching() is for.
+ * statements land on one alias errors the analyzer unless the call site catches it.
+ * missing-database-transactions catches it, through
+ * ResolvesClassNames::resolveNamesForMatching(); AuthenticationAnalyzer's four sites do not,
+ * which is #445.
  *
- * An import table does not have that problem. `namespace` and `use` are always ancestors or
- * earlier siblings of the code using them, so the table is complete before any expression
- * is entered and the answer no longer depends on which direction the reader looks, or on
- * when the traverser arrives.
+ * An import table does not have that problem. The answer comes from the table rather than
+ * from an annotation on the node, so it no longer depends on which direction the reader
+ * looks: reaching down to a StaticCall the traverser has not visited yet reads the same
+ * table the StaticCall's own visit would.
  *
  * Collecting as the walk arrives is also what PHP does, and nothing is given up by it. PHP
  * adds an import where it reads the `use`, not across the enclosing block, so given
@@ -75,18 +77,23 @@ trait TracksImportedNames
     /**
      * Built by startTrackingImports() alone, which beforeTraverse() calls before php-parser
      * reaches the first node. Left uninitialised rather than nullable so that a consumer
-     * bypassing that call fails there, instead of resolving a file against an empty table.
+     * bypassing that call throws on its first lookup instead of resolving a file against a
+     * table nothing filled.
+     *
+     * The throw does not reach the user: both consumers skip a file on \Throwable, so a
+     * bypass costs every file and the analyzer still returns passed(). What it buys is a red
+     * suite, which the nullable property did not: delete beforeTraverse() with the `??=` in
+     * place and every test stays green.
      */
     private NameContext $importedNames;
 
     /**
      * Start every traversal with an empty table.
      *
-     * This is the only place the table is built, so a consumer that declares its own
-     * beforeTraverse and does not call startTrackingImports() from it fails on the first node
-     * of the first file, rather than resolving that file with the previous one's imports. A
-     * trait method wins over the one inherited from NodeVisitorAbstract, but not over one the
-     * consumer declares itself.
+     * This is the only place the table is built. A trait method wins over the one inherited
+     * from NodeVisitorAbstract, but not over one the consumer declares itself, so a consumer
+     * that needs its own beforeTraverse has to call startTrackingImports() from it, which is
+     * the reason that method is separate from this one.
      *
      * This resets the table and nothing else. It is the trait's own state, not the consumer's,
      * so a visitor with other per-file state still has to reset that itself or be built fresh

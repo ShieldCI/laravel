@@ -396,8 +396,8 @@ class TransactionVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        // Before anything reads a class name: namespace and use declarations are reached
-        // ahead of the code that relies on them, so the table is complete by then.
+        // Before anything reads a class name: the table then holds the imports the walk has
+        // reached, which is the set PHP applies at this point in the file.
         $this->trackImports($node);
 
         // Track the current class-like declaration. A trait declares properties the same
@@ -1310,8 +1310,8 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        // Before anything reads a class name: namespace and use declarations are reached
-        // ahead of the code that relies on them, so the table is complete by then.
+        // Before anything reads a class name: the table then holds the imports the walk has
+        // reached, which is the set PHP applies at this point in the file.
         $this->trackImports($node);
 
         // Track the method we are currently inside (and its visibility).
@@ -1524,8 +1524,8 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        // Before anything reads a class name: namespace and use declarations are reached
-        // ahead of the code that relies on them, so the table is complete by then.
+        // Before anything reads a class name: the table then holds the imports the walk has
+        // reached, which is the set PHP applies at this point in the file.
         $this->trackImports($node);
 
         if (! ($node instanceof Node\Stmt\ClassLike)) {

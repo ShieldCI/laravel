@@ -38,8 +38,8 @@ use PhpParser\Node;
  *
  * Resolution is the consumer's to supply. resolvedClassFqn() is declared below and left
  * unimplemented, so a consumer states how its names resolve instead of inheriting a default
- * that quietly matches on the name as written, which is what #423 was filed about. Both
- * consumers today also use TracksImportedNames, which satisfies it from imports collected
+ * that quietly matches on the name as written, which is what #423 was filed about. Every
+ * consumer today also uses TracksImportedNames, which satisfies it from imports collected
  * during the walk. A resolving pass sharing the consumer's traverser is the one arrangement
  * that cannot serve a class name read by reaching down from an ancestor, because it annotates
  * each node on arrival and the traverser has not reached the root yet; a pass in a traverser

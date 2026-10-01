@@ -27,17 +27,15 @@ use PhpParser\Node\Stmt;
  *
  * A resolving pass in a traverser of its own does serve a down-reaching read: it finishes
  * annotating every Name in the file before the analysis walk starts, which is the arrangement
- * missing-database-transactions and AuthenticationAnalyzer use. So the choice for a
- * down-reaching reader is between a separate pass and an import table, not between a broken
- * one and a working one.
+ * AuthenticationAnalyzer uses. So the choice for a down-reaching reader is between a separate
+ * pass and an import table, not between a broken one and a working one.
  *
  * The pass costs a second walk over every file, and resolution written into the tree
  * parseFile() shares, for as long as the cache lives. It also costs a guard: a NameResolver
  * built with no error handler gets ErrorHandler\Throwing, so a file whose two `use`
  * statements land on one alias errors the analyzer unless the call site catches it.
- * missing-database-transactions catches it, through
- * ResolvesClassNames::resolveNamesForMatching(); AuthenticationAnalyzer's four sites do not,
- * which is #445.
+ * unguarded-models catches it, through ResolvesClassNames::resolveNamesForMatching();
+ * AuthenticationAnalyzer's four sites do not, which is #445.
  *
  * An import table does not have that problem. The answer comes from the table rather than
  * from an annotation on the node, so it no longer depends on which direction the reader
@@ -80,7 +78,7 @@ trait TracksImportedNames
      * bypassing that call throws on its first lookup instead of resolving a file against a
      * table nothing filled.
      *
-     * The throw does not reach the user: both consumers skip a file on \Throwable, so a
+     * The throw does not reach the user: every consumer skips a file on \Throwable, so a
      * bypass costs every file and the analyzer still returns passed(). What it buys is a red
      * suite, which the nullable property did not: delete beforeTraverse() with the `??=` in
      * place and every test stays green.
@@ -97,7 +95,9 @@ trait TracksImportedNames
      *
      * This resets the table and nothing else. It is the trait's own state, not the consumer's,
      * so a visitor with other per-file state still has to reset that itself or be built fresh
-     * per file, which is what both consumers do.
+     * per file. Most consumers are built fresh; ClassHierarchyScanner is one instance indexing
+     * the whole project, so for that one this reset is what keeps file N from being resolved
+     * with file N-1's imports.
      *
      * @param  array<Node>  $nodes
      */

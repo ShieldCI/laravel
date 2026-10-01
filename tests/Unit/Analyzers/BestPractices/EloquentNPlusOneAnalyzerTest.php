@@ -6347,4 +6347,137 @@ PHP,
         $this->assertHasIssueContaining('parts', $result);
         $this->assertCount(1, $result->getIssues());
     }
+
+    /**
+     * PHP resolves a class name without regard to case, so `baseProduct` and `BaseProduct` name
+     * one class. The scan used to key its declaration table on the name as written, so the
+     * reference found nothing, the parent's $fillable was not inherited, and a plain column read
+     * fell back to the name heuristic.
+     */
+    public function test_does_not_flag_a_column_declared_fillable_on_a_differently_cased_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends baseProduct {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * An import applies from its own line, not across the enclosing block, so the parent below
+     * is App\Models\BaseProduct and not the one the trailing `use` names. Collecting a scope's
+     * imports before walking it answered the other way.
+     *
+     * The two candidate parents have to disagree about `sku` for that to show: one declares it
+     * fillable, the other declares a relationship of that name. A first attempt gave the wrong
+     * parent nothing, and the test passed either way, because a parent that was found but wrong
+     * still left the registry conclusive and `sku` still matched no relationship.
+     */
+    public function test_does_not_apply_an_import_written_after_the_class_it_would_reparent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Other/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Other;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    public function sku()
+    {
+        return $this->belongsTo(\App\Models\Sku::class);
+    }
+}
+PHP,
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends BaseProduct {}
+
+use App\Other\BaseProduct;
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

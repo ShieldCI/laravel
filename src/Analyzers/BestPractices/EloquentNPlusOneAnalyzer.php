@@ -23,7 +23,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\BladeCompilerFactory;
-use ShieldCI\Support\EloquentModelDetector;
+use ShieldCI\Support\ClassHierarchyIndex;
 use ShieldCI\Support\ModelVariableScanner;
 use ShieldCI\Support\ViewBindingRegistry;
 use ShieldCI\Support\ViewRenderScanner;
@@ -451,6 +451,20 @@ class ModelScanResult
  */
 class EloquentModelRelationshipScanner
 {
+    // Not a visitor: the walk below is a statement recursion that never descends into a method
+    // body, which #332 settled against for being the hot path #302 was about. So the import
+    // table is driven by hand, startTrackingImports() per file and trackImports() per statement,
+    // and the beforeTraverse() hook the trait also offers goes unused here.
+    use TracksImportedNames;
+
+    /**
+     * KNOWN_EXTERNAL_DECLARATIONS under the keys the rest of the scan uses. Built here rather
+     * than written folded, so the constant stays readable and one rule folds every key.
+     *
+     * @var array<string, array<string>>|null
+     */
+    private ?array $knownExternal = null;
+
     /** @var array<string> */
     private const RELATION_METHODS = [
         'hasOne', 'hasMany', 'hasOneThrough', 'hasManyThrough',
@@ -532,11 +546,13 @@ class EloquentModelRelationshipScanner
     private const OPAQUE_MAGIC_METHODS = ['__get', '__call', '__callstatic'];
 
     /**
-     * Every class and trait declaration the scan saw, keyed by fully qualified name.
+     * Every class and trait declaration the scan saw, keyed the way ClassHierarchyIndex keys
+     * them, which is folded: PHP resolves a class name without regard to case, so a parent
+     * written `baseModel` against a declaration of `BaseModel` names the same class and has to
+     * find it. This table used to key on the name as written, and that reference missed.
      *
-     * `parent` and `traits` hold fully qualified names resolved through the declaring
-     * namespace's imports, so the inheritance graph can be walked without touching the
-     * filesystem: every file is already parsed by the time this table is complete.
+     * What the declaration extends and which traits it uses live in the index rather than here,
+     * so the graph is walked through it.
      *
      * @var array<string, array{
      *     kind: string,
@@ -545,8 +561,6 @@ class EloquentModelRelationshipScanner
      *     attributes: array<string>,
      *     accessors: array<string>,
      *     members: array<string>,
-     *     parent: ?string,
-     *     traits: array<string>,
      *     opaque: bool,
      *     selfDeclared: bool,
      * }>
@@ -554,7 +568,7 @@ class EloquentModelRelationshipScanner
     private array $declarations = [];
 
     /**
-     * Memoized flattening of $declarations, keyed by fully qualified name.
+     * Memoized flattening of $declarations, under the same folded keys.
      *
      * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool}>
      */
@@ -583,7 +597,10 @@ class EloquentModelRelationshipScanner
      */
     private bool $unattributedRegisteredRelation = false;
 
-    public function __construct(private ParserInterface $parser) {}
+    public function __construct(
+        private ParserInterface $parser,
+        private ClassHierarchyIndex $hierarchy = new ClassHierarchyIndex,
+    ) {}
 
     /**
      * @param  array<string>  $files
@@ -601,15 +618,18 @@ class EloquentModelRelationshipScanner
             if (empty($ast)) {
                 continue;
             }
-            $this->collectStatements($ast, null, []);
+            // One table per file, as php-parser's own resolver would start one.
+            $this->startTrackingImports();
+            $this->collectStatements($ast);
         }
 
         $this->applyRegisteredRelations();
 
         $result = $this->buildRegistries();
 
-        // The graph has served its purpose. Releasing it keeps nothing but the registries
-        // alive for the per-file pass that follows.
+        // The tables have served their purpose. Releasing them keeps nothing but the registries
+        // alive for the per-file pass that follows. The edges the index holds go with the
+        // scanner, which runAnalysis() drops as soon as this returns.
         $this->declarations = [];
         $this->resolved = [];
         $this->registeredRelations = [];
@@ -647,108 +667,50 @@ class EloquentModelRelationshipScanner
 
     /**
      * @param  array<Node>  $stmts
-     * @param  array<string, string>  $useStatements
      */
-    private function collectStatements(array $stmts, ?string $namespace, array $useStatements): void
+    private function collectStatements(array $stmts): void
     {
-        $useStatements = [...$useStatements, ...$this->collectImports($stmts)];
-
         foreach ($stmts as $stmt) {
+            // Recorded as the walk reaches them, in the order the file writes them, which is
+            // where PHP itself adds an import: a `use` below a declaration does not apply to it.
+            $this->trackImports($stmt);
+
             if ($stmt instanceof Stmt\Namespace_) {
-                $this->collectStatements($stmt->stmts, $stmt->name?->toString(), $useStatements);
+                $this->collectStatements($stmt->stmts);
             } elseif ($stmt instanceof Stmt\Class_ || $stmt instanceof Stmt\Trait_) {
-                $this->collectDeclaration($stmt, $namespace, $useStatements);
+                $this->collectDeclaration($stmt);
             }
         }
     }
 
-    /**
-     * Short name to fully qualified name for the class imports declared at this level.
-     *
-     * Only `use Foo\Bar;` counts. `use function` and `use const` share the statement node
-     * but live in separate name contexts, so folding them in would let a function import
-     * shadow a class of the same name. A group use reports an unknown type when its items
-     * carry their own, so the item wins in that case.
-     *
-     * @param  array<Node>  $stmts
-     * @return array<string, string>
-     */
-    private function collectImports(array $stmts): array
+    private function collectDeclaration(Stmt\ClassLike $decl): void
     {
-        $imports = [];
-
-        foreach ($stmts as $stmt) {
-            if ($stmt instanceof Stmt\Use_) {
-                if ($stmt->type !== Stmt\Use_::TYPE_NORMAL) {
-                    continue;
-                }
-
-                foreach ($stmt->uses as $use) {
-                    $imports[$use->getAlias()->toString()] = $use->name->toString();
-                }
-            } elseif ($stmt instanceof Stmt\GroupUse) {
-                $prefix = $stmt->prefix->toString();
-
-                foreach ($stmt->uses as $use) {
-                    $type = $stmt->type === Stmt\Use_::TYPE_UNKNOWN ? $use->type : $stmt->type;
-                    if ($type !== Stmt\Use_::TYPE_NORMAL) {
-                        continue;
-                    }
-
-                    $imports[$use->getAlias()->toString()] = $prefix.'\\'.$use->name->toString();
-                }
-            }
-        }
-
-        return $imports;
-    }
-
-    /**
-     * Resolve a name written inside a declaration to the fully qualified one PHP would.
-     *
-     * EloquentModelDetector::resolveClassName answers null for an unqualified name with no
-     * import and no enclosing namespace, which for its own callers means "unknown". Here
-     * that case is not unknown at all: PHP resolves such a name to the global one. Keeping
-     * the distinction matters, because a name that resolves to nothing would be
-     * indistinguishable from a class having no parent, and a model whose parent could not
-     * be read would then be treated as one with nothing left to read.
-     *
-     * @param  array<string, string>  $useStatements
-     */
-    private function resolveDeclarationName(string $name, array $useStatements, ?string $namespace): string
-    {
-        return EloquentModelDetector::resolveClassName($name, $useStatements, $namespace) ?? $name;
-    }
-
-    /**
-     * @param  array<string, string>  $useStatements
-     */
-    private function collectDeclaration(Stmt\ClassLike $decl, ?string $namespace, array $useStatements): void
-    {
-        if ($decl->name === null) {
+        $fqcn = $this->declarationFqn($decl);
+        if ($fqcn === null) {
             return; // Anonymous class
         }
 
-        $short = $decl->name->toString();
-        $fqcn = $namespace !== null && $namespace !== '' ? $namespace.'\\'.$short : $short;
+        $members = $this->collectMembers($decl, $fqcn);
+        $used = $this->collectUsedTraits($decl);
 
-        $parent = null;
-        if ($decl instanceof Stmt\Class_ && $decl->extends !== null) {
-            $parent = $this->resolveDeclarationName($decl->extends->toString(), $useStatements, $namespace);
-        }
+        // The edges go to the shared index, which folds the key it files them under and hands
+        // it back, so the payload below cannot end up under a different one.
+        $key = $this->hierarchy->record(
+            $fqcn,
+            $decl instanceof Stmt\Class_ && $decl->extends !== null
+                ? $this->resolvedClassFqn($decl->extends)
+                : null,
+            $used['traits'],
+            judged: true,
+        );
 
-        $members = $this->collectMembers($decl, $fqcn, $useStatements, $namespace);
-        $used = $this->collectUsedTraits($decl, $useStatements, $namespace);
-
-        $this->declarations[$fqcn] = [
+        $this->declarations[$key] = [
             'kind' => $decl instanceof Stmt\Trait_ ? 'trait' : 'class',
-            'short' => $short,
+            'short' => $decl->name?->toString() ?? '',
             'relations' => $members['relations'],
             'attributes' => $members['attributes'],
             'accessors' => $members['accessors'],
             'members' => $members['members'],
-            'parent' => $parent,
-            'traits' => $used['traits'],
             'opaque' => $members['opaque'] || $used['opaque'],
             'selfDeclared' => $members['relations'] !== [],
         ];
@@ -763,10 +725,9 @@ class EloquentModelRelationshipScanner
      * trait nor in the class, and `insteadof` picks a winner between two that the
      * flattened lists have no way to represent.
      *
-     * @param  array<string, string>  $useStatements
-     * @return array{traits: array<string>, opaque: bool}
+     * @return array{traits: list<string>, opaque: bool}
      */
-    private function collectUsedTraits(Stmt\ClassLike $decl, array $useStatements, ?string $namespace): array
+    private function collectUsedTraits(Stmt\ClassLike $decl): array
     {
         $traits = [];
         $opaque = false;
@@ -781,7 +742,7 @@ class EloquentModelRelationshipScanner
             }
 
             foreach ($stmt->traits as $trait) {
-                $traits[] = $this->resolveDeclarationName($trait->toString(), $useStatements, $namespace);
+                $traits[] = $this->resolvedClassFqn($trait);
             }
         }
 
@@ -792,10 +753,9 @@ class EloquentModelRelationshipScanner
      * The relationships, mass-assignable attributes and accessors a declaration states in
      * its own body, before anything it inherits is folded in.
      *
-     * @param  array<string, string>  $useStatements
      * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, opaque: bool}
      */
-    private function collectMembers(Stmt\ClassLike $decl, string $fqcn, array $useStatements, ?string $namespace): array
+    private function collectMembers(Stmt\ClassLike $decl, string $fqcn): array
     {
         $relations = [];
         $attributes = [];
@@ -826,7 +786,7 @@ class EloquentModelRelationshipScanner
                 $opaque = true;
             }
 
-            $body = $this->collectBody($stmt, $fqcn, $useStatements, $namespace);
+            $body = $this->collectBody($stmt, $fqcn);
 
             // Detect accessor methods: getXxxAttribute()
             if ($this->isAccessorMethod($methodName)) {
@@ -835,7 +795,7 @@ class EloquentModelRelationshipScanner
                 continue;
             }
 
-            if ($this->declaresRelationReturnType($stmt, $useStatements, $namespace) ||
+            if ($this->declaresRelationReturnType($stmt) ||
                 $this->returnsRelationBuilder($body)) {
                 $relations[] = $methodName;
             }
@@ -854,10 +814,9 @@ class EloquentModelRelationshipScanner
      * Walk a method body once, collecting the returns that belong to it and any
      * relationship it registers on a model from outside that model's own body.
      *
-     * @param  array<string, string>  $useStatements
      * @return array<Stmt\Return_>
      */
-    private function collectBody(Stmt\ClassMethod $method, string $fqcn, array $useStatements, ?string $namespace): array
+    private function collectBody(Stmt\ClassMethod $method, string $fqcn): array
     {
         $collector = new MethodBodyCollector;
         $traverser = new NodeTraverser;
@@ -865,17 +824,16 @@ class EloquentModelRelationshipScanner
         $traverser->traverse($method->stmts ?? []);
 
         foreach ($collector->registeredRelations as $registered) {
-            $this->recordRegisteredRelation($registered, $fqcn, $useStatements, $namespace);
+            $this->recordRegisteredRelation($registered, $fqcn);
         }
 
         return $collector->returns;
     }
 
     /**
-     * @param  array{class: ?string, relation: ?string}  $registered
-     * @param  array<string, string>  $useStatements
+     * @param  array{class: ?Node\Name, relation: ?string}  $registered
      */
-    private function recordRegisteredRelation(array $registered, string $fqcn, array $useStatements, ?string $namespace): void
+    private function recordRegisteredRelation(array $registered, string $fqcn): void
     {
         $class = $registered['class'];
 
@@ -887,9 +845,11 @@ class EloquentModelRelationshipScanner
             return;
         }
 
-        $target = in_array(strtolower($class), ['self', 'static'], true)
-            ? $fqcn
-            : $this->resolveDeclarationName($class, $useStatements, $namespace);
+        $target = ClassHierarchyIndex::key(
+            in_array(strtolower($class->toString()), ['self', 'static'], true)
+                ? $fqcn
+                : $this->resolvedClassFqn($class)
+        );
 
         if ($registered['relation'] === null) {
             $this->registeredRelationsUnreadable[$target] = true;
@@ -927,10 +887,7 @@ class EloquentModelRelationshipScanner
         return false;
     }
 
-    /**
-     * @param  array<string, string>  $useStatements
-     */
-    private function declaresRelationReturnType(Stmt\ClassMethod $method, array $useStatements, ?string $namespace): bool
+    private function declaresRelationReturnType(Stmt\ClassMethod $method): bool
     {
         $type = $method->returnType;
 
@@ -942,7 +899,7 @@ class EloquentModelRelationshipScanner
             return false;
         }
 
-        $fqcn = $this->resolveDeclarationName($type->toString(), $useStatements, $namespace);
+        $fqcn = $this->resolvedClassFqn($type);
 
         return in_array($fqcn, self::RELATION_RETURN_TYPES, true);
     }
@@ -959,22 +916,24 @@ class EloquentModelRelationshipScanner
      */
     private function resolveMembers(string $fqcn): array
     {
-        if (array_key_exists($fqcn, $this->resolved)) {
-            return $this->resolved[$fqcn];
+        $key = ClassHierarchyIndex::key($fqcn);
+
+        if (array_key_exists($key, $this->resolved)) {
+            return $this->resolved[$key];
         }
 
         // Reserve the slot before recursing. PHP rejects cyclic extends and trait-use
         // graphs, but half-edited source still reaches this scanner, and re-entering a
         // declaration already in progress then resolves to the empty record instead of
         // recursing forever.
-        $this->resolved[$fqcn] = self::NO_MEMBERS;
+        $this->resolved[$key] = self::NO_MEMBERS;
 
-        if (! isset($this->declarations[$fqcn])) {
+        if (! isset($this->declarations[$key])) {
             // The chain has left the scanned paths. Either it ends at a class or trait
             // whose relationships are known, or nothing more can be said about it.
-            $known = self::KNOWN_EXTERNAL_DECLARATIONS[$fqcn] ?? null;
+            $known = $this->knownExternalDeclarations()[$key] ?? null;
 
-            return $this->resolved[$fqcn] = $known === null
+            return $this->resolved[$key] = $known === null
                 ? self::NO_MEMBERS
                 : [
                     'relations' => $known,
@@ -985,19 +944,14 @@ class EloquentModelRelationshipScanner
                 ];
         }
 
-        $own = $this->declarations[$fqcn];
+        $own = $this->declarations[$key];
         $relations = $own['relations'];
         $attributes = $own['attributes'];
         $accessors = $own['accessors'];
         $members = $own['members'];
         $fully = ! $own['opaque'];
 
-        $ancestors = $own['traits'];
-        if ($own['parent'] !== null) {
-            $ancestors[] = $own['parent'];
-        }
-
-        foreach ($ancestors as $ancestor) {
+        foreach ($this->hierarchy->ancestorsOf($key) as $ancestor) {
             $inherited = $this->resolveMembers($ancestor);
             $relations = [...$relations, ...$inherited['relations']];
             $attributes = [...$attributes, ...$inherited['attributes']];
@@ -1006,13 +960,29 @@ class EloquentModelRelationshipScanner
             $fully = $fully && $inherited['fully'];
         }
 
-        return $this->resolved[$fqcn] = [
+        return $this->resolved[$key] = [
             'relations' => array_values(array_unique($relations)),
             'attributes' => array_values(array_unique($attributes)),
             'accessors' => array_values(array_unique($accessors)),
             'members' => array_values(array_unique($members)),
             'fully' => $fully,
         ];
+    }
+
+    /**
+     * @return array<string, array<string>>
+     */
+    private function knownExternalDeclarations(): array
+    {
+        if ($this->knownExternal === null) {
+            $this->knownExternal = [];
+
+            foreach (self::KNOWN_EXTERNAL_DECLARATIONS as $fqcn => $relations) {
+                $this->knownExternal[ClassHierarchyIndex::key($fqcn)] = $relations;
+            }
+        }
+
+        return $this->knownExternal;
     }
 
     private function buildRegistries(): ModelScanResult
@@ -1164,7 +1134,10 @@ class MethodBodyCollector extends NodeVisitorAbstract
      * Receiver and relationship name of each resolveRelationUsing() call, with null for
      * either part the call does not state literally.
      *
-     * @var array<array{class: ?string, relation: ?string}>
+     * The receiver is kept as its Name node rather than as a string, so that whoever resolves
+     * it can tell a fully qualified spelling from a relative one.
+     *
+     * @var array<array{class: ?Node\Name, relation: ?string}>
      */
     public array $registeredRelations = [];
 
@@ -1191,7 +1164,7 @@ class MethodBodyCollector extends NodeVisitorAbstract
             $argument = $node->args[0] ?? null;
 
             $this->registeredRelations[] = [
-                'class' => $node->class instanceof Node\Name ? $node->class->toString() : null,
+                'class' => $node->class instanceof Node\Name ? $node->class : null,
                 'relation' => $argument instanceof Node\Arg && $argument->value instanceof Node\Scalar\String_
                     ? $argument->value->value
                     : null,

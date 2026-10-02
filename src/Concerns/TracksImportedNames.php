@@ -99,7 +99,12 @@ trait TracksImportedNames
      * the whole project, so for that one this reset is what keeps file N from being resolved
      * with file N-1's imports.
      *
+     * A consumer that is not a visitor at all drives startTrackingImports() itself and never
+     * reaches this, so the hook is dead surface there. The return type is spelled out rather
+     * than left to NodeVisitorAbstract's own docblock, which such a consumer does not inherit.
+     *
      * @param  array<Node>  $nodes
+     * @return array<Node>|null
      */
     public function beforeTraverse(array $nodes): ?array
     {

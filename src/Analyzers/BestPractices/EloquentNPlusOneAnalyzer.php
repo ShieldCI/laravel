@@ -597,16 +597,19 @@ class EloquentModelRelationshipScanner
      */
     private bool $unattributedRegisteredRelation = false;
 
-    public function __construct(
-        private ParserInterface $parser,
-        private ClassHierarchyIndex $hierarchy = new ClassHierarchyIndex,
-    ) {}
+    private ClassHierarchyIndex $hierarchy;
+
+    public function __construct(private ParserInterface $parser)
+    {
+        $this->hierarchy = new ClassHierarchyIndex;
+    }
 
     /**
      * @param  array<string>  $files
      */
     public function scan(array $files): ModelScanResult
     {
+        $this->hierarchy = new ClassHierarchyIndex;
         $this->declarations = [];
         $this->resolved = [];
         $this->registeredRelations = [];
@@ -701,7 +704,6 @@ class EloquentModelRelationshipScanner
                 ? $this->resolvedClassFqn($decl->extends)
                 : null,
             $used['traits'],
-            judged: true,
         );
 
         $this->declarations[$key] = [

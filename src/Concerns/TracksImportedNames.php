@@ -27,17 +27,15 @@ use PhpParser\Node\Stmt;
  *
  * A resolving pass in a traverser of its own does serve a down-reaching read: it finishes
  * annotating every Name in the file before the analysis walk starts, which is the arrangement
- * missing-database-transactions and AuthenticationAnalyzer use. So the choice for a
- * down-reaching reader is between a separate pass and an import table, not between a broken
- * one and a working one.
+ * AuthenticationAnalyzer uses. So the choice for a down-reaching reader is between a separate
+ * pass and an import table, not between a broken one and a working one.
  *
  * The pass costs a second walk over every file, and resolution written into the tree
  * parseFile() shares, for as long as the cache lives. It also costs a guard: a NameResolver
  * built with no error handler gets ErrorHandler\Throwing, so a file whose two `use`
  * statements land on one alias errors the analyzer unless the call site catches it.
- * missing-database-transactions catches it, through
- * ResolvesClassNames::resolveNamesForMatching(); AuthenticationAnalyzer's four sites do not,
- * which is #445.
+ * unguarded-models catches it, through ResolvesClassNames::resolveNamesForMatching();
+ * AuthenticationAnalyzer's four sites do not, which is #445.
  *
  * An import table does not have that problem. The answer comes from the table rather than
  * from an annotation on the node, so it no longer depends on which direction the reader
@@ -64,10 +62,10 @@ use PhpParser\Node\Stmt;
  * the cache lives.
  *
  * Whether the walk as a whole is cache-clean is then the consumer's to decide, because it owns
- * the traverser. chunk-missing registers this visitor alone, so its walk writes nothing at all
- * and a test pins that. eloquent-n-plus-one also registers ParentConnectingVisitor, which
- * writes a parent attribute onto every node it reaches, so there the gain is the resolution
- * half only.
+ * the traverser. chunk-missing and missing-database-transactions register no other visitor,
+ * so their walks write nothing at all and a test pins each. eloquent-n-plus-one also registers
+ * ParentConnectingVisitor, which writes a parent attribute onto every node it reaches, so
+ * there the gain is the resolution half only.
  *
  * @internal This trait is an implementation detail shared between this package's analyzers,
  * and its shape is not covered by the package's backward-compatibility promise.
@@ -80,7 +78,7 @@ trait TracksImportedNames
      * bypassing that call throws on its first lookup instead of resolving a file against a
      * table nothing filled.
      *
-     * The throw does not reach the user: both consumers skip a file on \Throwable, so a
+     * The throw does not reach the user: every consumer skips a file on \Throwable, so a
      * bypass costs every file and the analyzer still returns passed(). What it buys is a red
      * suite, which the nullable property did not: delete beforeTraverse() with the `??=` in
      * place and every test stays green.
@@ -97,7 +95,9 @@ trait TracksImportedNames
      *
      * This resets the table and nothing else. It is the trait's own state, not the consumer's,
      * so a visitor with other per-file state still has to reset that itself or be built fresh
-     * per file, which is what both consumers do.
+     * per file. Most consumers are built fresh; ClassHierarchyScanner is one instance indexing
+     * the whole project, so for that one this reset is what keeps file N from being resolved
+     * with file N-1's imports.
      *
      * @param  array<Node>  $nodes
      */
@@ -179,5 +179,30 @@ trait TracksImportedNames
     protected function resolvedClassFqn(Name $class): string
     {
         return ltrim($this->importedNames->getResolvedClassName($class)->toString(), '\\');
+    }
+
+    /**
+     * The fully qualified name of a class-like declaration, or null for an anonymous class,
+     * which nothing elsewhere can name to ask about.
+     *
+     * A declaration is not a reference and does not go through getResolvedClassName(): its name
+     * is always a single segment and always qualified by the namespace it is written in, never
+     * by an import. `use App\Order;` followed by `class Order {}` in `namespace App\Http`
+     * declares App\Http\Order, and resolving the name as a reference would answer App\Order.
+     *
+     * Reading the namespace off the table rather than a namespacedName property is what lets a
+     * reader answer this without a NameResolver pass having annotated the tree.
+     */
+    protected function declarationFqn(Stmt\ClassLike $class): ?string
+    {
+        if ($class->name === null) {
+            return null;
+        }
+
+        $namespace = $this->importedNames->getNamespace();
+
+        return $namespace === null
+            ? $class->name->toString()
+            : ltrim($namespace->toString(), '\\').'\\'.$class->name->toString();
     }
 }

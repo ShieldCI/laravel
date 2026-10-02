@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\MissingDatabaseTransactionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -5427,5 +5428,395 @@ PHP,
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Method "FlushesCache::flush()"', $result);
+    }
+
+    /**
+     * A property written `?Repository` is a NullableType wrapping the Name, so reading the Name
+     * straight off it yields nothing and the property is recorded with no type. An untyped
+     * property stays flaggable by design, so the unwrap is the whole of what keeps a nullable
+     * client exempt.
+     */
+    public function test_ignores_a_nullable_cache_client_declared_on_a_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/BaseReportService.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Contracts\Cache\Repository;
+
+abstract class BaseReportService
+{
+    protected ?Repository $cache = null;
+}
+PHP,
+            'Support/ReportService.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class ReportService extends BaseReportService
+{
+    public function flush(string $a, string $b)
+    {
+        $this->cache->delete($a);
+        $this->cache->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The class a facade chain is judged by sits at the root of the chain, not at the node the
+     * write was entered on. Two calls deep is what exercises the walk: with one, the facade is
+     * already `$node->var` and the loop never runs, which a mutation confirmed. Every other
+     * facade fixture here writes straight off the facade, so nothing else reaches it.
+     */
+    public function test_ignores_a_cache_facade_reached_through_a_tagged_chain(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Support/TagFlusher.php' => <<<'PHP'
+<?php
+
+namespace App\Support;
+
+use Illuminate\Support\Facades\Cache;
+
+class TagFlusher
+{
+    public function flush(string $a, string $b)
+    {
+        Cache::store('redis')->tags('reports')->delete($a);
+        Cache::store('redis')->tags('reports')->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_does_not_write_resolution_into_the_shared_parser_cache(): void
+    {
+        // This analyzer used to resolve names in a pass of its own, twice over every file. With
+        // replaceNodes off the Name survives, but a resolvedName attribute and a namespacedName
+        // on the declaration take its place, and parseFile() hands back a shared, mtime-cached
+        // tree, so both outlived the run. Collecting imports during each walk writes nothing,
+        // and neither of this analyzer's traversers registers ParentConnectingVisitor, so the
+        // walk is cache-clean in full rather than in part. Both halves are asserted, so
+        // reinstating a resolving pass fails here rather than in whatever later reads it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function place(array $a, array $b)
+    {
+        Order::create($a);
+        Order::create($b);
+    }
+}
+PHP;
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed rather than a second parse of the same file. The cache is keyed
+        // by path and mtime with no normalisation, so setPaths() below has to name 'Services'
+        // and not '.', or the analyzer would look up '<dir>/./Services/OrderService.php' and
+        // get its own entry.
+        $tempDir = $this->createTempDirectory(['Services/OrderService.php' => $code]);
+        $path = $tempDir.'/Services/OrderService.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(2, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        // A finding rather than a pass, because runAnalysis() swallows a per-file throw and
+        // reports a pass: an assertPassed() here would read the same whether the file was
+        // walked or never reached, and an untouched tree would then prove nothing.
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+
+        // One entry, or the analyzer parsed a second spelling of the same file and left the
+        // tree below pristine for the wrong reason.
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        /** @var array<int, Node\Expr\StaticCall> $reparsed */
+        $reparsed = $this->parser->findNodes($this->parser->parseFile($path), Node\Expr\StaticCall::class);
+        $this->assertSame($calls[0], $reparsed[0]);
+
+        $class = $calls[0]->class;
+        if (! $class instanceof Node\Name) {
+            self::fail('Expected the static call to name a class.');
+        }
+
+        $this->assertNull($class->getAttribute('resolvedName'));
+
+        /** @var array<int, Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertFalse(isset($declarations[0]->namespacedName));
+
+        // The parent half of the claim above. Registering ParentConnectingVisitor on either
+        // traverser writes a parent attribute onto every node in the shared tree, which
+        // outlives the run exactly as a resolved name would, and the two assertions above
+        // would not notice.
+        $this->assertFalse($calls[0]->hasAttribute('parent'));
+    }
+
+    /**
+     * A file whose two `use` statements land on one alias is one PHP would reject. The
+     * resolving pass threw on it and the analyzer carried on with the whole file unresolved,
+     * after which isLikelyDatabaseClass() could not tell a model from anything else and
+     * answered that everything was one. An import table keeps the first spelling and resolves
+     * the rest, so the collision costs one alias instead of the file.
+     *
+     * Both methods are in the one file so that the walk is shown to have run: a pass on a
+     * fixture with nothing to find reads the same as a file that was never reached.
+     */
+    public function test_a_colliding_import_no_longer_makes_every_static_call_a_model(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/Report.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+use App\Support\Cache;
+
+class Report
+{
+    public function build(array $a, array $b)
+    {
+        \App\Support\Ledger::create($a);
+        \App\Support\Ledger::create($b);
+    }
+
+    public function record(array $a, array $b)
+    {
+        \App\Models\Order::create($a);
+        \App\Models\Order::create($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Report::record()', $result);
+    }
+
+    /**
+     * The other side of the same degrade. isNonDbFacadeName() matches an unqualified name
+     * against the facade short names, which is right for `Storage::` in a file with no
+     * namespace and wrong for anything the resolver simply never reached. With the whole file
+     * unresolved, a model named after a facade took the exemption and silenced every later
+     * write on the variable holding it.
+     */
+    public function test_a_colliding_import_no_longer_lets_a_model_borrow_a_facade_exemption(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/SessionService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+use App\Support\Cache;
+use App\Models\Session;
+
+class SessionService
+{
+    public function touch(array $a, array $b)
+    {
+        $rows = Session::where('active', true);
+        $rows->update($a);
+        $rows->update($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('SessionService::touch()', $result);
+    }
+
+    /**
+     * The facade was matched on the name as written, so only the bare `DB` spelling counted as
+     * a transaction and the writes inside any other spelling were reported as unprotected.
+     */
+    public function test_recognises_a_fully_qualified_transaction(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/OrderService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Order;
+
+class OrderService
+{
+    public function place(array $a, array $b)
+    {
+        \Illuminate\Support\Facades\DB::transaction(function () use ($a, $b) {
+            Order::create($a);
+            Order::create($b);
+        });
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_recognises_a_transaction_on_an_aliased_facade(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/LedgerService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\DB as Database;
+use App\Models\Entry;
+
+class LedgerService
+{
+    public function post(array $a, array $b)
+    {
+        Database::transaction(function () use ($a, $b) {
+            Entry::create($a);
+            Entry::create($b);
+        });
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The facade exemption used to be decided on the last segment of the resolved name, so a
+     * model sharing a short name with a facade took it and its writes went uncounted. The
+     * marking path had always matched the whole name for that reason; the two write paths now
+     * agree with it.
+     */
+    public function test_flags_a_model_whose_short_name_matches_a_facade(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/SessionService.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Session;
+
+class SessionService
+{
+    public function open(array $a, array $b)
+    {
+        Session::create($a);
+        Session::create($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('2 database write operation(s)', $result);
+    }
+
+    /**
+     * A guard, not a proof: this reads the same before the change as after.
+     *
+     * classMatches() is shared with the analyzers that exempt a much longer list of facades,
+     * and taking that list along with the matcher would have quietly exempted Http, Mail, Event
+     * and some thirty others here. A chain is where that would show: a static call is gated by
+     * isLikelyDatabaseClass() as well, and reflection already answers that Http is not a model,
+     * so only the chain path rests on the candidate list alone.
+     *
+     * The finding itself is arguable, and that is the point of fixing the boundary rather than
+     * the list: what this analyzer counts as a write is a separate question from how a class is
+     * named, and only the naming was in hand here.
+     */
+    public function test_a_facade_outside_this_analyzers_list_is_still_counted_in_a_chain(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'Services/Purger.php' => <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Http;
+
+class Purger
+{
+    public function purge(string $a, string $b)
+    {
+        Http::withToken('t')->delete($a);
+        Http::withToken('t')->delete($b);
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        $this->assertFailed($analyzer->analyze());
     }
 }

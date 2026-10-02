@@ -121,6 +121,42 @@ abstract class AnalyzerTestCase extends TestCase
     }
 
     /**
+     * How many trees the shared parse cache holds for one file.
+     *
+     * AstParser keys its cache by path and mtime with no normalisation, so one file reached by
+     * two spellings of its path ('<dir>/Services/x.php' and '<dir>/./Services/x.php') earns two
+     * keys and two independently parsed trees. A test that inspects one tree to prove nothing
+     * was written into it is only testing that if the analyzer read that same tree.
+     */
+    protected function cachedTreesFor(string $path): int
+    {
+        $cache = (new \ReflectionProperty($this->parser, 'astCache'))->getValue($this->parser);
+        $this->assertIsArray($cache);
+
+        $target = realpath($path);
+        $this->assertNotFalse($target);
+
+        $trees = 0;
+
+        foreach (array_keys($cache) as $key) {
+            // Each key is '<path>:<mtime>', and the comparison has to be on the resolved path
+            // rather than on the spelling: the two spellings this is here to catch differ, so
+            // matching the literal path would count only one of them and assert nothing.
+            $separator = is_string($key) ? strrpos($key, ':') : false;
+
+            if (! is_string($key) || $separator === false) {
+                continue;
+            }
+
+            if (realpath(substr($key, 0, $separator)) === $target) {
+                $trees++;
+            }
+        }
+
+        return $trees;
+    }
+
+    /**
      * Create a temporary PHP file with the given code.
      */
     protected function createTempPhpFile(string $code): string

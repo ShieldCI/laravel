@@ -5578,6 +5578,12 @@ PHP;
         $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
         $this->assertCount(1, $declarations);
         $this->assertFalse(isset($declarations[0]->namespacedName));
+
+        // The parent half of the claim above. Registering ParentConnectingVisitor on either
+        // traverser writes a parent attribute onto every node in the shared tree, which
+        // outlives the run exactly as a resolved name would, and the two assertions above
+        // would not notice.
+        $this->assertFalse($calls[0]->hasAttribute('parent'));
     }
 
     /**

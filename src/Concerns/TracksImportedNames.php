@@ -95,7 +95,7 @@ trait TracksImportedNames
      *
      * This resets the table and nothing else. It is the trait's own state, not the consumer's,
      * so a visitor with other per-file state still has to reset that itself or be built fresh
-     * per file. Most consumers are built fresh; ClassHierarchyScanner is one instance indexing
+     * per file. Most consumers are built fresh; PropertyTypeScanner is one instance indexing
      * the whole project, so for that one this reset is what keeps file N from being resolved
      * with file N-1's imports.
      *

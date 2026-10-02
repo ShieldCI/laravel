@@ -20,6 +20,7 @@ use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Concerns\ReadsClassDeclarations;
 use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Concerns\TracksImportedNames;
+use ShieldCI\Support\ClassHierarchyIndex;
 
 /**
  * Detects multiple database write operations without transactions.
@@ -82,9 +83,9 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         // among them. The walk inwards lets one file decide whether another is reported, so
         // there a declaration the pass refuses to judge must not speak: otherwise a test
         // double or a seeder settles a finding against the production class it extends, and
-        // adding or renaming one moves findings no production edit touched. Only the reverse
-        // edges are filtered, in reverseEdges().
-        $classScanner = new ClassHierarchyScanner;
+        // adding or renaming one moves findings no production edit touched. So the mark
+        // narrows descendantsOf() and nothing else; ancestorsOf() answers over every file.
+        $classScanner = new PropertyTypeScanner;
         foreach ($phpFiles as $file) {
             $classScanner->indexing(judged: ! $this->isTestFile($file) && ! $this->isDevelopmentFile($file));
 
@@ -93,9 +94,9 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
-                $registryTraverser = new NodeTraverser;
-                $registryTraverser->addVisitor($classScanner);
-                $registryTraverser->traverse($ast);
+                $indexTraverser = new NodeTraverser;
+                $indexTraverser->addVisitor($classScanner);
+                $indexTraverser->traverse($ast);
             } catch (\Throwable) {
                 continue;
             }
@@ -118,7 +119,12 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 $preScanTraverser->addVisitor($scanner);
                 $preScanTraverser->traverse($ast);
 
-                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods(), $classScanner);
+                $visitor = new TransactionVisitor(
+                    $this->threshold,
+                    $scanner->getDelegatedMethods(),
+                    $classScanner,
+                    $classScanner->hierarchy(),
+                );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -390,7 +396,8 @@ class TransactionVisitor extends NodeVisitorAbstract
     public function __construct(
         private int $threshold,
         private array $transactionDelegatedMethods,
-        private ClassHierarchyScanner $classes,
+        private PropertyTypeScanner $classes,
+        private ClassHierarchyIndex $hierarchy,
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -415,8 +422,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             // property the class redeclares wins over the one it would have inherited,
             // and what a declaration drawing from this one says is the last resort.
             // Own properties are read from the node, and the inherited half is seeded
-            // from it too, because an anonymous class has no name for the registry to
-            // have filed it under.
+            // from it too, because an anonymous class has no name for PropertyTypeScanner
+            // to have filed it under.
             $this->propertyTypes = $this->declaredPropertyTypes($node)
                 + $this->inheritedTypesFor($node)
                 + $this->descendantClientTypes($node);
@@ -1001,9 +1008,9 @@ class TransactionVisitor extends NodeVisitorAbstract
      * The declared property types the declaration being entered holds without declaring them
      * itself.
      *
-     * Named here rather than by the registry. The registry stopped indexing before this pass
+     * Named here rather than by PropertyTypeScanner, which stopped indexing before this pass
      * began, so its import table holds whichever file it read last; the node belongs to the file
-     * this visitor is walking, so this visitor is the one that can name it, and the registry is
+     * this visitor is walking, so this visitor is the one that can name it, and the scanner is
      * asked by name. An anonymous class has no name to ask by, and the extends clause and trait
      * uses on the node name the declarations it draws from just as well.
      *
@@ -1218,7 +1225,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                 return true;
             }
 
-            $parent = $this->classes->parentOf($current);
+            $parent = $this->hierarchy->parentOf($current);
             if ($parent === null) {
                 break; // Unknown, or known with no parent: fall through to heuristics
             }
@@ -1447,39 +1454,42 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 }
 
 /**
- * Pre-scan that indexes every named class-like declaration in the project: what it
- * extends, which traits it uses, and the declared type of each property it holds.
+ * Pre-scan that records the declared type of every property each class-like declaration in the
+ * project holds, and answers what a declaration sees for a property it does not declare itself.
  *
- * The declaration a later pass needs is often not the one it is standing in. A service
- * that writes to an injected cache client routinely inherits that property from an
- * abstract base in another file, or picks it up from a trait, and a visitor reading only
- * the node it entered can see neither.
+ * The declaration a later pass needs is often not the one it is standing in. A service that
+ * writes to an injected cache client routinely inherits that property from an abstract base in
+ * another file, or picks it up from a trait, and a visitor reading only the node it entered can
+ * see neither. The edges followed to find them are ClassHierarchyIndex's; only the property
+ * payload and the rules for weighing it live here.
  *
  * Names are resolved from the imports this scanner collects as it walks, so no resolving pass
  * runs ahead of it and nothing it does is written into the tree parseFile() shares. The table
  * is per traversal and a traverser is built per file, so the reset TracksImportedNames does in
  * beforeTraverse() applies even though one scanner instance indexes the whole project.
  *
- * Keys are case folded throughout, because PHP resolves a class name without regard to
- * case and a reference spelled differently from its declaration names the same class.
+ * Keys come from ClassHierarchyIndex, which folds case, because PHP resolves a class name
+ * without regard to case and a reference spelled differently from its declaration names the
+ * same class.
  *
  * @internal
  */
-class ClassHierarchyScanner extends NodeVisitorAbstract
+class PropertyTypeScanner extends NodeVisitorAbstract
 {
     use ReadsClassDeclarations;
     use TracksImportedNames;
 
-    /** @var array<string, string|null> class key => parent FQN (null if no parent) */
-    private array $parents = [];
-
-    /** @var array<string, list<string>> class or trait key => FQNs of the traits it uses */
-    private array $traitUses = [];
-
     /** @var array<string, array<string, string>> class or trait key => property name => type FQN */
     private array $propertyTypes = [];
 
-    /** @var array<string, array<string, string>> class key => flattened inherited property types */
+    /**
+     * Neither flattening cache is invalidated, unlike the index's own, because nothing asks
+     * one of these while the index is still filling: the analyzer records every file before
+     * it reads the first. A caller that interleaved the two would read a remembered answer
+     * from before the redeclaration that retracted it.
+     *
+     * @var array<string, array<string, string>> class key => flattened inherited property types
+     */
     private array $inheritedCache = [];
 
     /**
@@ -1491,27 +1501,45 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     private array $allPropertyTypes = [];
 
-    /**
-     * Whether each declaration came from a file the analysis pass will judge. Read only when
-     * deriving the reverse edges, where a declaration the pass skips must not answer for one
-     * it reports on. Written last-wins like every other map here, so a name declared twice is
-     * marked for the declaration whose edges the forward maps kept.
-     *
-     * @var array<string, bool> class or trait key => whether the pass judges its file
-     */
-    private array $judged = [];
-
     /** Whether the file currently being indexed is one the analysis pass will judge. */
     private bool $judging = true;
 
-    /** @var array<string, list<string>> trait key => keys of the declarations using it */
-    private ?array $traitUsers = null;
+    /**
+     * Which declarations came from a file this pass will judge, keyed as record() answers.
+     * The mark is this analyzer's policy rather than a fact about the hierarchy, so it is
+     * kept here and handed to the index as a predicate.
+     *
+     * @var array<string, bool>
+     */
+    private array $judged = [];
 
-    /** @var array<string, list<string>> parent key => keys of the declarations extending it */
-    private ?array $children = null;
-
-    /** @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types */
+    /**
+     * Not invalidated either, on the same grounds as inheritedCache above.
+     *
+     * @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types
+     */
     private array $descendantCache = [];
+
+    private ClassHierarchyIndex $hierarchy;
+
+    public function __construct()
+    {
+        // Built here rather than taken, so that nothing this scanner did not record can reach
+        // the index: descendantView() reads its payload maps by the keys descendantsOf()
+        // answers with, and a graph filled by anyone else would name declarations it has no
+        // payload for.
+        $this->hierarchy = new ClassHierarchyIndex;
+        $this->hierarchy->answeringInwards(fn (string $key): bool => $this->judged[$key] ?? false);
+    }
+
+    /**
+     * The graph this scanner filled, for a caller asking what a declaration extends rather
+     * than what it holds. Read only in practice: this scanner is its one writer.
+     */
+    public function hierarchy(): ClassHierarchyIndex
+    {
+        return $this->hierarchy;
+    }
 
     /**
      * Declare the standing of the file about to be traversed. Called once per file, before
@@ -1538,41 +1566,37 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
             return null;
         }
 
-        $key = self::key($fqn);
-
-        if ($node instanceof Node\Stmt\Class_) {
-            $this->parents[$key] = $node->extends !== null ? $this->resolvedClassFqn($node->extends) : null;
-        }
-
         $traits = [];
         foreach ($node->getTraitUses() as $use) {
             foreach ($use->traits as $trait) {
                 $traits[] = $this->resolvedClassFqn($trait);
             }
         }
-        $this->traitUses[$key] = $traits;
 
-        // Both views come off one walk of the statements, and every map here is written
-        // whatever it holds, so a name declared twice cannot leave one declaration's parent
-        // standing beside another declaration's properties. The reverse edges are derived
-        // from these maps rather than recorded alongside them, for the same reason: an
-        // index appended to cannot drop what a redeclaration retracted. See reverseEdges().
+        // A trait records a null parent, which reads the same as having none.
+        $key = $this->hierarchy->record(
+            $fqn,
+            $node instanceof Node\Stmt\Class_ && $node->extends !== null
+                ? $this->resolvedClassFqn($node->extends)
+                : null,
+            $traits,
+        );
+        $this->judged[$key] = $this->judging;
+
+        // Both views come off one walk of the statements, filed under the key the index just
+        // returned, so the payload and the edges cannot drift apart: a name declared twice
+        // leaves one declaration's parent beside that same declaration's properties.
+        // descendantView() reads allPropertyTypes without a fallback on that basis.
         $views = $this->propertyViews($node);
         $this->propertyTypes[$key] = $views['inheritable'];
         $this->allPropertyTypes[$key] = $views['declared'];
-        $this->judged[$key] = $this->judging;
 
         return null;
     }
 
-    public function parentOf(string $fqn): ?string
-    {
-        return $this->parents[self::key($fqn)] ?? null;
-    }
-
     /**
      * The declared property types reachable from a list of declarations, for a caller holding a
-     * declaration the registry has no key for.
+     * declaration this scanner has no key for.
      *
      * @param  list<string>  $ancestors
      * @return array<string, string>
@@ -1593,9 +1617,9 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     public function inheritedPropertyTypes(string $fqn): array
     {
-        $key = self::key($fqn);
+        $key = ClassHierarchyIndex::key($fqn);
 
-        return $this->inheritedCache[$key] ??= $this->gather($this->ancestorsOf($fqn), [$key => true]);
+        return $this->inheritedCache[$key] ??= $this->gather($this->hierarchy->ancestorsOf($fqn), [$key => true]);
     }
 
     /**
@@ -1613,7 +1637,7 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
         $types = [];
 
         while ($queue !== []) {
-            $ancestor = self::key(array_shift($queue));
+            $ancestor = ClassHierarchyIndex::key(array_shift($queue));
 
             if (isset($seen[$ancestor])) {
                 continue;
@@ -1622,7 +1646,7 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
 
             $types += $this->propertyTypes[$ancestor] ?? [];
 
-            foreach ($this->ancestorsOf($ancestor) as $next) {
+            foreach ($this->hierarchy->ancestorsOf($ancestor) as $next) {
                 $queue[] = $next;
             }
         }
@@ -1641,84 +1665,31 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     public function descendantPropertyTypes(string $fqn): array
     {
-        $key = self::key($fqn);
+        $key = ClassHierarchyIndex::key($fqn);
 
         return $this->descendantCache[$key] ??= $this->scatter($key);
     }
 
     /**
-     * Breadth first inwards from one declaration, collecting the type each declaration
-     * drawing from it sees for each property. Every candidate is kept rather than the
-     * nearest, because two classes drawing from one trait are two different runtime types
-     * and neither is nearer than the other; the caller has to weigh them all.
+     * The type each declaration drawing from one declaration sees for each of its properties.
+     *
+     * Every candidate is kept rather than the nearest, because two classes drawing from one
+     * trait are two different runtime types and neither is nearer than the other; the caller
+     * has to weigh them all.
      *
      * What a descendant sees is its own declarations over what it inherits, the same
-     * composition the second pass applies to the node it enters. Its own alone would not do:
-     * a class that picks the property up from a second trait declares nothing for it, and
+     * composition the second pass applies to the node it enters. Its own alone would not do: a
+     * class that picks the property up from a second trait declares nothing for it, and
      * counting that as no candidate would let it agree by silence with a sibling that does
      * declare one.
-     *
-     * Private properties count across a trait edge and not across an extends edge, which is
-     * PHP's own rule. A trait's methods are inlined into the class using it and share its
-     * scope, so they read its private properties; a parent's methods keep the parent's scope
-     * and a read of the same name reaches a dynamic property instead, which the parent may
-     * well have put a model in. So a descendant contributes its private properties only when
-     * every edge on the path to it was a trait use, and a path that crosses one extends edge
-     * carries that restriction the rest of the way. A declaration reachable both ways is
-     * read on the trait-only path, since the wider view subsumes the narrower one.
-     *
-     * The visited set makes the walk terminate on a hierarchy that refers back to itself,
-     * which an AST can express even though PHP could not load it. Keys arrive folded, both
-     * the seed and everything reverseEdges() holds, so nothing is folded again here.
      *
      * @return array<string, non-empty-list<string>>
      */
     private function scatter(string $key): array
     {
-        [$traitUsers, $children] = $this->reverseEdges();
-
-        // Reached first, read second. A declaration two paths arrive at is one declaration
-        // with one answer, and reading it as each path arrives would leave the blinder
-        // path's answer standing beside the fuller one, where it would dissent from it.
-        /** @var array<string, bool> $reached key => whether some path to it was all trait uses */
-        $reached = [];
-        /** @var list<array{string, bool}> $queue key => whether every edge so far was a trait use */
-        $queue = [[$key, true]];
-
-        while ($queue !== []) {
-            [$current, $viaTraitsOnly] = array_shift($queue);
-
-            $next = [];
-            foreach ($traitUsers[$current] ?? [] as $user) {
-                $next[] = [$user, $viaTraitsOnly];
-            }
-            foreach ($children[$current] ?? [] as $child) {
-                $next[] = [$child, false];
-            }
-
-            foreach ($next as [$descendant, $descendantViaTraitsOnly]) {
-                if ($descendant === $key) {
-                    // A hierarchy that refers back to itself, which an AST can express even
-                    // though PHP could not load it. The seed is not its own descendant.
-                    continue;
-                }
-
-                // Requeued only on a path that grants a view the earlier one did not, which
-                // bounds the walk at two visits per declaration.
-                if (isset($reached[$descendant])
-                    && ($reached[$descendant] || ! $descendantViaTraitsOnly)
-                ) {
-                    continue;
-                }
-
-                $reached[$descendant] = $descendantViaTraitsOnly;
-                $queue[] = [$descendant, $descendantViaTraitsOnly];
-            }
-        }
-
         $candidates = [];
 
-        foreach ($reached as $descendant => $inlined) {
+        foreach ($this->hierarchy->descendantsOf($key) as $descendant => $inlined) {
             foreach ($this->descendantView($descendant, $inlined) as $property => $type) {
                 if (! in_array($type, $candidates[$property] ?? [], true)) {
                     $candidates[$property][] = $type;
@@ -1748,9 +1719,10 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      */
     private function descendantView(string $key, bool $inlined): array
     {
-        // Indexed without a fallback: reverseEdges() only ever names a declaration that was
-        // entered, and entering one writes all three maps. A key reaching here that they do
-        // not hold would mean an edge built from something other than the forward maps.
+        // Indexed without a fallback: the index is this scanner's own and enterNode() is its
+        // only writer, so every key descendantsOf() can answer with was written here, beside
+        // the payload, in one step. Taking an index from outside would be what put a key
+        // within reach that these maps do not hold.
         $own = $this->allPropertyTypes[$key];
 
         if (! $inlined) {
@@ -1767,82 +1739,5 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
         }
 
         return $own + $this->inheritedPropertyTypes($key);
-    }
-
-    /**
-     * The hierarchy edges read inwards, derived once from the forward maps rather than
-     * recorded beside them.
-     *
-     * Deriving them is what keeps the two directions honest. The forward maps are written
-     * whatever a declaration holds, so a name declared twice leaves only the last
-     * declaration's parent and traits standing; an index appended to as declarations were
-     * entered would keep the earlier declaration's edges too, and a parent no longer
-     * extended would go on being answered for by a class that no longer extends it.
-     *
-     * A declaration the analysis pass will not judge is left out, and only here. It may
-     * still be inherited from, because what a class inherits does not depend on where its
-     * parent was written; it may not answer for what a class it draws from holds, because
-     * that would let a fixture decide whether production code is reported.
-     *
-     * Built on first use, which is after the indexing pass has finished, for the same reason
-     * the flattening caches are.
-     *
-     * @return array{array<string, list<string>>, array<string, list<string>>}
-     */
-    private function reverseEdges(): array
-    {
-        if ($this->traitUsers === null || $this->children === null) {
-            $this->traitUsers = [];
-            $this->children = [];
-
-            // Indexed without a fallback: entering a declaration writes all four maps, so
-            // a key one holds the others hold too.
-            foreach ($this->traitUses as $key => $traits) {
-                if (! $this->judged[$key]) {
-                    continue;
-                }
-
-                foreach ($traits as $trait) {
-                    $this->traitUsers[self::key($trait)][] = $key;
-                }
-            }
-
-            foreach ($this->parents as $key => $parent) {
-                if ($parent !== null && $this->judged[$key]) {
-                    $this->children[self::key($parent)][] = $key;
-                }
-            }
-        }
-
-        return [$this->traitUsers, $this->children];
-    }
-
-    /**
-     * The declarations $fqn draws members from directly. Traits come first because that is
-     * PHP's own precedence: a trait a class uses overrides what it would have inherited.
-     *
-     * @return list<string>
-     */
-    private function ancestorsOf(string $fqn): array
-    {
-        $key = self::key($fqn);
-
-        $ancestors = $this->traitUses[$key] ?? [];
-
-        $parent = $this->parents[$key] ?? null;
-        if ($parent !== null) {
-            $ancestors[] = $parent;
-        }
-
-        return $ancestors;
-    }
-
-    /**
-     * The key a name is filed under. Folded because PHP resolves a class name without
-     * regard to case, so a reference spelled differently is still the same class.
-     */
-    private static function key(string $fqn): string
-    {
-        return strtolower($fqn);
     }
 }

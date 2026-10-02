@@ -121,9 +121,6 @@ abstract class AnalyzerTestCase extends TestCase
     }
 
     /**
-     * Create a temporary PHP file with the given code.
-     */
-    /**
      * How many trees the shared parse cache holds for one file.
      *
      * AstParser keys its cache by path and mtime with no normalisation, so one file reached by
@@ -159,6 +156,9 @@ abstract class AnalyzerTestCase extends TestCase
         return $trees;
     }
 
+    /**
+     * Create a temporary PHP file with the given code.
+     */
     protected function createTempPhpFile(string $code): string
     {
         $tempFile = tempnam(sys_get_temp_dir(), 'shieldci_test_');

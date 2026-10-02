@@ -186,9 +186,6 @@ class TransactionVisitor extends NodeVisitorAbstract
     use TracksImportedNames;
 
     /**
-     * Facades that have methods looking like DB writes but aren't database operations.
-     */
-    /**
      * The database facade, as a candidate list so that classMatches() judges it the way it
      * judges every other class here: an import, an alias and a fully qualified spelling all
      * name it, and `DB` written inside a namespace that does not import it does not.
@@ -196,9 +193,11 @@ class TransactionVisitor extends NodeVisitorAbstract
     private const DB_FACADE = ['Illuminate\\Support\\Facades\\DB'];
 
     /**
-     * The same six as fully qualified names, for the receiver-marking path where a short
-     * name match is unsafe: marking a variable suppresses every later write on it, so an
-     * application model named Session or Queue would silence real writes.
+     * The facades whose write-looking methods never reach the database, as fully qualified
+     * names. Read by the static-call path, the chain path and the receiver-marking path
+     * alike, all three through classMatches(), so an application model named Session or
+     * Queue cannot borrow the exemption on any of them. On the marking path that would be
+     * the most expensive, because marking a variable suppresses every later write on it.
      *
      * @var array<int, string>
      */
@@ -1058,8 +1057,8 @@ class TransactionVisitor extends NodeVisitorAbstract
      * Matched on the fully qualified name, not the short one. Marking a variable
      * suppresses every later write on it, so an application model named Session or
      * Queue would otherwise silence real writes that were reported before the marker
-     * existed. The AST reaching this visitor is always name-resolved (see
-     * MissingDatabaseTransactionsAnalyzer::runAnalysis), so the FQN is available.
+     * existed. The FQN comes from the import table this visitor fills as it walks
+     * (TracksImportedNames), not from a resolving pass over the tree.
      */
     private function isNonDbFacadeRooted(Node\Expr $expr): bool
     {
@@ -1484,8 +1483,9 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
     private array $inheritedCache = [];
 
     /**
-     * Every property a declaration holds, private included and UNTYPABLE where there is no
-     * single type to record. Read only by the walk inwards: see scatter().
+     * Every property a declaration holds, private included and
+     * ReadsClassDeclarations::untypable() where there is no single type to record. Read
+     * only by the walk inwards: see scatter().
      *
      * @var array<string, array<string, string>> class or trait key => property name => type FQN
      */
@@ -1737,12 +1737,12 @@ class ClassHierarchyScanner extends NodeVisitorAbstract
      * Out of scope, a private property does not become no property. The method asking is
      * reading a name the descendant has declared and it cannot reach, so what it reads is a
      * dynamic property that anything may have been put in, a model included. That is
-     * UNTYPABLE, the same answer an untyped declaration gives, and either must be a
+     * untypable(), the same answer an untyped declaration gives, and either must be a
      * candidate or the descendant agrees by silence with a sibling that named a client.
      *
      * The inherited half is the visible one either way. A property the descendant picks up
      * from somewhere this walk cannot reduce to a single type is the gap left: it is absent
-     * rather than UNTYPABLE, and an absent candidate cannot dissent.
+     * rather than untypable(), and an absent candidate cannot dissent.
      *
      * @return array<string, string>
      */

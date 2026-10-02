@@ -62,10 +62,10 @@ use PhpParser\Node\Stmt;
  * the cache lives.
  *
  * Whether the walk as a whole is cache-clean is then the consumer's to decide, because it owns
- * the traverser. chunk-missing registers this visitor alone, so its walk writes nothing at all
- * and a test pins that. eloquent-n-plus-one also registers ParentConnectingVisitor, which
- * writes a parent attribute onto every node it reaches, so there the gain is the resolution
- * half only.
+ * the traverser. chunk-missing and missing-database-transactions register no other visitor,
+ * so their walks write nothing at all and a test pins each. eloquent-n-plus-one also registers
+ * ParentConnectingVisitor, which writes a parent attribute onto every node it reaches, so
+ * there the gain is the resolution half only.
  *
  * @internal This trait is an implementation detail shared between this package's analyzers,
  * and its shape is not covered by the package's backward-compatibility promise.

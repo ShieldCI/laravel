@@ -304,6 +304,9 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 /**
  * Maps model class names to their Eloquent relationship method names, including the ones
  * reached through traits and parent classes.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class RelationshipRegistry
 {
@@ -384,6 +387,9 @@ class RelationshipRegistry
  * Tracks model attributes (from $fillable, $casts, $appends) per model class.
  *
  * Used to distinguish regular column access from relationship access.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class ModelAttributesRegistry
 {
@@ -406,6 +412,9 @@ class ModelAttributesRegistry
  *
  * Derived from getXxxAttribute() method definitions. Accessors expose computed
  * properties and should never be mistaken for relationships.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class AccessorRegistry
 {
@@ -425,6 +434,9 @@ class AccessorRegistry
 
 /**
  * Result of scanning all PHP files — bundles all three model-aware registries.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class ModelScanResult
 {
@@ -448,13 +460,18 @@ class ModelScanResult
  * No file lookup is involved. Every file is parsed during the first stage anyway, so a
  * declaration is either already in the table or outside the scanned paths, and the table
  * is released once the registries are built.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class EloquentModelRelationshipScanner
 {
-    // Not a visitor: the walk below is a statement recursion that never descends into a method
-    // body, which #332 settled against for being the hot path #302 was about. So the import
-    // table is driven by hand, startTrackingImports() per file and trackImports() per statement,
-    // and the beforeTraverse() hook the trait also offers goes unused here.
+    // Not a visitor: collectStatements() below is a hand-rolled statement recursion that looks
+    // only at namespaces and class-like declarations, so there is no whole-file traversal whose
+    // beforeTraverse() could start the import table. Method bodies are walked, but by the
+    // separate per-method traverser collectBody() builds. So the table is driven by hand,
+    // startTrackingImports() per file and trackImports() per statement, and the beforeTraverse()
+    // hook the trait also offers goes unused here.
     use TracksImportedNames;
 
     /**
@@ -631,12 +648,14 @@ class EloquentModelRelationshipScanner
         $result = $this->buildRegistries();
 
         // The tables have served their purpose. Releasing them keeps nothing but the registries
-        // alive for the per-file pass that follows. The edges the index holds go with the
-        // scanner, which runAnalysis() drops as soon as this returns.
+        // alive for the per-file pass that follows, and the index is released with them: its
+        // edges would otherwise stay reachable through the scanner for the whole of that pass,
+        // because runAnalysis() holds the local it built here until it returns.
         $this->declarations = [];
         $this->resolved = [];
         $this->registeredRelations = [];
         $this->registeredRelationsUnreadable = [];
+        $this->hierarchy = new ClassHierarchyIndex;
 
         return $result;
     }
@@ -689,7 +708,7 @@ class EloquentModelRelationshipScanner
     private function collectDeclaration(Stmt\ClassLike $decl): void
     {
         $fqcn = $this->declarationFqn($decl);
-        if ($fqcn === null) {
+        if ($fqcn === null || $decl->name === null) {
             return; // Anonymous class
         }
 
@@ -708,7 +727,7 @@ class EloquentModelRelationshipScanner
 
         $this->declarations[$key] = [
             'kind' => $decl instanceof Stmt\Trait_ ? 'trait' : 'class',
-            'short' => $decl->name?->toString() ?? '',
+            'short' => $decl->name->toString(),
             'relations' => $members['relations'],
             'attributes' => $members['attributes'],
             'accessors' => $members['accessors'],
@@ -1126,6 +1145,9 @@ class EloquentModelRelationshipScanner
  * `return $this->hasMany(...)` belongs to the closure rather than to the method enclosing
  * it. A registration does not stop there: resolveRelationUsing() takes a closure of its
  * own and is often called from inside one.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class MethodBodyCollector extends NodeVisitorAbstract
 {
@@ -1191,6 +1213,9 @@ class MethodBodyCollector extends NodeVisitorAbstract
 
 /**
  * Visitor to detect N+1 query patterns.
+ *
+ * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
+ * is not covered by the package's backward-compatibility promise.
  */
 class NPlusOneVisitor extends NodeVisitorAbstract
 {

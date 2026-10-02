@@ -15,8 +15,8 @@ namespace ShieldCI\Support;
  *
  * Nothing here touches an AST. A caller walks its own files, resolves names with its own
  * imports, and records the resulting strings, which is what lets analyzers with different walk
- * shapes share this: one is a NodeVisitor over a full traversal, the other a statement
- * recursion that deliberately does not descend into method bodies.
+ * shapes share this: one is a NodeVisitor over a full traversal, the other a hand-rolled
+ * statement recursion that looks only at namespaces and class-like declarations.
  *
  * What they share is the class, not an instance. Each builds and fills its own, because the
  * analyzers are resolved per run and every test sets its own base path, so one graph serving

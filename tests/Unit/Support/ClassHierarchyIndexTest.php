@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PHPUnit\Framework\TestCase;
 use ShieldCI\Support\ClassHierarchyIndex;
-use ShieldCI\Tests\TestCase;
 
 class ClassHierarchyIndexTest extends TestCase
 {
@@ -103,6 +103,24 @@ class ClassHierarchyIndexTest extends TestCase
         $this->assertTrue($reached['app\both']);
     }
 
+    public function test_a_trait_only_path_arriving_second_widens_the_view_an_extends_edge_left(): void
+    {
+        $index = new ClassHierarchyIndex;
+        $index->record('App\Caches', null, [], true);
+        // Scoped is reached first, so Both is reached through it by an extends edge before
+        // any trait-only path gets there. Inlined then reaches the same declaration by trait
+        // uses alone, and the wider view has to replace the narrower one that is already
+        // recorded, which is the only path that reads a declaration twice.
+        $index->record('App\Scoped', null, ['App\Caches'], true);
+        $index->record('App\Inlined', null, ['App\Caches'], true);
+        $index->record('App\Both', 'App\Scoped', ['App\Inlined'], true);
+
+        $this->assertSame(
+            ['app\scoped' => true, 'app\inlined' => true, 'app\both' => true],
+            $index->descendantsOf('App\Caches'),
+        );
+    }
+
     public function test_terminates_on_a_hierarchy_that_refers_back_to_itself(): void
     {
         $index = new ClassHierarchyIndex;
@@ -129,6 +147,20 @@ class ClassHierarchyIndexTest extends TestCase
         // Still inherited from, because what a class inherits does not depend on where its
         // parent was written.
         $this->assertSame(['App\Base'], $index->ancestorsOf('Tests\Double'));
+    }
+
+    public function test_record_answers_with_the_key_a_caller_should_file_its_own_payload_under(): void
+    {
+        $index = new ClassHierarchyIndex;
+        $index->record('App\Models\BaseModel', null, [], true);
+
+        // A caller keeping a payload beside the graph indexes it by this return value and
+        // reads it back with the keys descendantsOf() answers with. Returning the name
+        // instead would leave the payload under a key the walk inwards never asks for.
+        $key = $index->record('App\Models\Admin', 'App\Models\BaseModel', [], true);
+
+        $this->assertSame('app\models\admin', $key);
+        $this->assertSame([$key], array_keys($index->descendantsOf('App\Models\BaseModel')));
     }
 
     public function test_key_folds_case(): void

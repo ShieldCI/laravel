@@ -157,7 +157,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
      * Skip one-time database scaffolding directories.
      *
      * Seeders, migrations, and factories run off the request path, so query count
-     * inside their loops is irrelevant — looping upserts/lookups there is idiomatic.
+     * inside their loops is irrelevant: looping upserts/lookups there is idiomatic.
      */
     private function shouldSkipFile(string $file): bool
     {
@@ -203,7 +203,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 
         $bindings = $bindingRegistry->resolve($file);
         if ($bindings === null) {
-            return; // no resolvable render site → skip the view
+            return; // no resolvable render site, so skip the view
         }
 
         $content = FileParser::readFile($file);
@@ -259,7 +259,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
             // The visitor reports the loop variable (e.g. 'city'), but bindings are keyed by
-            // the render-bound variable (e.g. 'cities') — trace back through the loop var's
+            // the render-bound variable (e.g. 'cities'), so trace back through the loop var's
             // origin to find the binding that actually carries a `source`.
             $origin = $visitor->originOf($issue['variable']) ?? $issue['variable'];
             $source = $bindings[$origin]['source'] ?? 'the controller';
@@ -278,8 +278,8 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         }
 
         // Process query-inside-loop issues (an actual query executed per iteration, as
-        // opposed to a lazy relationship access above) — the most severe N+1 shape, and it
-        // must be reported from a Blade template exactly like the plain-PHP path does.
+        // opposed to a lazy relationship access above). This is the most severe N+1 shape,
+        // and it must be reported from a Blade template exactly like the plain-PHP path does.
         foreach ($visitor->getQueryIssues() as $issue) {
             $bladeLine = $compiled['lineMap'][$issue['line']] ?? null;
             if ($bladeLine === null) {
@@ -433,7 +433,7 @@ class AccessorRegistry
 }
 
 /**
- * Result of scanning all PHP files — bundles all three model-aware registries.
+ * Result of scanning all PHP files: bundles all three model-aware registries.
  *
  * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
  * is not covered by the package's backward-compatibility promise.
@@ -1404,7 +1404,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $this->trackImports($node);
 
         // Feed every node to the model-variable scanner so it can infer variable
-        // types (e.g. $posts → Collection<Post>) and eager-loaded relationships.
+        // types (e.g. $posts is a Collection<Post>) and eager-loaded relationships.
         $this->modelVars->enterNode($node);
 
         // Track loop entry
@@ -1797,7 +1797,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * The "generate-until-unique" idiom probes for a free value:
      *   while (Model::where('code', $code)->exists()) { $code = ...; }
      * Each iteration tests a DIFFERENT candidate, so the query drives loop termination
-     * rather than running per row — it is a bounded uniqueness search, not an N+1, and the
+     * rather than running per row: it is a bounded uniqueness search, not an N+1, and the
      * eager-loading remediation does not apply. We treat an exists()/doesntExist() call in
      * the loop condition as a probe only when a variable it filters by is reassigned in the
      * loop body (the signal that each iteration checks a new candidate). Poll loops with a
@@ -2064,7 +2064,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         // Note: write-upserts (updateOrCreate, firstOrCreate, upsert) are deliberately
         // excluded. A per-row write inside a loop must reference the loop variable, so the
-        // loop-dependency guard would always fire — but persisting N items inherently needs
+        // loop-dependency guard would always fire, but persisting N items inherently needs
         // N writes; there is no eager-load to add. Reserve N+1 for read-per-iteration.
         $executionMethods = [
             // Retrieval methods
@@ -2148,8 +2148,8 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * statement finishes, so the query executes at most once per method call.
      *
      * Walks parent links (set by ParentConnectingVisitor) from the query up to the
-     * innermost loop: the statements following the query — climbing out of
-     * if/elseif/else blocks — must exit via return, throw, or a break when only a
+     * innermost loop: the statements following the query (climbing out of
+     * if/elseif/else blocks) must exit via return, throw, or a break when only a
      * single loop encloses the query. Anything else (conditional exits, try/catch,
      * switch, closures) is treated as repeatable.
      */
@@ -2160,7 +2160,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
         while ($current instanceof Node && ! $current instanceof Stmt) {
             if ($current instanceof Expr\Closure || $current instanceof Expr\ArrowFunction) {
-                return false; // deferred execution — control flow is unknowable
+                return false; // deferred execution: control flow is unknowable
             }
             $current = $current->getAttribute('parent');
         }

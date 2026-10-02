@@ -85,7 +85,7 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         // double or a seeder settles a finding against the production class it extends, and
         // adding or renaming one moves findings no production edit touched. So the mark
         // narrows descendantsOf() and nothing else; ancestorsOf() answers over every file.
-        $classScanner = new PropertyTypeScanner(new ClassHierarchyIndex);
+        $classScanner = new PropertyTypeScanner;
         foreach ($phpFiles as $file) {
             $classScanner->indexing(judged: ! $this->isTestFile($file) && ! $this->isDevelopmentFile($file));
 
@@ -119,7 +119,12 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 $preScanTraverser->addVisitor($scanner);
                 $preScanTraverser->traverse($ast);
 
-                $visitor = new TransactionVisitor($this->threshold, $scanner->getDelegatedMethods(), $classScanner);
+                $visitor = new TransactionVisitor(
+                    $this->threshold,
+                    $scanner->getDelegatedMethods(),
+                    $classScanner,
+                    $classScanner->hierarchy(),
+                );
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
@@ -392,6 +397,7 @@ class TransactionVisitor extends NodeVisitorAbstract
         private int $threshold,
         private array $transactionDelegatedMethods,
         private PropertyTypeScanner $classes,
+        private ClassHierarchyIndex $hierarchy,
     ) {}
 
     public function enterNode(Node $node): ?Node
@@ -1219,7 +1225,7 @@ class TransactionVisitor extends NodeVisitorAbstract
                 return true;
             }
 
-            $parent = $this->classes->parentOf($current);
+            $parent = $this->hierarchy->parentOf($current);
             if ($parent === null) {
                 break; // Unknown, or known with no parent: fall through to heuristics
             }
@@ -1476,7 +1482,14 @@ class PropertyTypeScanner extends NodeVisitorAbstract
     /** @var array<string, array<string, string>> class or trait key => property name => type FQN */
     private array $propertyTypes = [];
 
-    /** @var array<string, array<string, string>> class key => flattened inherited property types */
+    /**
+     * Neither flattening cache is invalidated, unlike the index's own, because nothing asks
+     * one of these while the index is still filling: the analyzer records every file before
+     * it reads the first. A caller that interleaved the two would read a remembered answer
+     * from before the redeclaration that retracted it.
+     *
+     * @var array<string, array<string, string>> class key => flattened inherited property types
+     */
     private array $inheritedCache = [];
 
     /**
@@ -1491,10 +1504,42 @@ class PropertyTypeScanner extends NodeVisitorAbstract
     /** Whether the file currently being indexed is one the analysis pass will judge. */
     private bool $judging = true;
 
-    /** @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types */
+    /**
+     * Which declarations came from a file this pass will judge, keyed as record() answers.
+     * The mark is this analyzer's policy rather than a fact about the hierarchy, so it is
+     * kept here and handed to the index as a predicate.
+     *
+     * @var array<string, bool>
+     */
+    private array $judged = [];
+
+    /**
+     * Not invalidated either, on the same grounds as inheritedCache above.
+     *
+     * @var array<string, array<string, non-empty-list<string>>> class key => flattened descendant property types
+     */
     private array $descendantCache = [];
 
-    public function __construct(private ClassHierarchyIndex $hierarchy) {}
+    private ClassHierarchyIndex $hierarchy;
+
+    public function __construct()
+    {
+        // Built here rather than taken, so that nothing this scanner did not record can reach
+        // the index: descendantView() reads its payload maps by the keys descendantsOf()
+        // answers with, and a graph filled by anyone else would name declarations it has no
+        // payload for.
+        $this->hierarchy = new ClassHierarchyIndex;
+        $this->hierarchy->answeringInwards(fn (string $key): bool => $this->judged[$key] ?? false);
+    }
+
+    /**
+     * The graph this scanner filled, for a caller asking what a declaration extends rather
+     * than what it holds. Read only in practice: this scanner is its one writer.
+     */
+    public function hierarchy(): ClassHierarchyIndex
+    {
+        return $this->hierarchy;
+    }
 
     /**
      * Declare the standing of the file about to be traversed. Called once per file, before
@@ -1535,8 +1580,8 @@ class PropertyTypeScanner extends NodeVisitorAbstract
                 ? $this->resolvedClassFqn($node->extends)
                 : null,
             $traits,
-            judged: $this->judging,
         );
+        $this->judged[$key] = $this->judging;
 
         // Both views come off one walk of the statements, filed under the key the index just
         // returned, so the payload and the edges cannot drift apart: a name declared twice
@@ -1547,11 +1592,6 @@ class PropertyTypeScanner extends NodeVisitorAbstract
         $this->allPropertyTypes[$key] = $views['declared'];
 
         return null;
-    }
-
-    public function parentOf(string $fqn): ?string
-    {
-        return $this->hierarchy->parentOf($fqn);
     }
 
     /**
@@ -1679,10 +1719,10 @@ class PropertyTypeScanner extends NodeVisitorAbstract
      */
     private function descendantView(string $key, bool $inlined): array
     {
-        // Indexed without a fallback: every key descendantsOf() can answer with was recorded
-        // by enterNode(), which writes both payload maps beside the edges in the same step.
-        // A key reaching here that they do not hold would mean an index filled by something
-        // other than this scanner.
+        // Indexed without a fallback: the index is this scanner's own and enterNode() is its
+        // only writer, so every key descendantsOf() can answer with was written here, beside
+        // the payload, in one step. Taking an index from outside would be what put a key
+        // within reach that these maps do not hold.
         $own = $this->allPropertyTypes[$key];
 
         if (! $inlined) {

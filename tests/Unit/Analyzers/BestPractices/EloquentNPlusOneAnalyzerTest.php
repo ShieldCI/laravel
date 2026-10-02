@@ -6480,4 +6480,117 @@ PHP,
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    /**
+     * A name carrying a backslash is not necessarily fully qualified. In `namespace App`,
+     * `extends Models\BaseProduct` names `App\Models\BaseProduct`, and resolveClassName()
+     * returned any such name verbatim, so the declaration was never found and the parent's
+     * $fillable was not inherited.
+     */
+    public function test_does_not_flag_a_column_declared_fillable_on_a_relative_qualified_parent(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Product.php' => <<<'PHP'
+<?php
+
+namespace App;
+
+class Product extends Models\BaseProduct {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The same rule reaches the first segment: `use App\Other\Models;` makes
+     * `extends Models\BaseProduct` name `App\Other\Models\BaseProduct`, so the import has to
+     * be consulted for a qualified name too, not only for a single-segment one.
+     */
+    public function test_resolves_a_relative_qualified_parent_through_an_imported_first_segment(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Other/Models/BaseProduct.php' => <<<'PHP'
+<?php
+
+namespace App\Other\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class BaseProduct extends Model
+{
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Product.php' => <<<'PHP'
+<?php
+
+namespace App;
+
+use App\Other\Models;
+
+class Product extends Models\BaseProduct {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

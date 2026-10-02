@@ -83,8 +83,8 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
         // among them. The walk inwards lets one file decide whether another is reported, so
         // there a declaration the pass refuses to judge must not speak: otherwise a test
         // double or a seeder settles a finding against the production class it extends, and
-        // adding or renaming one moves findings no production edit touched. Only the reverse
-        // edges are filtered, in ClassHierarchyIndex::reverseEdges().
+        // adding or renaming one moves findings no production edit touched. So the mark
+        // narrows descendantsOf() and nothing else; ancestorsOf() answers over every file.
         $classScanner = new PropertyTypeScanner(new ClassHierarchyIndex);
         foreach ($phpFiles as $file) {
             $classScanner->indexing(judged: ! $this->isTestFile($file) && ! $this->isDevelopmentFile($file));
@@ -94,9 +94,9 @@ class MissingDatabaseTransactionsAnalyzer extends AbstractFileAnalyzer
                 if (empty($ast)) {
                     continue;
                 }
-                $registryTraverser = new NodeTraverser;
-                $registryTraverser->addVisitor($classScanner);
-                $registryTraverser->traverse($ast);
+                $indexTraverser = new NodeTraverser;
+                $indexTraverser->addVisitor($classScanner);
+                $indexTraverser->traverse($ast);
             } catch (\Throwable) {
                 continue;
             }
@@ -416,8 +416,8 @@ class TransactionVisitor extends NodeVisitorAbstract
             // property the class redeclares wins over the one it would have inherited,
             // and what a declaration drawing from this one says is the last resort.
             // Own properties are read from the node, and the inherited half is seeded
-            // from it too, because an anonymous class has no name for the registry to
-            // have filed it under.
+            // from it too, because an anonymous class has no name for PropertyTypeScanner
+            // to have filed it under.
             $this->propertyTypes = $this->declaredPropertyTypes($node)
                 + $this->inheritedTypesFor($node)
                 + $this->descendantClientTypes($node);
@@ -1002,9 +1002,9 @@ class TransactionVisitor extends NodeVisitorAbstract
      * The declared property types the declaration being entered holds without declaring them
      * itself.
      *
-     * Named here rather than by the registry. The registry stopped indexing before this pass
+     * Named here rather than by PropertyTypeScanner, which stopped indexing before this pass
      * began, so its import table holds whichever file it read last; the node belongs to the file
-     * this visitor is walking, so this visitor is the one that can name it, and the registry is
+     * this visitor is walking, so this visitor is the one that can name it, and the scanner is
      * asked by name. An anonymous class has no name to ask by, and the extends clause and trait
      * uses on the node name the declarations it draws from just as well.
      *
@@ -1535,7 +1535,7 @@ class PropertyTypeScanner extends NodeVisitorAbstract
                 ? $this->resolvedClassFqn($node->extends)
                 : null,
             $traits,
-            $this->judging,
+            judged: $this->judging,
         );
 
         // Both views come off one walk of the statements, filed under the key the index just
@@ -1556,7 +1556,7 @@ class PropertyTypeScanner extends NodeVisitorAbstract
 
     /**
      * The declared property types reachable from a list of declarations, for a caller holding a
-     * declaration the registry has no key for.
+     * declaration this scanner has no key for.
      *
      * @param  list<string>  $ancestors
      * @return array<string, string>
@@ -1679,9 +1679,10 @@ class PropertyTypeScanner extends NodeVisitorAbstract
      */
     private function descendantView(string $key, bool $inlined): array
     {
-        // Indexed without a fallback: reverseEdges() only ever names a declaration that was
-        // entered, and entering one writes all three maps. A key reaching here that they do
-        // not hold would mean an edge built from something other than the forward maps.
+        // Indexed without a fallback: every key descendantsOf() can answer with was recorded
+        // by enterNode(), which writes both payload maps beside the edges in the same step.
+        // A key reaching here that they do not hold would mean an index filled by something
+        // other than this scanner.
         $own = $this->allPropertyTypes[$key];
 
         if (! $inlined) {

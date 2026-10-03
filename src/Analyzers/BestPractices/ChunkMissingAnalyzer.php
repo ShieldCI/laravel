@@ -171,11 +171,12 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             $this->byRefCaptureStack[] = array_keys(array_filter($captures));
 
             // A scope opens seeing what it captured. An arrow function takes every enclosing
-            // name its body reads; a closure takes the names in its use clause, by reference
-            // (the enclosing variable itself) or by value (a copy of the same result set).
-            // Every other name starts clean, because this scope counts its own assignments.
+            // name its body reads, bar the ones its parameters shadow; a closure takes the
+            // names in its use clause, by reference (the enclosing variable itself) or by
+            // value (a copy of the same result set). Every other name starts clean, because
+            // this scope counts its own assignments.
             $this->variableAssignments = $node instanceof Node\Expr\ArrowFunction
-                ? $enclosing
+                ? array_diff_key($enclosing, $this->parameterNames($node))
                 : array_intersect_key($enclosing, $captures);
         }
 
@@ -273,6 +274,25 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         foreach ($node->uses as $use) {
             if (is_string($use->var->name)) {
                 $names[$use->var->name] = $use->byRef;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Names an arrow function declares as parameters. Each is a variable of its own, so an
+     * enclosing local of the same name is not the one its body reads.
+     *
+     * @return array<string, true>
+     */
+    private function parameterNames(Node\Expr\ArrowFunction $node): array
+    {
+        $names = [];
+
+        foreach ($node->params as $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                $names[$param->var->name] = true;
             }
         }
 

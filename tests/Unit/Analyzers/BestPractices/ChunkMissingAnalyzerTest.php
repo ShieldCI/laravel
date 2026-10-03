@@ -1952,6 +1952,43 @@ PHP;
         $this->assertCount(1, $result->getIssues());
     }
 
+    public function test_an_arrow_function_parameter_shadows_the_enclosing_name(): void
+    {
+        // A parameter is a variable of the arrow function's own, so an enclosing local of the
+        // same name is not what the body reads, and not what a closure nested in it captures.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function sender(): callable
+    {
+        $accounts = Account::all();
+
+        return fn (array $accounts) => function () use ($accounts): void {
+            foreach ($accounts as $account) {
+                $account->notify();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_resolves_the_names_that_do_not_collide_in_a_file_php_would_reject(): void
     {
         // Giving up on the whole file costs more than the alias that collided. Matching falls

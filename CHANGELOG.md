@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.16.1
+
+### Changed
+- Issue messages name an anonymous class the way PHP does, such as `Migration@anonymous`, rather than `Unknown` (#435)
+
+### Fixed
+- `missing-database-transactions` recognises `DB::connection(...)->transaction()` and a fully qualified or aliased `DB::transaction()` (#421, #446)
+- `missing-database-transactions` no longer counts a cache, filesystem or queue client call as a database write, including one declared on a parent or trait (#421, #427, #441)
+- `chunk-missing` no longer reports a facade read such as `Cache::get()` as an unchunked query (#421)
+- `eloquent-n-plus-one`, `chunk-missing` and `missing-database-transactions` no longer exempt an app model named like a facade, such as `App\Models\Event` (#424, #428, #436, #446)
+- `missing-database-transactions`, `missing-docblock`, `service-container-resolution`, `mixed-query-builder-eloquent` and `chunk-missing` analyze a method correctly when it declares a nested class (#435)
+- `eloquent-n-plus-one` inherits a parent model's relationships when `extends` uses different case or a relative name (#448)
+- `mixed-query-builder-eloquent` tracks a model assigned through an imported name, such as `$query = User::query()` (#439)
+
 ## v1.16.0
 
 ### Added

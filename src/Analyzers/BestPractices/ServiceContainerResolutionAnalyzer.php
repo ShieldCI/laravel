@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\NamesDeclarations;
 use ShieldCI\Support\EloquentModelDetector;
 
 /**
@@ -832,6 +833,8 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
  */
 class ServiceContainerVisitor extends NodeVisitorAbstract
 {
+    use NamesDeclarations;
+
     /**
      * @var array<int, array{pattern: string, location: string, class: string, line: int, severity: Severity, argument_type: string, in_closure: bool}>
      */
@@ -855,12 +858,20 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
     private ?string $currentClass = null;
 
     /**
-     * Saved names of enclosing class-likes, and saved method contexts, pushed on the way in
-     * and popped on the way out. A method body can declare a class of its own, and every
-     * suppression keyed on the class or the method would otherwise stop applying for the
-     * rest of the enclosing method.
+     * Whether the current class-like has a name of its own. Only such a name is qualified
+     * with the namespace in a location: an anonymous class is reported under a name borrowed
+     * from its parent or from the declaration it sits in, and that name does not live in this
+     * namespace.
+     */
+    private bool $currentClassIsNamed = false;
+
+    /**
+     * Saved enclosing class-likes, and saved method contexts, pushed on the way in and popped
+     * on the way out. A method body can declare a class of its own, and every suppression
+     * keyed on the class or the method would otherwise stop applying for the rest of the
+     * enclosing method.
      *
-     * @var list<string|null>
+     * @var list<array{name: string|null, named: bool}>
      */
     private array $classStack = [];
 
@@ -981,20 +992,13 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             return null;
         }
 
-        // Track class entry
-        if ($node instanceof Stmt\Class_) {
-            $this->classStack[] = $this->currentClass;
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
-
-            return null;
-        }
-
-        // Track trait entry. Traits mixed into models register model-event closures
-        // in boot{Trait}() methods but extend nothing, so without this their context
-        // would render as 'Unknown'. Tracked exactly like a class.
-        if ($node instanceof Stmt\Trait_) {
-            $this->classStack[] = $this->currentClass;
-            $this->currentClass = $node->name ? $node->name->toString() : 'Anonymous';
+        // Track class-like entry. Every kind declares methods: a trait mixed into a model
+        // registers model-event closures in boot{Trait}() and extends nothing, and an enum
+        // method can resolve a service as easily as a class method can.
+        if ($node instanceof Stmt\ClassLike) {
+            $this->classStack[] = ['name' => $this->currentClass, 'named' => $this->currentClassIsNamed];
+            $this->currentClass = $this->declarationName($node, $this->currentClass);
+            $this->currentClassIsNamed = $node->name !== null;
 
             return null;
         }
@@ -1398,9 +1402,11 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
             $this->currentMethodIsStatic = $frame['static'] ?? false;
         }
 
-        // Restore the enclosing class/trait context on exit
-        if ($node instanceof Stmt\Class_ || $node instanceof Stmt\Trait_) {
-            $this->currentClass = array_pop($this->classStack);
+        // Restore the enclosing class-like context on exit
+        if ($node instanceof Stmt\ClassLike) {
+            $frame = array_pop($this->classStack);
+            $this->currentClass = $frame['name'] ?? null;
+            $this->currentClassIsNamed = $frame['named'] ?? false;
         }
 
         // Clear namespace context on exit
@@ -1685,17 +1691,14 @@ class ServiceContainerVisitor extends NodeVisitorAbstract
      */
     private function getLocation(): string
     {
-        if ($this->currentMethod !== null) {
-            $fqcn = $this->getFullyQualifiedClassName() ?? $this->currentClass ?? 'Unknown';
+        // Every method belongs to a class-like, so a method without a subject cannot occur.
+        $subject = $this->currentClassIsNamed ? $this->getFullyQualifiedClassName() : $this->currentClass;
 
-            return $fqcn.'::'.$this->currentMethod;
+        if ($subject === null) {
+            return 'global scope';
         }
 
-        if ($this->currentClass !== null) {
-            return $this->getFullyQualifiedClassName() ?? $this->currentClass;
-        }
-
-        return 'global scope';
+        return $this->currentMethod !== null ? $subject.'::'.$this->currentMethod : $subject;
     }
 
     /**

@@ -1296,13 +1296,18 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
     private ?string $currentMethodName = null;
 
     /**
-     * Saved names of enclosing methods. A method body can declare a class of its own, and
-     * without this the call edges recorded after that inner method carry no caller, which
-     * breaks the chain protection propagates along.
+     * Saved name and transaction depth of each enclosing method. A method body can declare a
+     * class of its own, and both halves have to come back when that class's method ends: the
+     * name, or the call edges recorded after it carry no caller and break the chain protection
+     * propagates along; the depth, or a call later in the same transaction closure loses it.
      *
-     * @var list<string|null>
+     * The depth is also reset on the way in. A class declared inside a transaction closure does
+     * not run its methods there, because the object can leave the closure and be called after
+     * the transaction has committed, so its call edges are not protected by that closure.
+     *
+     * @var list<array{name: string|null, depth: int}>
      */
-    private array $methodNameStack = [];
+    private array $methodScopeStack = [];
 
     /** @var array<string, bool> Method name → whether it is declared private or protected. */
     private array $methodIsHidden = [];
@@ -1322,8 +1327,9 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
         // Track the method we are currently inside (and its visibility).
         if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->methodNameStack[] = $this->currentMethodName;
+            $this->methodScopeStack[] = ['name' => $this->currentMethodName, 'depth' => $this->transactionDepth];
             $this->currentMethodName = $node->name->toString();
+            $this->transactionDepth = 0;
             $this->methodIsHidden[$this->currentMethodName] = $node->isPrivate() || $node->isProtected();
         }
 
@@ -1386,7 +1392,9 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
     public function leaveNode(Node $node): ?Node
     {
         if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->currentMethodName = array_pop($this->methodNameStack);
+            $frame = array_pop($this->methodScopeStack);
+            $this->currentMethodName = $frame['name'] ?? null;
+            $this->transactionDepth = $frame['depth'] ?? 0;
         }
 
         if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {

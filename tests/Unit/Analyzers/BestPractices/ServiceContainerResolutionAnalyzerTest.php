@@ -3610,5 +3610,193 @@ PHP;
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
         $this->assertSame('PlanService', $issues[0]->metadata['class'] ?? null);
+        $this->assertSame('App\Services\PlanService::build', $issues[0]->metadata['location'] ?? null);
+    }
+
+    public function test_a_resolution_in_an_enum_reports_the_enum(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Enums;
+
+use App\Services\Translator;
+
+enum Status: string
+{
+    case Draft = 'draft';
+
+    public function label(): string
+    {
+        return app(Translator::class)->get($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Enums/Status.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('App\Enums\Status::label', $issues[0]->metadata['location'] ?? null);
+        $this->assertSame('Status', $issues[0]->metadata['class'] ?? null);
+    }
+
+    public function test_an_enum_can_be_whitelisted_by_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Enums;
+
+use App\Services\Translator;
+
+enum Status: string
+{
+    case Draft = 'draft';
+
+    public function label(): string
+    {
+        return app(Translator::class)->get($this->value);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Enums/Status.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer(['whitelist_classes' => ['App\Enums\*']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * An anonymous class has no name of its own, and putting the namespace in front of a made-up
+     * one reads like a class that can be opened. It reports under the class it sits in instead.
+     */
+    public function test_an_anonymous_class_reports_under_the_class_it_sits_in(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Services\Translator;
+
+class LabelService
+{
+    public function formatter(): object
+    {
+        return new class
+        {
+            public function label(): string
+            {
+                return app(Translator::class)->get('draft');
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LabelService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('LabelService@anonymous::label', $issues[0]->metadata['location'] ?? null);
+        $this->assertSame('LabelService@anonymous', $issues[0]->metadata['class'] ?? null);
+        $this->assertStringNotContainsString('App\Services\Anonymous', $issues[0]->message);
+    }
+
+    public function test_an_anonymous_subclass_reports_under_its_parent_without_a_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Support\Formatter;
+use App\Services\Translator;
+
+class LabelService
+{
+    public function formatter(): Formatter
+    {
+        return new class extends Formatter
+        {
+            public function label(): string
+            {
+                return app(Translator::class)->get('draft');
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LabelService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('Formatter@anonymous::label', $issues[0]->metadata['location'] ?? null);
+    }
+
+    public function test_a_namespace_whitelist_still_covers_an_anonymous_class_in_that_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Services\Translator;
+
+class LabelService
+{
+    public function formatter(): object
+    {
+        return new class
+        {
+            public function label(): string
+            {
+                return app(Translator::class)->get('draft');
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LabelService.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer(['whitelist_classes' => ['App\Services\*']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
     }
 }

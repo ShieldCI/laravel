@@ -3982,6 +3982,106 @@ PHP;
         $this->assertPassed($analyzer->analyze());
     }
 
+    /**
+     * Declaring a class inside a transaction closure does not run its methods there. The
+     * object is handed out of the closure, so a helper reached only through one of its methods
+     * has no transaction around it.
+     */
+    public function test_a_helper_called_from_a_class_declared_inside_a_transaction_is_not_delegated(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+use Illuminate\Support\Facades\DB;
+
+class Ledger
+{
+    public function opener(): object
+    {
+        return DB::transaction(function () {
+            return new class
+            {
+                public function close(): void
+                {
+                    $this->settle();
+                }
+
+                private function settle(): void
+                {
+                    Invoice::create([]);
+                    Invoice::create([]);
+                    Invoice::create([]);
+                }
+            };
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Method "Ledger@anonymous::settle()"', $issues[0]->message);
+    }
+
+    public function test_a_call_after_a_class_declared_inside_a_transaction_is_still_protected(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+use Illuminate\Support\Facades\DB;
+
+class Ledger
+{
+    public function post(): object
+    {
+        return DB::transaction(function () {
+            $receipt = new class
+            {
+                public function number(): string
+                {
+                    return 'R-1';
+                }
+            };
+
+            $this->settle();
+
+            return $receipt;
+        });
+    }
+
+    private function settle(): void
+    {
+        Invoice::create([]);
+        Invoice::create([]);
+        Invoice::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
     public function test_an_anonymous_class_does_not_detach_a_callback_closure_from_its_method(): void
     {
         $code = <<<'PHP'

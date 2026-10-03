@@ -139,7 +139,8 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /**
      * Names each open scope captured with use (&$x), innermost last. A by-reference capture
      * is the only way a closure reaches an enclosing function's local, so these are the
-     * names whose value has to travel in when the scope opens and back out when it closes.
+     * names whose value has to travel back out when the scope closes. A by-value capture
+     * travels in only.
      *
      * @var list<list<string>>
      */
@@ -161,23 +162,22 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         $this->trackImports($node);
 
         // Hold the enclosing scope's assignments and start this one with a map of its own
-        // (bar what it shares by reference, below)
+        // (bar what it captured, below)
         if ($this->isFunctionScope($node)) {
             $enclosing = $this->variableAssignments;
-            $byRefCaptures = $this->byRefCaptures($node);
+            $captures = $this->captures($node);
 
             $this->assignmentStack[] = $enclosing;
-            $this->byRefCaptureStack[] = $byRefCaptures;
+            $this->byRefCaptureStack[] = array_keys(array_filter($captures));
 
-            // A by-reference capture is the enclosing variable, not a copy of it, so this
-            // scope opens already seeing whatever that variable holds. Every other name
-            // starts clean, because this scope counts its own assignments.
-            $this->variableAssignments = [];
-            foreach ($byRefCaptures as $name) {
-                if (isset($enclosing[$name])) {
-                    $this->variableAssignments[$name] = $enclosing[$name];
-                }
-            }
+            // A scope opens seeing what it captured. An arrow function takes every enclosing
+            // name its body reads, bar the ones its parameters shadow; a closure takes the
+            // names in its use clause, by reference (the enclosing variable itself) or by
+            // value (a copy of the same result set). Every other name starts clean, because
+            // this scope counts its own assignments.
+            $this->variableAssignments = $node instanceof Node\Expr\ArrowFunction
+                ? array_diff_key($enclosing, $this->parameterNames($node))
+                : array_intersect_key($enclosing, $captures);
         }
 
         // Track variable assignments with ->all() or ->get()
@@ -257,12 +257,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Names this scope captured by reference. Only a closure can do so: an arrow function
-     * captures by value, and a named function or method reaches no enclosing local at all.
+     * Names a closure lists in its use clause, each mapped to whether it is taken by
+     * reference. An arrow function has no use clause, and a named function or method reaches
+     * no enclosing local at all.
      *
-     * @return list<string>
+     * @return array<string, bool>
      */
-    private function byRefCaptures(Node $node): array
+    private function captures(Node $node): array
     {
         if (! $node instanceof Node\Expr\Closure) {
             return [];
@@ -271,8 +272,27 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         $names = [];
 
         foreach ($node->uses as $use) {
-            if ($use->byRef && is_string($use->var->name)) {
-                $names[] = $use->var->name;
+            if (is_string($use->var->name)) {
+                $names[$use->var->name] = $use->byRef;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Names an arrow function declares as parameters. Each is a variable of its own, so an
+     * enclosing local of the same name is not the one its body reads.
+     *
+     * @return array<string, true>
+     */
+    private function parameterNames(Node\Expr\ArrowFunction $node): array
+    {
+        $names = [];
+
+        foreach ($node->params as $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                $names[$param->var->name] = true;
             }
         }
 

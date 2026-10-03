@@ -1796,6 +1796,199 @@ PHP;
         $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
     }
 
+    public function test_a_closure_sees_the_collection_it_captured_by_value(): void
+    {
+        // A by-value capture is a copy, but a copy of the same unbounded result set, so the
+        // loop over it inside the closure loads every row just the same.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function send()
+    {
+        $accounts = Account::all();
+
+        retry(3, function () use ($accounts): void {
+            foreach ($accounts as $account) {
+                $account->notify();
+            }
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('assigned with ->all() or ->get()', $result);
+    }
+
+    public function test_a_by_value_capture_rebound_inside_a_closure_leaves_the_caller_unbounded(): void
+    {
+        // The closure replaced its own copy with something bounded. The caller's variable still
+        // holds the full result set, so the loop after the closure is still reported.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function send()
+    {
+        $accounts = Account::all();
+
+        $trim = function () use ($accounts): void {
+            $accounts = collect();
+        };
+
+        $trim();
+
+        foreach ($accounts as $account) {
+            $account->notify();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    public function test_a_by_value_capture_rebound_to_a_fetch_inside_a_closure_does_not_reach_the_caller(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function send()
+    {
+        $accounts = collect();
+
+        $load = function () use ($accounts): void {
+            $accounts = Account::all();
+        };
+
+        $load();
+
+        foreach ($accounts as $account) {
+            $account->notify();
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_closure_inside_an_arrow_function_sees_what_the_arrow_function_captured(): void
+    {
+        // An arrow function captures by value every enclosing name its body reads, including
+        // the names a closure nested in it captures in turn.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function sender(): callable
+    {
+        $accounts = Account::all();
+
+        return fn () => function () use ($accounts): void {
+            foreach ($accounts as $account) {
+                $account->notify();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    public function test_an_arrow_function_parameter_shadows_the_enclosing_name(): void
+    {
+        // A parameter is a variable of the arrow function's own, so an enclosing local of the
+        // same name is not what the body reads, and not what a closure nested in it captures.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Account;
+
+class ReminderService
+{
+    public function sender(): callable
+    {
+        $accounts = Account::all();
+
+        return fn (array $accounts) => function () use ($accounts): void {
+            foreach ($accounts as $account) {
+                $account->notify();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ReminderService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_resolves_the_names_that_do_not_collide_in_a_file_php_would_reject(): void
     {
         // Giving up on the whole file costs more than the alias that collided. Matching falls

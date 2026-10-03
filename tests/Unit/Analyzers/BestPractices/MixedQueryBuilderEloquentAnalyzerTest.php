@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\MixedQueryBuilderEloquentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -2633,7 +2634,11 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('both Eloquent and Query Builder for table "orders"', $result);
-        $this->assertHasIssueContaining('Migration@anonymous', $result);
+        // PHP spells the parent as it resolves it, so the subject is the imported class's
+        // full name. Asserted from the opening quote, because the short spelling is a
+        // substring of the full one, and a change to the message is a change to every
+        // baseline holding it.
+        $this->assertHasIssueContaining('Class "Illuminate\\Database\\Migrations\\Migration@anonymous" uses', $result);
     }
 
     public function test_an_anonymous_class_is_named_after_the_interface_it_implements(): void
@@ -2674,7 +2679,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('ShouldQueue@anonymous', $result);
+        $this->assertHasIssueContaining('Class "Illuminate\\Contracts\\Queue\\ShouldQueue@anonymous" uses', $result);
     }
 
     public function test_an_anonymous_class_with_nothing_to_name_it_after_falls_back(): void
@@ -3469,5 +3474,296 @@ PHP;
 
         $this->assertPassed($result);
         $this->assertIssueCount(0, $result);
+    }
+
+    public function test_does_not_write_resolution_into_the_shared_parser_cache(): void
+    {
+        // parseFile() hands back a shared, mtime-cached tree. Resolving names over it, whether
+        // by replacing each Name with a FullyQualified or by annotating it, leaves the
+        // resolution behind for as long as the cache lives. Collecting imports during the walk
+        // writes nothing, and this visitor is the only one in its traverser, so the walk is
+        // cache-clean in full.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class Report
+{
+    public function render()
+    {
+        User::where('active', 1)->get();
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Report.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed. The cache key is the path as spelled, so setPaths() has to name
+        // 'Services' rather than '.', or the analyzer would parse a tree of its own.
+        $path = $tempDir.'/Services/Report.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(2, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Services']);
+
+        // A finding says the walk reached this tree rather than skipping it.
+        $this->assertFailed($analyzer->analyze());
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        foreach ($calls as $call) {
+            $class = $call->class;
+            if (! $class instanceof Node\Name) {
+                self::fail('Expected the static call to name a class.');
+            }
+
+            $this->assertSame(Node\Name::class, $class::class);
+            $this->assertNull($class->getAttribute('resolvedName'));
+        }
+
+        /** @var array<int, Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+        $this->assertFalse(isset($declarations[0]->namespacedName));
+    }
+
+    public function test_does_not_write_resolution_into_a_scanned_models_cached_tree(): void
+    {
+        // The model scan walks the same shared cache, and the name it needs resolved is the
+        // parent a model extends. Resolving it by rewriting the tree would hand every later
+        // reader a parent the file never wrote.
+        $model = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    protected $table = 'accounts';
+}
+PHP;
+
+        $repository = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        User::where('active', 1)->get();
+
+        return DB::table('accounts')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/User.php' => $model,
+            'Repositories/UserRepository.php' => $repository,
+        ]);
+
+        $path = $tempDir.'/Models/User.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Stmt\Class_> $declarations */
+        $declarations = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $declarations);
+
+        $analyzer = $this->createAnalyzer(['model_paths' => ['Models']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        // The table only the scan can supply is what makes this a finding, so the scan read
+        // this model rather than skipping it.
+        $result = $analyzer->analyze();
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "accounts"', $result);
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        $extends = $declarations[0]->extends;
+        if ($extends === null) {
+            self::fail('Expected the model to extend a class.');
+        }
+
+        $this->assertSame(Node\Name::class, $extends::class);
+        $this->assertSame('Model', $extends->toString());
+        $this->assertNull($extends->getAttribute('resolvedName'));
+        $this->assertFalse(isset($declarations[0]->namespacedName));
+    }
+
+    public function test_analyzes_a_file_whose_imports_collide(): void
+    {
+        // Two imports landing on one alias is a file PHP would reject, but the collision has
+        // nothing to do with the mixing below it. Giving up on the file costs every finding
+        // in it, and since the analyzer ends in a pass when nothing is found, the loss reads
+        // as a clean result.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\User;
+use App\Support\Clock;
+use App\Legacy\Clock;
+use Illuminate\Support\Facades\DB;
+
+class UserRepository
+{
+    public function audit()
+    {
+        User::where('active', 1)->get();
+
+        return DB::table('users')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/UserRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Class "UserRepository" uses both Eloquent and Query Builder for table "users"', $result);
+    }
+
+    public function test_registers_a_model_whose_imports_collide(): void
+    {
+        // The model's table is one only its own file can supply. Skipping the file over an
+        // unrelated alias collision drops it from the registry, the table falls back to the
+        // inferred "members", and the mixing on "legacy_members" is never seen.
+        $model = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Support\Clock;
+use App\Legacy\Clock;
+use Illuminate\Database\Eloquent\Model;
+
+class Member extends Model
+{
+    protected $table = 'legacy_members';
+}
+PHP;
+
+        $repository = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Member;
+use Illuminate\Support\Facades\DB;
+
+class MemberRepository
+{
+    public function audit()
+    {
+        Member::where('active', 1)->get();
+
+        return DB::table('legacy_members')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Models/Member.php' => $model,
+            'Repositories/MemberRepository.php' => $repository,
+        ]);
+
+        $analyzer = $this->createAnalyzer(['model_paths' => ['Models']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "legacy_members"', $result);
+    }
+
+    public function test_registers_a_model_whose_parent_is_named_from_its_own_namespace(): void
+    {
+        // Account extends BaseRecord without importing it, because both live in one namespace.
+        // Nothing but the registry can make Account a model: its namespace has no Models
+        // segment and its name has no Model suffix. So the parent has to be resolved against
+        // the namespace for the chain to reach Eloquent, and the table has to come from the
+        // file because "billing_accounts" is not what the name infers.
+        $base = <<<'PHP'
+<?php
+
+namespace Domain\Billing;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseRecord extends Model
+{
+}
+PHP;
+
+        $account = <<<'PHP'
+<?php
+
+namespace Domain\Billing;
+
+class Account extends BaseRecord
+{
+    protected $table = 'billing_accounts';
+}
+PHP;
+
+        $repository = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use Domain\Billing\Account;
+use Illuminate\Support\Facades\DB;
+
+class AccountRepository
+{
+    public function audit()
+    {
+        Account::where('active', 1)->get();
+
+        return DB::table('billing_accounts')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'Domain/Billing/BaseRecord.php' => $base,
+            'Domain/Billing/Account.php' => $account,
+            'Repositories/AccountRepository.php' => $repository,
+        ]);
+
+        $analyzer = $this->createAnalyzer(['model_paths' => ['Domain']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Repositories']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "billing_accounts"', $result);
     }
 }

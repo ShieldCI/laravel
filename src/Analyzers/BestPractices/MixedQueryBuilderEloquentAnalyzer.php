@@ -8,7 +8,6 @@ use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Support\Str;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
@@ -17,6 +16,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\NamesDeclarations;
+use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\EloquentModelDetector;
 
 /**
@@ -245,7 +245,6 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
             }
 
             $traverser = new NodeTraverser;
-            $traverser->addVisitor(new NameResolver);
             $visitor = new TableExtractorVisitor;
             $traverser->addVisitor($visitor);
             $traverser->traverse($ast);
@@ -381,7 +380,6 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
                     $this->tableRegistry,
                 );
                 $traverser = new NodeTraverser;
-                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -417,6 +415,10 @@ class MixedQueryBuilderEloquentAnalyzer extends AbstractFileAnalyzer
 class MixedQueryVisitor extends NodeVisitorAbstract
 {
     use NamesDeclarations;
+
+    // Names are resolved from imports collected during the walk, so nothing is written into
+    // the tree parseFile() shares, and an alias collision costs that alias rather than the file.
+    use TracksImportedNames;
 
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
@@ -497,6 +499,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
+        $this->trackImports($node);
+
         // Track current class
         if ($node instanceof Node\Stmt\Class_) {
             $isNested = $this->classScopeStack !== [];
@@ -509,7 +513,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                 'classManagesGlobalScopes' => $this->classManagesGlobalScopes,
             ];
 
-            $this->currentClassName = $this->declarationName($node, $this->currentClassName);
+            $this->currentClassName = $this->declarationName($node, $this->currentClassName, $this->resolvedClassFqn(...));
 
             // Only a class declared inside another starts from nothing: the evidence read so
             // far is the enclosing class's. The outermost class in a file keeps what the file
@@ -576,9 +580,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         // Detect DB::table() calls
-        // After NameResolver, DB may be resolved to Illuminate\Support\Facades\DB
         if ($node instanceof Node\Expr\StaticCall) {
-            if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
+            if ($node->class instanceof Node\Name && $this->isDbFacade($this->resolvedClassFqn($node->class))) {
                 if ($node->name instanceof Node\Identifier && $node->name->toString() === 'table') {
                     $this->trackDbTableCall($node);
                 }
@@ -586,8 +589,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
             // Detect Model::where/find/etc calls
             if ($node->class instanceof Node\Name) {
-                if ($this->looksLikeModel($node->class)) {
-                    $className = $node->class->toString();
+                $className = $this->resolvedClassFqn($node->class);
+                if ($this->looksLikeModel($className)) {
                     if ($node->name instanceof Node\Identifier) {
                         $method = $node->name->toString();
 
@@ -649,8 +652,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         // P2.8: Detect relationship query patterns ($user->posts()->where())
         if ($node instanceof Node\Expr\MethodCall) {
-            // Note: toBase()/getQuery() detection moved to leaveNode() so that
-            // NameResolver has processed all child nodes first
+            // Note: toBase()/getQuery() at the end of a chain is detected in leaveNode(),
+            // alongside the other reads that start from the root of the chain
 
             // P3.11: Check if method is called on a tracked variable ($query->get())
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
@@ -704,14 +707,12 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->forgetBoundNames($node->var);
         }
 
-        // P3.11: Track variable assignments ($query = User::query()). The model is named by
-        // the static call on the right-hand side, a child of this assignment, so the name is
-        // read here rather than on the way in: a resolver sharing this traverser annotates
-        // each node as it arrives, and the child has not arrived yet while the assignment is
-        // being entered. Moving this back to enterNode is silent. looksLikeModel() would
-        // judge the name as written, an imported `User` matches none of its rules, and the
-        // variable is never tracked, which takes the Eloquent side of every query()-rooted
-        // chain with it.
+        // P3.11: Track variable assignments ($query = User::query()). This belongs on the way
+        // out, after the block above: the right-hand side is walked before the assignment is
+        // left, so `$query = $query->where(...)` reads the binding it is about to replace, and
+        // the new binding is recorded only once the old one has been dropped. The model's name
+        // is resolved from the import table, which answers a read reaching down to a child the
+        // same way the child's own visit would.
         //
         // Only a model's static call puts an attribution back, and only for a plain variable: a
         // destructuring target takes the call apart, so no one name it binds holds what the
@@ -720,31 +721,34 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             && $node->var instanceof Node\Expr\Variable
             && is_string($node->var->name)
             && $node->expr instanceof Node\Expr\StaticCall
-            && $node->expr->class instanceof Node\Name
-            && $this->looksLikeModel($node->expr->class)) {
-            $this->variableTracking[$node->var->name] = $node->expr->class->toString();
+            && $node->expr->class instanceof Node\Name) {
+            $modelClass = $this->resolvedClassFqn($node->expr->class);
+
+            if ($this->looksLikeModel($modelClass)) {
+                $this->variableTracking[$node->var->name] = $modelClass;
+            }
         }
 
         // A query-builder write cancels the global-scope exemption in checkMixedUsage(). The
-        // facade is named at the root of the chain, below this node, so this read belongs on
-        // the way out for the same reason as the assignment above: read on the way in, an
-        // aliased DB spells something isDbFacade() does not recognise and the write goes
-        // uncounted. The flag is read when the class is left, which is later still.
+        // facade is named at the root of the chain, below this node, and is resolved like any
+        // other reference, so an aliased DB is still the facade. The flag is read when the
+        // class is left.
         if ($node instanceof Node\Expr\MethodCall
             && $node->name instanceof Node\Identifier
             && in_array($node->name->toString(), self::QUERY_BUILDER_WRITE_METHODS, true)) {
             $root = $this->findRootStaticCall($node->var);
             if ($root !== null
                 && $root->class instanceof Node\Name
-                && $this->isDbFacade($root->class)
+                && $this->isDbFacade($this->resolvedClassFqn($root->class))
                 && $root->name instanceof Node\Identifier
                 && $root->name->toString() === 'table') {
                 $this->classHasQueryBuilderWrite = true;
             }
         }
 
-        // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase())
-        // We use leaveNode so that NameResolver has already processed all child nodes
+        // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase()).
+        // On the way out, the rest of the chain has already been booked, so an Eloquent read
+        // earlier in the same chain turns the table mixed here.
         if ($node instanceof Node\Expr\MethodCall) {
             if ($this->treatToBaseAsQueryBuilder && $node->name instanceof Node\Identifier) {
                 $method = $node->name->toString();
@@ -752,8 +756,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     // Walk up method chain to find the root static call (e.g., User::query()->where()->toBase())
                     $rootStaticCall = $this->findRootStaticCall($node->var);
                     if ($rootStaticCall !== null && $rootStaticCall->class instanceof Node\Name) {
-                        if ($this->looksLikeModel($rootStaticCall->class)) {
-                            $className = $rootStaticCall->class->toString();
+                        $className = $this->resolvedClassFqn($rootStaticCall->class);
+                        if ($this->looksLikeModel($className)) {
                             $tableName = $this->modelToTableName($className);
 
                             // Check if table already tracked as eloquent
@@ -935,16 +939,16 @@ class MixedQueryVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a class name represents the DB facade.
+     * Check if a resolved class name represents the DB facade.
      *
-     * After NameResolver runs, DB may be resolved to Illuminate\Support\Facades\DB.
+     * The bare name is Laravel's root-namespace alias, which is what a file outside any
+     * namespace resolves an unimported DB to. Inside a namespace, an unimported DB resolves
+     * against that namespace and is not the facade.
      */
-    private function isDbFacade(Node\Name $name): bool
+    private function isDbFacade(string $fqn): bool
     {
-        $fqn = $name->toString();
         $normalized = ltrim($fqn, '\\');
 
-        // Check for short name (when no use statement) or fully qualified name
         return $normalized === 'DB'
             || $normalized === 'Illuminate\\Support\\Facades\\DB';
     }
@@ -955,11 +959,8 @@ class MixedQueryVisitor extends NodeVisitorAbstract
      * Uses positive matching (checks if it IS a model) instead of negative matching
      * (excluding non-models). This reduces false positives for Controllers, Services, etc.
      */
-    private function looksLikeModel(Node\Name $name): bool
+    private function looksLikeModel(string $fqn): bool
     {
-        // After NameResolver runs, the name is already fully qualified
-        // NameResolver replaces Name nodes with FullyQualified nodes directly
-        $fqn = $name->toString();
         $normalized = ltrim($fqn, '\\');
 
         // Extract short class name
@@ -1126,6 +1127,11 @@ class MixedQueryVisitor extends NodeVisitorAbstract
  */
 class TableExtractorVisitor extends NodeVisitorAbstract
 {
+    // The parent a model extends is resolved from imports collected during the walk, so the
+    // scan writes nothing into the shared parse cache and a colliding alias does not drop the
+    // model from the registry.
+    use TracksImportedNames;
+
     /**
      * Nesting depth of class declarations. Only the file's own top-level class describes the
      * model; a class declared inside one of its methods would otherwise overwrite the name
@@ -1134,8 +1140,6 @@ class TableExtractorVisitor extends NodeVisitorAbstract
     private int $classDepth = 0;
 
     private ?string $className = null;
-
-    private ?string $namespace = null;
 
     private ?string $tableName = null;
 
@@ -1149,16 +1153,14 @@ class TableExtractorVisitor extends NodeVisitorAbstract
 
     public function enterNode(Node $node): ?Node
     {
-        if ($node instanceof Node\Stmt\Namespace_) {
-            $this->namespace = $node->name?->toString();
-        }
+        $this->trackImports($node);
 
         if ($node instanceof Node\Stmt\Class_) {
             $this->classDepth++;
 
             if ($this->classDepth === 1) {
-                $this->className = $node->name?->toString();
-                $this->parentClass = $node->extends?->toString();
+                $this->className = $this->declarationFqn($node);
+                $this->parentClass = $node->extends === null ? null : $this->resolvedClassFqn($node->extends);
                 $this->isAbstract = $node->isAbstract();
 
                 // Reset per model class
@@ -1307,27 +1309,16 @@ class TableExtractorVisitor extends NodeVisitorAbstract
      */
     public function getRawClassName(): ?string
     {
-        if (! $this->className) {
-            return null;
-        }
-
-        return $this->namespace
-            ? $this->namespace.'\\'.$this->className
-            : $this->className;
+        return $this->className;
     }
 
     /**
-     * Get the fully qualified parent class name.
-     *
-     * Resolves the parent class to FQCN using the same namespace if not qualified.
+     * Get the fully qualified parent class name, resolved against the file's imports and
+     * namespace.
      */
     public function getParentClassName(): ?string
     {
-        if ($this->parentClass === null) {
-            return null;
-        }
-
-        return ltrim($this->parentClass, '\\');
+        return $this->parentClass;
     }
 
     public function getTableName(): ?string

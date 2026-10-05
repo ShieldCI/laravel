@@ -96,7 +96,7 @@ class UnguardedModelsAnalyzer extends AbstractFileAnalyzer
         // class it names rather than the word the file happened to spell. Resolution goes
         // through the shared helper because NameResolver throws on an import set PHP would
         // itself reject, and an uncaught throw here errors the whole analyzer over one file.
-        $ast = $this->resolveNamesForMatching($this->parser, $ast);
+        $ast = $this->resolveNamesForMatching($ast);
 
         $this->evaluateStaticCalls($ast, $file, $relativePath, $issues);
     }

@@ -1668,4 +1668,39 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Model::unguard()', $result);
     }
+
+    public function test_resolves_the_imports_after_a_collision(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Order;
+use App\Other\Order;
+use Illuminate\Database\Eloquent\Model as Base;
+
+class ImportCommand
+{
+    public function handle()
+    {
+        Base::unguard();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Commands/ImportCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        // Only the colliding alias loses its resolution. Base is imported after the
+        // collision and still names the Model class, so the call is found, and reported
+        // as the class it resolves to rather than the alias the file wrote.
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Illuminate\Database\Eloquent\Model::unguard()', $result);
+    }
 }

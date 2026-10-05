@@ -7,7 +7,6 @@ namespace ShieldCI\Analyzers\Security;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -18,6 +17,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\DetectsLaravelVersion;
+use ShieldCI\Concerns\ResolvesClassNames;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -32,6 +32,7 @@ use ShieldCI\Concerns\DetectsLaravelVersion;
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
     use DetectsLaravelVersion;
+    use ResolvesClassNames;
 
     /**
      * @var array<string>
@@ -440,9 +441,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // Two-pass: first resolve all names so ClassConstFetch nodes carry FQCNs
         // when the visitor's enterNode fires (enterNode runs before children are visited,
         // so a single-pass NameResolver won't have resolved children's names yet).
-        $nameTraverser = new NodeTraverser;
-        $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
-        $nameTraverser->traverse($ast);
+        $ast = $this->resolveNamesForMatching($ast);
 
         $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
         $traverser = new NodeTraverser;
@@ -580,9 +579,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         // Two-pass: resolve all names first so ClassConstFetch FQCNs are available in enterNode
-        $nameTraverser = new NodeTraverser;
-        $nameTraverser->addVisitor(new NameResolver(null, ['replaceNodes' => false]));
-        $nameTraverser->traverse($ast);
+        $ast = $this->resolveNamesForMatching($ast);
 
         $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
         $traverser = new NodeTraverser;
@@ -1696,10 +1693,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
-        // Resolve names WITHOUT replacing nodes so ::class values expose a
-        // `resolvedName` attribute (used by resolveClassFqcn) while leaving the
-        // shared, mtime-cached AST untouched for other consumers.
-        $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+        // Resolve names so ::class values expose the `resolvedName` attribute
+        // extractAliasMapFromArray() reads.
+        $ast = $this->resolveNamesForMatching($ast);
 
         $map = [];
 
@@ -1742,7 +1738,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
-        $this->parser->resolveNames($ast, ['replaceNodes' => false]);
+        $ast = $this->resolveNamesForMatching($ast);
 
         $map = [];
 
@@ -1792,7 +1788,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             if ($item->value instanceof Node\Expr\ClassConstFetch) {
                 // ::class value — read the FQCN from the NameResolver attribute
-                // (populated by resolveNames(..., ['replaceNodes' => false])).
+                // (populated by resolveNamesForMatching()).
                 $classNode = $item->value->class;
                 if (! ($classNode instanceof Node\Name)) {
                     continue;

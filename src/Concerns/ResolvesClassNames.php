@@ -4,9 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Concerns;
 
-use PhpParser\Error;
+use PhpParser\ErrorHandler;
 use PhpParser\Node;
-use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 
 /**
  * Turns the names a file writes into the names it means.
@@ -30,20 +31,27 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  * what the table saves them is the second walk over every file and the resolution this pass
  * leaves in the shared parse cache.
  *
- * unguarded-models is the one caller left, and it was never one of the three. It matches class
- * names from a findNodes() query rather than a walk, so there is no traversal for an import
- * table to piggyback on and the arrival-order problem never arises; what it needs from here
- * is the caught throw.
+ * Two callers remain, and neither was one of the three. unguarded-models matches class names
+ * from a findNodes() query rather than a walk, so there is no traversal for an import table
+ * to piggyback on. authentication-authorization reads route files with a visitor that reaches
+ * down from an ancestor, and its middleware alias maps with findNodes() queries, so it needs
+ * the whole file annotated before it looks.
  */
 trait ResolvesClassNames
 {
     /**
-     * Resolve names on an AST, degrading to the unresolved AST rather than failing.
+     * Resolve names on an AST, losing only the alias a collision lands on.
      *
-     * What gets dropped is the resolution, not the file: matching falls back to the name
-     * as written, which is what every one of these analyzers did before any of them
-     * resolved names. That loses a true positive on a file PHP could not have run anyway,
-     * and it loses nothing else.
+     * A collision is recorded and ignored rather than thrown: the first spelling is kept and
+     * every other name in the file still resolves. That is the policy TracksImportedNames
+     * applies, for the same reason.
+     *
+     * Catching the throw and handing back the unresolved AST is not equivalent. NameResolver
+     * throws where it reaches the second `use`, so every name after it would stay as written.
+     * For unguarded-models that only loses a finding on a file PHP could not have run. For
+     * authentication-authorization it adds findings, because that analyzer reports the
+     * absence of auth: a middleware class left as its bare short name reads as an
+     * unregistered alias, and a route the middleware protects is reported as unauthenticated.
      *
      * replaceNodes stays off because parseFile() hands back a shared, cached AST, and
      * replacing nodes in it would rewrite what every later analyzer sees.
@@ -51,12 +59,11 @@ trait ResolvesClassNames
      * @param  array<Node>  $ast
      * @return array<Node>
      */
-    private function resolveNamesForMatching(ParserInterface $parser, array $ast): array
+    private function resolveNamesForMatching(array $ast): array
     {
-        try {
-            return $parser->resolveNames($ast, ['replaceNodes' => false]);
-        } catch (Error) {
-            return $ast;
-        }
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting, ['replaceNodes' => false]));
+
+        return $traverser->traverse($ast);
     }
 }

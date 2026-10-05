@@ -3770,9 +3770,10 @@ PHP;
 
     public function test_counts_a_query_builder_write_on_a_named_connection(): void
     {
-        // The facade is not the root of this chain: the connection is, and the table is named one
-        // call above it. The write is the same query-builder write on either connection, so the
-        // class has not earned the exemption its scope management would otherwise give it.
+        // The facade is not the root of the write's chain: the connection is, and the table is
+        // named one call above it. The write is the same query-builder write on either
+        // connection, so the class has not earned the exemption its scope management would
+        // otherwise give it, and the mixing on the default connection is reported.
         $code = <<<'PHP'
 <?php
 
@@ -3787,6 +3788,7 @@ class LedgerArchive
     {
         Ledger::withoutGlobalScope('branch')->get();
         Ledger::where('open', 1)->get();
+        DB::table('ledgers')->where('open', 0)->count();
 
         DB::connection('archive')->table('ledgers')->update(['open' => 0]);
     }
@@ -3805,30 +3807,30 @@ PHP;
         $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
     }
 
-    public function test_counts_a_table_on_a_named_connection_as_query_builder_usage(): void
+    public function test_a_table_on_a_named_connection_is_not_the_model_table(): void
     {
-        // No scope management and no write: the only thing that can make this class mixed is
-        // seeing the table named on the connection's builder.
+        // An import reads its source from another database and writes it through the model. The
+        // two tables share a name, not storage, so nothing here is mixed.
         $code = <<<'PHP'
 <?php
 
-namespace App\Repositories;
+namespace App\Console\Commands;
 
 use App\Models\Ledger;
 use Illuminate\Support\Facades\DB;
 
-class LedgerReport
+class ImportLedgers
 {
-    public function totals()
+    public function handle()
     {
-        Ledger::where('open', 1)->get();
-
-        return DB::connection('reporting')->table('ledgers')->count();
+        foreach (DB::connection('previous')->table('ledgers')->get() as $row) {
+            Ledger::updateOrCreate(['code' => $row->code], ['open' => $row->open]);
+        }
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Repositories/LedgerReport.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Console/Commands/ImportLedgers.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -3836,8 +3838,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
+        $this->assertPassed($result);
     }
 
     /**

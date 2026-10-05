@@ -581,9 +581,10 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->classManagesGlobalScopes = true;
         }
 
-        // Detect DB::table() calls, on the default connection or a named one
-        if (($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall)
-            && $this->isDbTableCall($node)) {
+        // Detect DB::table() calls. Only the default connection is booked: a table named on
+        // DB::connection() is usually another database's, such as a legacy import's source, and
+        // sharing a name with a model's table does not make it the same table.
+        if ($node instanceof Node\Expr\StaticCall && $this->isDbFacadeCall($node, 'table')) {
             $this->trackDbTableCall($node);
         }
 
@@ -809,7 +810,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         return $this->issues;
     }
 
-    private function trackDbTableCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): void
+    private function trackDbTableCall(Node\Expr\StaticCall $node): void
     {
         if (empty($node->args)) {
             return;
@@ -954,6 +955,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
      * That is DB::table(), or table() on DB::connection(), which is the same builder on a named
      * connection. The connection case puts the facade one call below the table, so a test on
      * the root of the chain alone sees connection() and misses the table.
+     *
+     * Only the write flag asks this. A write bypasses model events on whichever database it
+     * runs against, whereas the table side books the default connection alone.
      */
     private function isDbTableCall(Node\Expr $expr): bool
     {

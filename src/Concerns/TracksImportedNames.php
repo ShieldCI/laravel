@@ -33,9 +33,10 @@ use PhpParser\Node\Stmt;
  * The pass costs a second walk over every file, and resolution written into the tree
  * parseFile() shares, for as long as the cache lives. It also costs a guard: a NameResolver
  * built with no error handler gets ErrorHandler\Throwing, so a file whose two `use`
- * statements land on one alias errors the analyzer unless the call site catches it.
- * unguarded-models catches it, through ResolvesClassNames::resolveNamesForMatching();
- * AuthenticationAnalyzer's four sites do not, which is #445.
+ * statements land on one alias errors the analyzer unless the call site supplies another.
+ * Both separate-pass callers, unguarded-models and AuthenticationAnalyzer, go through
+ * ResolvesClassNames::resolveNamesForMatching(), which supplies the same collecting handler
+ * this trait uses.
  *
  * An import table does not have that problem. The answer comes from the table rather than
  * from an annotation on the node, so it no longer depends on which direction the reader

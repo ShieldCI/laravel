@@ -5171,4 +5171,230 @@ PHP;
         // composes that prefix into its routes' real paths.
         $this->assertPassed($result);
     }
+
+    // ==========================================
+    // Imports PHP would reject (#445)
+    // ==========================================
+
+    public function test_reads_a_route_file_whose_route_import_collides(): void
+    {
+        // Two use statements land on one alias, so PHP rejects the file. The facade is
+        // imported first, and the first spelling is the one kept: were the second kept
+        // instead, Route would name a class that is not the facade, no route would be read,
+        // and the unprotected POST below would go unreported.
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Routing\Route;
+
+Route::post('/invoices', [\App\Http\Controllers\InvoiceController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_resolves_the_imports_after_a_collision_in_a_route_file(): void
+    {
+        // The collision is on an alias that has nothing to do with routing. Dropping
+        // resolution for the rest of the file would leave the middleware as a bare class
+        // name, read as an unregistered alias, and report the protected route below as
+        // unauthenticated. Only the colliding alias may be lost.
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class RequireSigningKey
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Reports\Formatter;
+use App\Exports\Formatter;
+use App\Http\Middleware\RequireSigningKey;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', [\App\Http\Controllers\InvoiceController::class, 'store'])
+    ->middleware(RequireSigningKey::class);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/RequireSigningKey.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_resolves_the_kernel_alias_map_past_a_colliding_import(): void
+    {
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Support\Clock;
+use App\Legacy\Clock;
+use App\Http\Middleware\RequireSigningKey;
+
+class Kernel
+{
+    protected $middlewareAliases = [
+        'signing.key' => RequireSigningKey::class,
+    ];
+}
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class RequireSigningKey
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', [\App\Http\Controllers\InvoiceController::class, 'store'])
+    ->middleware('signing.key');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Http/Middleware/RequireSigningKey.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_resolves_the_bootstrap_alias_map_past_a_colliding_import(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use App\Support\Clock;
+use App\Legacy\Clock;
+use App\Http\Middleware\RequireSigningKey;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'signing.key' => RequireSigningKey::class,
+        ]);
+    })
+    ->create();
+PHP;
+
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class RequireSigningKey
+{
+    public function handle($request, $next)
+    {
+        if (! $request->bearerToken()) {
+            abort(401);
+        }
+
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', [\App\Http\Controllers\InvoiceController::class, 'store'])
+    ->middleware('signing.key');
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/RequireSigningKey.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reads_routes_on_a_route_facade_imported_under_an_alias(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route as Router;
+
+Router::post('/invoices', [\App\Http\Controllers\InvoiceController::class, 'store']);
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use PhpParser\Node;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -940,46 +941,44 @@ PHP;
         $this->assertFailed($result);
     }
 
-    public function test_passes_for_select_with_db_raw_correlated_subquery(): void
+    public function test_flags_a_raw_select_expression_like_any_other_column(): void
     {
-        // Reproduces the false positive from ActivityController::computeScoreDeltas().
-        // The DB::raw() correlated subquery inside select() signals deliberate, expert-level
-        // SQL — the result set is bounded by the whereIn on page-scoped $reportIds.
+        // A correlated subquery in the select list makes each row dearer to build; it
+        // does not bound how many rows come back. Only the whereIn() can, and a loop
+        // straight over a whereIn() fetch is judged like any other row read.
         $code = <<<'PHP'
 <?php
 
 namespace App\Http\Controllers;
 
-use App\Models\Report;
+use App\Models\Invoice;
 use Illuminate\Support\Facades\DB;
 
-class ActivityController
+class InvoiceController
 {
-    private function computeScoreDeltas(array $reportIds): array
+    private function balances(array $invoiceIds): array
     {
-        $rows = Report::query()
+        $rows = Invoice::query()
             ->select([
                 'id',
-                'score',
-                DB::raw('(SELECT p.score FROM reports p WHERE p.project_id = reports.project_id AND p.analyzed_at < reports.analyzed_at ORDER BY p.analyzed_at DESC LIMIT 1) AS prev_score'),
+                'total',
+                DB::raw('(SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = invoices.id) AS paid'),
             ])
-            ->whereIn('id', $reportIds)
+            ->whereIn('id', $invoiceIds)
             ->get();
 
-        $deltas = [];
+        $balances = [];
 
         foreach ($rows as $row) {
-            $deltas[$row->id] = $row->prev_score !== null
-                ? $row->score - (int) $row->prev_score
-                : null;
+            $balances[$row->id] = $row->total - (int) $row->paid;
         }
 
-        return $deltas;
+        return $balances;
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Controllers/ActivityController.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Controllers/InvoiceController.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -987,7 +986,67 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    /**
+     * @dataProvider selectSpellingProvider
+     */
+    #[DataProvider('selectSpellingProvider')]
+    public function test_every_spelling_of_a_select_gets_the_same_verdict(string $fetch): void
+    {
+        // What the select list holds says nothing about the row count, so no spelling of
+        // it, raw or not, exempts the fetch.
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+use App\Models\Visit;
+use Illuminate\Support\Facades\DB;
+
+class VisitReport
+{
+    public function build(array \$teamIds): void
+    {
+        \$rows = {$fetch};
+
+        foreach (\$rows as \$row) {
+            echo \$row->team_id;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/VisitReport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function selectSpellingProvider(): array
+    {
+        $raw = "'team_id, MAX(created_at) as last_seen_at'";
+
+        return [
+            'select(DB::raw())' => ["Visit::query()->whereIn('team_id', \$teamIds)->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'select([.., DB::raw()])' => ["Visit::query()->select(['team_id', DB::raw('COUNT(*) as visits')])->groupBy('team_id')->get()"],
+            'selectRaw()' => ["Visit::query()->whereIn('team_id', \$teamIds)->selectRaw({$raw})->groupBy('team_id')->get()"],
+            'addSelect(DB::raw())' => ["Visit::query()->addSelect(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'static-root select(DB::raw())' => ["Visit::select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'DB::table()->select(DB::raw())' => ["DB::table('visits')->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'plain select()' => ["Visit::query()->whereIn('team_id', \$teamIds)->select('team_id')->groupBy('team_id')->get()"],
+        ];
     }
 
     public function test_grammar_singular_vs_plural(): void

@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
 use PhpParser\Node;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\MixedQueryBuilderEloquentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -3765,5 +3766,344 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "billing_accounts"', $result);
+    }
+
+    public function test_counts_a_query_builder_write_on_a_named_connection(): void
+    {
+        // The facade is not the root of this chain: the connection is, and the table is named one
+        // call above it. The write is the same query-builder write on either connection, so the
+        // class has not earned the exemption its scope management would otherwise give it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class LedgerArchive
+{
+    public function close()
+    {
+        Ledger::withoutGlobalScope('branch')->get();
+        Ledger::where('open', 1)->get();
+
+        DB::connection('archive')->table('ledgers')->update(['open' => 0]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerArchive.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
+    }
+
+    public function test_counts_a_table_on_a_named_connection_as_query_builder_usage(): void
+    {
+        // No scope management and no write: the only thing that can make this class mixed is
+        // seeing the table named on the connection's builder.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class LedgerReport
+{
+    public function totals()
+    {
+        Ledger::where('open', 1)->get();
+
+        return DB::connection('reporting')->table('ledgers')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerReport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
+    }
+
+    /**
+     * @dataProvider queryBuilderWriteMethodProvider
+     */
+    #[DataProvider('queryBuilderWriteMethodProvider')]
+    public function test_every_query_builder_write_cancels_the_scope_exemption(string $method): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class LedgerMaintenance
+{
+    public function run()
+    {
+        Ledger::withoutGlobalScope('branch')->get();
+        Ledger::where('open', 1)->get();
+
+        DB::table('ledgers')->{$method}([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerMaintenance.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
+    }
+
+    /**
+     * Every write the query builder runs without the model, listed out rather than read from
+     * the analyzer so that dropping one from it fails here.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function queryBuilderWriteMethodProvider(): array
+    {
+        $methods = [
+            'insert', 'insertGetId', 'insertOrIgnore', 'insertUsing', 'insertOrIgnoreUsing',
+            'insertOrIgnoreReturning', 'update', 'updateFrom', 'updateOrInsert', 'upsert',
+            'delete', 'truncate', 'increment', 'decrement', 'incrementEach', 'decrementEach',
+        ];
+
+        return array_combine($methods, array_map(fn (string $method): array => [$method], $methods));
+    }
+
+    public function test_a_write_declared_above_the_class_cancels_its_exemption(): void
+    {
+        // The trait's query already counts toward the class's verdict, so the trait's write is
+        // the class's write as well, and the exemption is not earned.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+trait PrunesLedgers
+{
+    public function prune()
+    {
+        DB::table('ledgers')->delete();
+    }
+}
+
+class LedgerRepository
+{
+    use PrunesLedgers;
+
+    public function open()
+    {
+        Ledger::withoutGlobalScope('branch')->get();
+
+        return Ledger::where('open', 1)->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerRepository.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "ledgers"', $result);
+    }
+
+    public function test_scope_management_declared_above_the_class_earns_its_exemption(): void
+    {
+        // The counterpart: the trait's scope management is the class's too, and nothing in the
+        // file writes through the query builder.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+trait ReadsAcrossBranches
+{
+    public function everyBranch()
+    {
+        return Ledger::withoutGlobalScope('branch')->get();
+    }
+}
+
+class LedgerAnalytics
+{
+    use ReadsAcrossBranches;
+
+    public function totals()
+    {
+        Ledger::where('open', 1)->get();
+
+        return DB::table('ledgers')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerAnalytics.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_nested_class_does_not_inherit_the_enclosing_class_write(): void
+    {
+        // The anonymous class manages scopes and writes nothing; the write belongs to the method
+        // around it, which does not mix. Neither verdict is a finding.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class LedgerJob
+{
+    public function handle()
+    {
+        DB::table('ledgers')->update(['seen' => 1]);
+
+        return new class
+        {
+            public function report()
+            {
+                Ledger::withoutGlobalScope('branch')->get();
+                Ledger::where('open', 1)->get();
+
+                return DB::table('ledgers')->count();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerJob.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_a_nested_class_does_not_inherit_the_enclosing_class_scope_management(): void
+    {
+        // The enclosing method manages scopes; the anonymous class mixes without doing so, and
+        // is judged on its own evidence.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class LedgerExport
+{
+    public function build()
+    {
+        Ledger::withoutGlobalScope('branch')->get();
+
+        return new class
+        {
+            public function rows()
+            {
+                Ledger::where('open', 1)->get();
+
+                return DB::table('ledgers')->count();
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/LedgerExport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Class "LedgerExport@anonymous" uses both Eloquent and Query Builder for table "ledgers"', $result);
+    }
+
+    public function test_a_second_class_does_not_inherit_the_first_class_write(): void
+    {
+        // What the file gathered ahead of a class is carried into it, but what an earlier class
+        // gathered is not: the write is the first class's alone.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Repositories;
+
+use App\Models\Ledger;
+use Illuminate\Support\Facades\DB;
+
+class InvoiceCounter
+{
+    public function bump()
+    {
+        return DB::table('invoices')->increment('version');
+    }
+}
+
+class LedgerAnalytics
+{
+    public function totals()
+    {
+        Ledger::withoutGlobalScope('branch')->get();
+        Ledger::where('open', 1)->get();
+
+        return DB::table('ledgers')->count();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Repositories/Ledgers.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
     }
 }

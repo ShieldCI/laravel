@@ -476,9 +476,9 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
     /** @var array<string> Query-builder write methods that bypass model events/casts. */
     private const QUERY_BUILDER_WRITE_METHODS = [
-        'insert', 'insertGetId', 'insertOrIgnore', 'insertUsing',
-        'update', 'updateOrInsert', 'upsert',
-        'delete', 'truncate', 'increment', 'decrement',
+        'insert', 'insertGetId', 'insertOrIgnore', 'insertUsing', 'insertOrIgnoreUsing', 'insertOrIgnoreReturning',
+        'update', 'updateFrom', 'updateOrInsert', 'upsert',
+        'delete', 'truncate', 'increment', 'decrement', 'incrementEach', 'decrementEach',
     ];
 
     /**
@@ -518,14 +518,16 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             // Only a class declared inside another starts from nothing: the evidence read so
             // far is the enclosing class's. The outermost class in a file keeps what the file
             // gathered ahead of it, which is where a composed trait or a helper function
-            // queries from, and which is half of the mixing it is judged on.
+            // queries from, and which is half of the mixing it is judged on. The trait's writes
+            // and scope management are the class's on the same grounds, so the flags that
+            // decide the global-scope exemption are carried alongside the tables.
             if ($isNested) {
                 $this->tableUsage = [];
+                $this->classHasQueryBuilderWrite = false;
+                $this->classManagesGlobalScopes = false;
             }
 
             $this->variableTracking = [];
-            $this->classHasQueryBuilderWrite = false;
-            $this->classManagesGlobalScopes = false;
         }
 
         // Reset variable tracking at method boundaries for proper scoping. Nothing is saved
@@ -579,14 +581,13 @@ class MixedQueryVisitor extends NodeVisitorAbstract
             $this->classManagesGlobalScopes = true;
         }
 
-        // Detect DB::table() calls
-        if ($node instanceof Node\Expr\StaticCall) {
-            if ($node->class instanceof Node\Name && $this->isDbFacade($this->resolvedClassFqn($node->class))) {
-                if ($node->name instanceof Node\Identifier && $node->name->toString() === 'table') {
-                    $this->trackDbTableCall($node);
-                }
-            }
+        // Detect DB::table() calls, on the default connection or a named one
+        if (($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall)
+            && $this->isDbTableCall($node)) {
+            $this->trackDbTableCall($node);
+        }
 
+        if ($node instanceof Node\Expr\StaticCall) {
             // Detect Model::where/find/etc calls
             if ($node->class instanceof Node\Name) {
                 $className = $this->resolvedClassFqn($node->class);
@@ -730,20 +731,14 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         }
 
         // A query-builder write cancels the global-scope exemption in checkMixedUsage(). The
-        // facade is named at the root of the chain, below this node, and is resolved like any
-        // other reference, so an aliased DB is still the facade. The flag is read when the
-        // class is left.
+        // table is named below this node, at the root of the chain or one call above a
+        // connection, and the facade is resolved like any other reference, so an aliased DB is
+        // still the facade. The flag is read when the class is left.
         if ($node instanceof Node\Expr\MethodCall
             && $node->name instanceof Node\Identifier
-            && in_array($node->name->toString(), self::QUERY_BUILDER_WRITE_METHODS, true)) {
-            $root = $this->findRootStaticCall($node->var);
-            if ($root !== null
-                && $root->class instanceof Node\Name
-                && $this->isDbFacade($this->resolvedClassFqn($root->class))
-                && $root->name instanceof Node\Identifier
-                && $root->name->toString() === 'table') {
-                $this->classHasQueryBuilderWrite = true;
-            }
+            && in_array($node->name->toString(), self::QUERY_BUILDER_WRITE_METHODS, true)
+            && $this->chainStartsAtDbTable($node->var)) {
+            $this->classHasQueryBuilderWrite = true;
         }
 
         // P2.10: Detect toBase() or getQuery() on model method calls (User::query()->toBase()).
@@ -814,7 +809,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
         return $this->issues;
     }
 
-    private function trackDbTableCall(Node\Expr\StaticCall $node): void
+    private function trackDbTableCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): void
     {
         if (empty($node->args)) {
             return;
@@ -951,6 +946,51 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         return $normalized === 'DB'
             || $normalized === 'Illuminate\\Support\\Facades\\DB';
+    }
+
+    /**
+     * Whether an expression is the call that names a query-builder table.
+     *
+     * That is DB::table(), or table() on DB::connection(), which is the same builder on a named
+     * connection. The connection case puts the facade one call below the table, so a test on
+     * the root of the chain alone sees connection() and misses the table.
+     */
+    private function isDbTableCall(Node\Expr $expr): bool
+    {
+        if ($expr instanceof Node\Expr\StaticCall) {
+            return $this->isDbFacadeCall($expr, 'table');
+        }
+
+        return $expr instanceof Node\Expr\MethodCall
+            && $expr->name instanceof Node\Identifier
+            && $expr->name->toString() === 'table'
+            && $expr->var instanceof Node\Expr\StaticCall
+            && $this->isDbFacadeCall($expr->var, 'connection');
+    }
+
+    private function isDbFacadeCall(Node\Expr\StaticCall $call, string $method): bool
+    {
+        return $call->class instanceof Node\Name
+            && $call->name instanceof Node\Identifier
+            && $call->name->toString() === $method
+            && $this->isDbFacade($this->resolvedClassFqn($call->class));
+    }
+
+    /**
+     * Walk down a method chain to the call that names its table, if a query-builder table
+     * is what the chain starts from.
+     */
+    private function chainStartsAtDbTable(Node\Expr $expr): bool
+    {
+        while (! $this->isDbTableCall($expr)) {
+            if (! $expr instanceof Node\Expr\MethodCall) {
+                return false;
+            }
+
+            $expr = $expr->var;
+        }
+
+        return true;
     }
 
     /**

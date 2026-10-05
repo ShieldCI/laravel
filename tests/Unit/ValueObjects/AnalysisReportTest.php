@@ -7,10 +7,13 @@ namespace ShieldCI\Tests\Unit\ValueObjects;
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use PHPUnit\Framework\Attributes\Test;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
+use ShieldCI\AnalyzersCore\ValueObjects\ParserCompatibility;
 use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Tests\TestCase;
@@ -691,6 +694,143 @@ class AnalysisReportTest extends TestCase
         $this->assertEquals([], $report->configuration);
         $this->assertArrayHasKey('configuration', $report->toArray());
         $this->assertEquals([], $report->toArray()['configuration']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_includes_the_parser_compatibility_and_parse_failures_in_to_array(): void
+    {
+        $report = new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: '10.0.0',
+            packageVersion: '1.0.0',
+            results: collect(),
+            totalExecutionTime: 1.0,
+            analyzedAt: new DateTimeImmutable,
+            parserCompatibility: new ParserCompatibility(80400, 80500),
+            parseFailures: [
+                new ParseFailure('app/Broken.php', 12, 'Syntax error, unexpected T_VARIABLE', ParseFailureCause::SyntaxError),
+                new ParseFailure('app/Recovered.php', null, 'Syntax error, unexpected EOF', ParseFailureCause::SyntaxError),
+            ],
+            parseRecoveries: ['app/Recovered.php'],
+        );
+
+        $array = $report->toArray();
+
+        $this->assertSame(
+            ['supported' => false, 'parser_version' => '8.4', 'runtime_version' => '8.5'],
+            $array['parser_compatibility'],
+        );
+        $this->assertSame([
+            [
+                'path' => 'app/Broken.php',
+                'line' => 12,
+                'message' => 'Syntax error, unexpected T_VARIABLE',
+                'cause' => 'syntax-error',
+                'recovered' => false,
+            ],
+            [
+                'path' => 'app/Recovered.php',
+                'message' => 'Syntax error, unexpected EOF',
+                'cause' => 'syntax-error',
+                'recovered' => true,
+            ],
+        ], $array['parse_failures']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_always_includes_the_parser_keys_in_to_array(): void
+    {
+        $array = $this->createReport(collect())->toArray();
+
+        $this->assertArrayHasKey('parser_compatibility', $array);
+        $this->assertNull($array['parser_compatibility']);
+        $this->assertSame([], $array['parse_failures']);
+    }
+
+    /** @test */
+    #[Test]
+    public function with_results_keeps_every_other_field(): void
+    {
+        $original = $this->fullyPopulatedReport();
+        $results = $this->resultsOf(AnalysisResult::failed('sql-injection', 'Failed', []));
+
+        $copy = $original->withResults($results);
+
+        $this->assertSame($results, $copy->results);
+        $this->assertFieldsCarriedOver($original, $copy, 'results');
+    }
+
+    /** @test */
+    #[Test]
+    public function with_suppressed_issues_keeps_every_other_field(): void
+    {
+        $original = $this->fullyPopulatedReport();
+        $suppressed = ['xss-detection' => [new SuppressionRecord(
+            new Issue('Replaced', new Location('app/Other.php', 1), Severity::Low, 'Fix it'),
+            SuppressionType::Baseline,
+            'baseline hash: def456',
+        )]];
+
+        $copy = $original->withSuppressedIssues($suppressed);
+
+        $this->assertSame($suppressed, $copy->suppressedIssues);
+        $this->assertFieldsCarriedOver($original, $copy, 'suppressedIssues');
+    }
+
+    /**
+     * Every constructor parameter set to something other than its default, so a wither that
+     * drops a field back to its default is caught.
+     */
+    private function fullyPopulatedReport(): AnalysisReport
+    {
+        $args = [
+            'projectId' => 'project-1',
+            'laravelVersion' => '11.0.0',
+            'packageVersion' => '1.2.3',
+            'results' => $this->resultsOf(AnalysisResult::passed('xss-detection', 'Passed')),
+            'totalExecutionTime' => 4.5,
+            'analyzedAt' => new DateTimeImmutable('2026-01-01T00:00:00Z'),
+            'triggeredBy' => TriggerSource::CiCd,
+            'metadata' => ['php_version' => '8.3.0'],
+            'suppressedIssues' => ['xss-detection' => [new SuppressionRecord(
+                new Issue('Original', new Location('app/User.php', 3), Severity::High, 'Fix it'),
+                SuppressionType::Inline,
+                '@shieldci-ignore',
+            )]],
+            'configuration' => ['ci_mode' => true],
+            'proPackageVersion' => '2.0.0',
+            'parserCompatibility' => new ParserCompatibility(80400, 80500),
+            'parseFailures' => [new ParseFailure('app/Broken.php', 2, 'Syntax error', ParseFailureCause::SyntaxError)],
+            'parseRecoveries' => ['app/Broken.php'],
+        ];
+
+        $constructor = (new \ReflectionClass(AnalysisReport::class))->getConstructor();
+        $this->assertNotNull($constructor);
+        $this->assertSame(
+            array_map(fn (\ReflectionParameter $p) => $p->getName(), $constructor->getParameters()),
+            array_keys($args),
+            'A new AnalysisReport field must be added here, or the wither tests cannot see it dropped.',
+        );
+
+        return new AnalysisReport(...$args);
+    }
+
+    private function assertFieldsCarriedOver(AnalysisReport $original, AnalysisReport $copy, string $replaced): void
+    {
+        $constructor = (new \ReflectionClass(AnalysisReport::class))->getConstructor();
+        $this->assertNotNull($constructor);
+
+        foreach ($constructor->getParameters() as $parameter) {
+            $name = $parameter->getName();
+
+            if ($name === $replaced) {
+                continue;
+            }
+
+            $this->assertSame($original->{$name}, $copy->{$name}, "{$name} was not carried over.");
+        }
     }
 
     private function createReport(Collection $results): AnalysisReport

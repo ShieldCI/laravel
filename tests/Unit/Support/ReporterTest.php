@@ -5,15 +5,21 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use Composer\InstalledVersions;
+use Mockery;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\CodeSnippet;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
+use ShieldCI\AnalyzersCore\ValueObjects\ParserCompatibility;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\Reporter;
 use ShieldCI\Tests\TestCase;
@@ -2065,5 +2071,182 @@ class ReporterTest extends TestCase
         ] as $key) {
             $this->assertArrayHasKey($key, $decoded['configuration']);
         }
+    }
+
+    /** @test */
+    #[Test]
+    public function generate_carries_the_shared_parsers_failures_relative_to_the_base_path(): void
+    {
+        app(AstParser::class)->parseCode("<?php\n\$x = ;", base_path('app/Broken.php'));
+
+        $report = $this->reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertCount(1, $report->parseFailures);
+        $this->assertSame('app/Broken.php', $report->parseFailures[0]->path);
+        $this->assertSame(2, $report->parseFailures[0]->line);
+        $this->assertSame(ParseFailureCause::SyntaxError, $report->parseFailures[0]->cause);
+        $this->assertSame([], $report->parseRecoveries);
+    }
+
+    /** @test */
+    #[Test]
+    public function generate_carries_recoveries_relative_to_the_base_path(): void
+    {
+        $parser = app(AstParser::class);
+        $parser->parseCode('<?php $x = ;', base_path('app/Recovered.php'));
+        $parser->recordRecovery(base_path('app/Recovered.php'));
+
+        $report = $this->reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertSame(['app/Recovered.php'], $report->parseRecoveries);
+        $this->assertTrue($report->toArray()['parse_failures'][0]['recovered']);
+    }
+
+    /** @test */
+    #[Test]
+    public function generate_reports_no_failures_when_the_bound_parser_keeps_no_log(): void
+    {
+        app(AstParser::class)->parseCode('<?php $x = ;', base_path('app/Broken.php'));
+        $this->assertNotNull($this->app);
+        $this->app->instance(ParserInterface::class, Mockery::mock(ParserInterface::class));
+
+        $report = $this->reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertSame([], $report->parseFailures);
+        $this->assertSame([], $report->parseRecoveries);
+    }
+
+    /** @test */
+    #[Test]
+    public function generate_records_the_parser_compatibility(): void
+    {
+        $report = $this->reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertNotNull($report->parserCompatibility);
+        $this->assertSame(AstParser::compatibility()->toArray(), $report->parserCompatibility->toArray());
+    }
+
+    /** @test */
+    #[Test]
+    public function parse_failure_notice_is_empty_for_a_clean_run_on_a_supported_parser(): void
+    {
+        $report = $this->reportWithParserState(new ParserCompatibility(80500, 80500), []);
+
+        $this->assertSame('', $this->reporter->parseFailureNotice($report));
+    }
+
+    /** @test */
+    #[Test]
+    public function parse_failure_notice_lists_each_file_with_its_line_cause_and_recovery(): void
+    {
+        $this->reporter->setDecorated(false);
+        $report = $this->reportWithParserState(new ParserCompatibility(80500, 80500), [
+            new ParseFailure('app/Broken.php', 12, 'Syntax error, unexpected T_VARIABLE', ParseFailureCause::SyntaxError),
+            new ParseFailure('app/Modern.php', null, 'Syntax error, unexpected T_STRING', ParseFailureCause::UnsupportedSyntax),
+        ], ['app/Modern.php']);
+
+        $notice = $this->reporter->parseFailureNotice($report);
+
+        $this->assertStringContainsString('2 files could not be parsed, so no analyzer read them', $notice);
+        $this->assertStringContainsString('app/Broken.php:12  Syntax error, unexpected T_VARIABLE (syntax-error)', $notice);
+        $this->assertStringContainsString('app/Modern.php  Syntax error, unexpected T_STRING (unsupported-syntax, partially recovered)', $notice);
+        $this->assertStringNotContainsString('nikic/php-parser understands', $notice);
+    }
+
+    /** @test */
+    #[Test]
+    public function parse_failure_notice_uses_the_singular_for_one_file(): void
+    {
+        $this->reporter->setDecorated(false);
+        $report = $this->reportWithParserState(null, [
+            new ParseFailure(null, 1, 'Syntax error, unexpected EOF', ParseFailureCause::SyntaxError),
+        ]);
+
+        $notice = $this->reporter->parseFailureNotice($report);
+
+        $this->assertStringContainsString('1 file could not be parsed', $notice);
+        $this->assertStringContainsString('(unnamed source):1  Syntax error, unexpected EOF', $notice);
+    }
+
+    /** @test */
+    #[Test]
+    public function parse_failure_notice_caps_the_list_and_points_at_the_json_report(): void
+    {
+        $this->reporter->setDecorated(false);
+        $failures = [];
+        for ($i = 1; $i <= 13; $i++) {
+            $failures[] = new ParseFailure("app/File{$i}.php", 1, 'Syntax error', ParseFailureCause::SyntaxError);
+        }
+
+        $notice = $this->reporter->parseFailureNotice($this->reportWithParserState(null, $failures));
+
+        $this->assertStringContainsString('app/File10.php:1', $notice);
+        $this->assertStringNotContainsString('app/File11.php', $notice);
+        $this->assertStringContainsString('and 3 more; --format=json lists every file', $notice);
+    }
+
+    /** @test */
+    #[Test]
+    public function parse_failure_notice_names_a_parser_older_than_the_runtime(): void
+    {
+        $this->reporter->setDecorated(false);
+        $report = $this->reportWithParserState(new ParserCompatibility(80400, 80500), []);
+
+        $notice = $this->reporter->parseFailureNotice($report);
+
+        $this->assertStringContainsString(
+            'nikic/php-parser understands PHP 8.4, but this is PHP 8.5, so files using newer syntax could not be read',
+            $notice,
+        );
+        $this->assertStringContainsString('Update nikic/php-parser to a release that supports PHP 8.5', $notice);
+    }
+
+    /** @test */
+    #[Test]
+    public function generate_takes_the_compatibility_from_the_overridable_hook(): void
+    {
+        $reporter = new class extends Reporter
+        {
+            protected function parserCompatibility(): ParserCompatibility
+            {
+                return new ParserCompatibility(80400, 80500);
+            }
+        };
+        $reporter->setDecorated(false);
+
+        $report = $reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertStringContainsString('nikic/php-parser understands PHP 8.4', $reporter->toConsole($report));
+    }
+
+    /** @test */
+    #[Test]
+    public function console_report_includes_the_parse_failure_notice(): void
+    {
+        $this->reporter->setDecorated(false);
+        app(AstParser::class)->parseCode('<?php $x = ;', base_path('app/Broken.php'));
+
+        $report = $this->reporter->generate($this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')));
+
+        $this->assertStringContainsString('app/Broken.php:1', $this->reporter->toConsole($report));
+    }
+
+    /**
+     * @param  list<ParseFailure>  $failures
+     * @param  list<string>  $recoveries
+     */
+    private function reportWithParserState(?ParserCompatibility $compatibility, array $failures, array $recoveries = []): AnalysisReport
+    {
+        return new AnalysisReport(
+            projectId: 'test-project-id',
+            laravelVersion: '11.0.0',
+            packageVersion: '1.0.0',
+            results: $this->resultsOf(AnalysisResult::passed('analyzer-1', 'Passed')),
+            totalExecutionTime: 1.0,
+            analyzedAt: new \DateTimeImmutable,
+            parserCompatibility: $compatibility,
+            parseFailures: $failures,
+            parseRecoveries: $recoveries,
+        );
     }
 }

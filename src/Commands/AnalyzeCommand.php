@@ -209,19 +209,7 @@ class AnalyzeCommand extends Command
         }
 
         // Inject all accumulated suppression records into the final report
-        $report = new AnalysisReport(
-            projectId: $report->projectId,
-            laravelVersion: $report->laravelVersion,
-            packageVersion: $report->packageVersion,
-            results: $report->results,
-            totalExecutionTime: $report->totalExecutionTime,
-            analyzedAt: $report->analyzedAt,
-            triggeredBy: $report->triggeredBy,
-            metadata: $report->metadata,
-            suppressedIssues: $this->suppressedIssues,
-            configuration: $report->configuration,
-            proPackageVersion: $report->proPackageVersion,
-        );
+        $report = $report->withSuppressedIssues($this->suppressedIssues);
 
         // Save to file if requested (CLI option or config default)
         $output = $this->resolveOutputPath();
@@ -233,19 +221,27 @@ class AnalyzeCommand extends Command
         // Output report to STDOUT (skip if saved to file or already streamed)
         if (! $output && ! $useStreaming) {
             $this->outputReport($report, $reporter);
-        } elseif (! $output && $useStreaming && ! $this->isSingleAnalyzerRun()) {
-            // For streaming mode, output the report card — but skip it for a single-analyzer
-            // run, where the percentage table degenerates to a meaningless 100%/0% summary
-            // already conveyed by the streamed result line.
+        } elseif (! $output && $useStreaming && $reporter instanceof Reporter) {
             // Guarded by the concrete type rather than added to ReporterInterface, which
-            // would break any third-party implementation. One that cannot render a card on
-            // its own simply does not get one here; toConsole() still includes it.
-            if ($reporter instanceof Reporter) {
+            // would break any third-party implementation. One that cannot render a card or
+            // a notice on its own simply does not get them here; toConsole() includes both.
+            if (! $this->isSingleAnalyzerRun()) {
+                // For streaming mode, output the report card, but skip it for a single-analyzer
+                // run, where the percentage table degenerates to a meaningless 100%/0% summary
+                // already conveyed by the streamed result line.
                 $this->newLine();
                 $this->line($this->color('Report Card', 'bright_yellow'));
                 $this->line($this->color('===========', 'bright_yellow'));
                 $this->newLine();
                 $this->line($reporter->reportCard($report));
+                $this->newLine();
+            }
+
+            // Not skipped for a single-analyzer run: the files that analyzer could not read
+            // are exactly what its streamed pass does not cover.
+            $notice = $reporter->parseFailureNotice($report);
+            if ($notice !== '') {
+                $this->line($notice);
                 $this->newLine();
             }
         }
@@ -1630,18 +1626,7 @@ class AnalyzeCommand extends Command
         });
 
         // Return new report with filtered results
-        return new AnalysisReport(
-            projectId: $report->projectId,
-            laravelVersion: $report->laravelVersion,
-            packageVersion: $report->packageVersion,
-            results: $filteredResults,
-            totalExecutionTime: $report->totalExecutionTime,
-            analyzedAt: $report->analyzedAt,
-            triggeredBy: $report->triggeredBy,
-            metadata: $report->metadata,
-            configuration: $report->configuration,
-            proPackageVersion: $report->proPackageVersion,
-        );
+        return $report->withResults($filteredResults);
     }
 
     /**
@@ -1716,18 +1701,7 @@ class AnalyzeCommand extends Command
             return $fr->result;
         });
 
-        return new AnalysisReport(
-            projectId: $report->projectId,
-            laravelVersion: $report->laravelVersion,
-            packageVersion: $report->packageVersion,
-            results: $filteredResults,
-            totalExecutionTime: $report->totalExecutionTime,
-            analyzedAt: $report->analyzedAt,
-            triggeredBy: $report->triggeredBy,
-            metadata: $report->metadata,
-            configuration: $report->configuration,
-            proPackageVersion: $report->proPackageVersion,
-        );
+        return $report->withResults($filteredResults);
     }
 
     /**
@@ -1859,18 +1833,7 @@ class AnalyzeCommand extends Command
         });
 
         // Return new report with filtered results
-        return new AnalysisReport(
-            projectId: $report->projectId,
-            laravelVersion: $report->laravelVersion,
-            packageVersion: $report->packageVersion,
-            results: $filteredResults,
-            totalExecutionTime: $report->totalExecutionTime,
-            analyzedAt: $report->analyzedAt,
-            triggeredBy: $report->triggeredBy,
-            metadata: $report->metadata,
-            configuration: $report->configuration,
-            proPackageVersion: $report->proPackageVersion,
-        );
+        return $report->withResults($filteredResults);
     }
 
     /**

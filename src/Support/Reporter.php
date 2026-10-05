@@ -8,11 +8,17 @@ use Composer\InstalledVersions;
 use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzerManager;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\AnalyzersCore\Contracts\RecordingParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\Support\PathHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\CodeSnippet;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
+use ShieldCI\AnalyzersCore\ValueObjects\ParserCompatibility;
 use ShieldCI\Contracts\ReporterInterface;
 use ShieldCI\Enums\TriggerSource;
 use ShieldCI\ValueObjects\AnalysisReport;
@@ -31,6 +37,14 @@ class Reporter implements ReporterInterface
      * command keep their existing output.
      */
     private bool $decorated = true;
+
+    /**
+     * How many unparseable files the console notice names before summarising the rest.
+     *
+     * A php-parser older than the runtime turns every file using newer syntax into a
+     * failure, so the list can run to the whole project. The JSON report keeps all of them.
+     */
+    private const PARSE_FAILURE_LIST_LIMIT = 10;
 
     /**
      * Token ids rendered as keywords.
@@ -71,6 +85,7 @@ class Reporter implements ReporterInterface
     public function generate(Collection $results, TriggerSource $triggeredBy = TriggerSource::Manual, array $gitContext = []): AnalysisReport
     {
         $projectIdConfig = config('shieldci.project_id', 'unknown');
+        [$parseFailures, $parseRecoveries] = $this->parseFailures();
 
         return new AnalysisReport(
             projectId: is_string($projectIdConfig) ? $projectIdConfig : 'unknown',
@@ -83,6 +98,9 @@ class Reporter implements ReporterInterface
             metadata: $this->buildMetadata($gitContext),
             configuration: $this->buildConfiguration(),
             proPackageVersion: $this->getProPackageVersion(),
+            parserCompatibility: $this->parserCompatibility(),
+            parseFailures: $parseFailures,
+            parseRecoveries: $parseRecoveries,
         );
     }
 
@@ -268,7 +286,84 @@ class Reporter implements ReporterInterface
         $output[] = $this->generateReportCard($report, $byCategory);
         $output[] = '';
 
+        $notice = $this->parseFailureNotice($report);
+        if ($notice !== '') {
+            $output[] = $notice;
+            $output[] = '';
+        }
+
         return implode(PHP_EOL, $output);
+    }
+
+    /**
+     * Say which files no analyzer could read, and whether php-parser is behind the runtime.
+     *
+     * Every analyzer reads an empty AST as "nothing to report", so a file that never parsed
+     * passes alongside the ones that were read and found clean. This is the caveat on those
+     * passes. It changes no verdict and no exit code: a project can keep a deliberately
+     * broken file, a test fixture say, and that must not fail its CI.
+     *
+     * Empty when there is nothing to say. Not on ReporterInterface, so a third-party
+     * implementation stays valid.
+     */
+    public function parseFailureNotice(AnalysisReport $report): string
+    {
+        $lines = [];
+        $compatibility = $report->parserCompatibility;
+
+        if ($compatibility !== null && ! $compatibility->isSupported()) {
+            $lines[] = $this->color(sprintf(
+                '⚠️  nikic/php-parser understands PHP %s, but this is PHP %s, so files using newer syntax could not be read. Update nikic/php-parser to a release that supports PHP %2$s.',
+                $compatibility->parserVersion(),
+                $compatibility->runtimeVersion(),
+            ), 'yellow');
+        }
+
+        $count = count($report->parseFailures);
+
+        if ($count > 0) {
+            $lines[] = $this->color(sprintf(
+                '⚠️  %d %s could not be parsed, so no analyzer read %s. A pass does not cover %s.',
+                $count,
+                $count === 1 ? 'file' : 'files',
+                $count === 1 ? 'it' : 'them',
+                $count === 1 ? 'this file' : 'these files',
+            ), 'yellow');
+
+            foreach (array_slice($report->parseFailures, 0, self::PARSE_FAILURE_LIST_LIMIT) as $failure) {
+                $lines[] = '  '.$this->describeParseFailure($failure, $report->parseRecoveries);
+            }
+
+            if ($count > self::PARSE_FAILURE_LIST_LIMIT) {
+                $lines[] = $this->color(sprintf(
+                    '  ... and %d more; --format=json lists every file.',
+                    $count - self::PARSE_FAILURE_LIST_LIMIT,
+                ), 'gray');
+            }
+        }
+
+        return implode(PHP_EOL, $lines);
+    }
+
+    /**
+     * @param  list<string>  $recoveries
+     */
+    private function describeParseFailure(ParseFailure $failure, array $recoveries): string
+    {
+        // A null path is code parsed with no origin. Rare, but the failure is still real.
+        $where = $failure->path ?? '(unnamed source)';
+
+        if ($failure->line !== null) {
+            $where .= ':'.$failure->line;
+        }
+
+        $detail = $failure->cause->value;
+
+        if ($failure->path !== null && in_array($failure->path, $recoveries, true)) {
+            $detail .= ', partially recovered';
+        }
+
+        return "{$where}  {$failure->message} ({$detail})";
     }
 
     /**
@@ -747,6 +842,57 @@ class Reporter implements ReporterInterface
             'memory_limit' => $memoryLimit,
             'fail_on' => $failOn,
             'fail_threshold' => $failThreshold,
+        ];
+    }
+
+    /**
+     * Whether the installed php-parser understands the PHP this run is on.
+     *
+     * Overridable so a test can hold a parser older than the runtime: no CI leg can, since
+     * every php-parser this package installs already supports the newest PHP it runs on.
+     */
+    protected function parserCompatibility(): ParserCompatibility
+    {
+        return AstParser::compatibility();
+    }
+
+    /**
+     * The shared parser's failure log, with paths relative to the base path.
+     *
+     * Read at generate() time, after every analyzer has run, from the singleton they all
+     * parse through. AnalyzeCommand resets the log when the run starts, so it holds this
+     * run's files only. Relative because the report leaves the machine, and an absolute
+     * path says where the project is deployed, which no reader of the report needs.
+     *
+     * Guarded on the contract rather than the concrete class: a host app may bind its own
+     * ParserInterface, and one that keeps no log simply has nothing to report.
+     *
+     * @return array{list<ParseFailure>, list<string>} The failures, then the recovered paths.
+     */
+    private function parseFailures(): array
+    {
+        $parser = app(ParserInterface::class);
+
+        if (! $parser instanceof RecordingParserInterface) {
+            return [[], []];
+        }
+
+        $basePath = base_path();
+
+        return [
+            array_map(
+                fn (ParseFailure $failure) => new ParseFailure(
+                    $failure->path === null ? null : PathHelper::relativeTo($failure->path, $basePath),
+                    $failure->line,
+                    $failure->message,
+                    $failure->cause,
+                ),
+                $parser->failures(),
+            ),
+            array_map(
+                fn (string $path) => PathHelper::relativeTo($path, $basePath),
+                $parser->recoveries(),
+            ),
         ];
     }
 

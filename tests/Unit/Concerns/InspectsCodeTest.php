@@ -315,6 +315,19 @@ class InspectsCodeTest extends TestCase
 
     /** @test */
     #[Test]
+    public function parse_config_array_records_an_unparseable_file_on_the_shared_parser(): void
+    {
+        $path = __DIR__.'/../../Fixtures/inspects-code-config/syntax_error.php';
+
+        (new ConcreteInspectsCode)->publicParseConfigArray($path);
+
+        // The shared log is what the report reads. A parser of our own would have recorded
+        // this where no report could reach it, and the empty result would read as "no keys".
+        $this->assertTrue(app(AstParser::class)->hasFailure($path));
+    }
+
+    /** @test */
+    #[Test]
     public function parse_config_array_returns_empty_when_no_return_statement(): void
     {
         $inspector = new ConcreteInspectsCode;

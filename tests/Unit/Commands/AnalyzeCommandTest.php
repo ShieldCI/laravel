@@ -4178,6 +4178,90 @@ PHP);
         $this->assertNotContains('/from/an/earlier/run.php', $after, 'A run must not report an earlier run\'s parse failures.');
     }
 
+    /** @test */
+    #[Test]
+    public function the_json_report_keeps_parse_failures_through_every_filter_and_still_passes(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+        ]);
+
+        // registerManagerWithResults() stubs resetParseFailures(), so this stands in for a
+        // failure an analyzer recorded during the run.
+        app(AstParser::class)->parseCode("<?php\n\$x = ;", base_path('app/Broken.php'));
+
+        // Each filter rebuilds the report: inline suppression on every non-streaming run,
+        // ignore_errors only once an entry is configured, and the baseline only with --baseline
+        // and a real file.
+        config(['shieldci.ignore_errors' => ['clean-analyzer' => [['path' => 'app/Other.php']]]]);
+        $baselinePath = base_path('tests/test-baseline-parse-failures.json');
+        file_put_contents($baselinePath, json_encode([
+            'generated_at' => '2024-01-01T00:00:00Z',
+            'version' => '1.0.0',
+            'errors' => [],
+            'dont_report' => [],
+        ]));
+        config(['shieldci.baseline_file' => $baselinePath]);
+        $outputPath = base_path('tests/shieldci-parse-failures.json');
+        @unlink($outputPath);
+
+        $exitCode = Artisan::call('shield:analyze', [
+            '--baseline' => true,
+            '--format' => 'json',
+            '--output' => 'tests/shieldci-parse-failures.json',
+        ]);
+
+        $report = json_decode((string) file_get_contents($outputPath), true);
+        @unlink($outputPath);
+        @unlink($baselinePath);
+
+        $this->assertSame(0, $exitCode, 'A file that would not parse is reported, not failed on.');
+        $this->assertIsArray($report);
+        $this->assertSame([[
+            'path' => 'app/Broken.php',
+            'line' => 2,
+            'message' => 'Syntax error, unexpected \';\'',
+            'cause' => 'syntax-error',
+            'recovered' => false,
+        ]], $report['parse_failures']);
+        $this->assertIsArray($report['parser_compatibility']);
+        $this->assertArrayHasKey('supported', $report['parser_compatibility']);
+    }
+
+    /** @test */
+    #[Test]
+    public function the_console_report_names_the_files_that_would_not_parse(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+            AnalysisResult::passed('other-analyzer', 'No issues detected'),
+        ]);
+        app(AstParser::class)->parseCode('<?php $x = ;', base_path('app/Broken.php'));
+
+        $exitCode = Artisan::call('shield:analyze', ['--no-ansi' => true]);
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('1 file could not be parsed', $output);
+        $this->assertStringContainsString('app/Broken.php:1', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_single_analyzer_run_still_names_the_files_that_would_not_parse(): void
+    {
+        $this->registerManagerWithResults([
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+        ]);
+        app(AstParser::class)->parseCode('<?php $x = ;', base_path('app/Broken.php'));
+
+        Artisan::call('shield:analyze', ['--analyzer' => 'clean-analyzer', '--no-ansi' => true]);
+        $output = Artisan::output();
+
+        $this->assertStringNotContainsString('Report Card', $output);
+        $this->assertStringContainsString('app/Broken.php:1', $output);
+    }
+
     /**
      * Helper to register a manager with pre-built results.
      *

@@ -8,6 +8,8 @@ use DateTimeImmutable;
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
+use ShieldCI\AnalyzersCore\ValueObjects\ParserCompatibility;
 use ShieldCI\Enums\SuppressionType;
 use ShieldCI\Enums\TriggerSource;
 
@@ -21,6 +23,16 @@ final class AnalysisReport
      * @param  array<string, string>  $metadata
      * @param  array<string, list<SuppressionRecord>>  $suppressedIssues
      * @param  array<string, mixed>  $configuration
+     * @param  ParserCompatibility|null  $parserCompatibility  Whether the installed php-parser
+     *                                                         understands the running PHP. Null
+     *                                                         when the report was not built by
+     *                                                         Reporter::generate().
+     * @param  list<ParseFailure>  $parseFailures  Files no analyzer could read, paths relative
+     *                                             to the base path. Each analyzer reads an empty
+     *                                             AST as "nothing to report", so without this a
+     *                                             file that never parsed reads as a clean one.
+     * @param  list<string>  $parseRecoveries  The subset of those paths some analyzer recovered
+     *                                         partial syntax from.
      */
     public function __construct(
         public readonly string $projectId,
@@ -34,7 +46,58 @@ final class AnalysisReport
         public readonly array $suppressedIssues = [],
         public readonly array $configuration = [],
         public readonly ?string $proPackageVersion = null,
+        public readonly ?ParserCompatibility $parserCompatibility = null,
+        public readonly array $parseFailures = [],
+        public readonly array $parseRecoveries = [],
     ) {}
+
+    /**
+     * A copy with different results and every other field kept.
+     *
+     * The filters in AnalyzeCommand rebuild the report after analysis. Spelling the
+     * constructor out at each of them dropped any field the call site did not list, so the
+     * field list lives here, once.
+     *
+     * @param  Collection<int, ResultInterface>  $results
+     */
+    public function withResults(Collection $results): self
+    {
+        return $this->copy(results: $results);
+    }
+
+    /**
+     * A copy with different suppression records and every other field kept.
+     *
+     * @param  array<string, list<SuppressionRecord>>  $suppressedIssues
+     */
+    public function withSuppressedIssues(array $suppressedIssues): self
+    {
+        return $this->copy(suppressedIssues: $suppressedIssues);
+    }
+
+    /**
+     * @param  Collection<int, ResultInterface>|null  $results
+     * @param  array<string, list<SuppressionRecord>>|null  $suppressedIssues
+     */
+    private function copy(?Collection $results = null, ?array $suppressedIssues = null): self
+    {
+        return new self(
+            projectId: $this->projectId,
+            laravelVersion: $this->laravelVersion,
+            packageVersion: $this->packageVersion,
+            results: $results ?? $this->results,
+            totalExecutionTime: $this->totalExecutionTime,
+            analyzedAt: $this->analyzedAt,
+            triggeredBy: $this->triggeredBy,
+            metadata: $this->metadata,
+            suppressedIssues: $suppressedIssues ?? $this->suppressedIssues,
+            configuration: $this->configuration,
+            proPackageVersion: $this->proPackageVersion,
+            parserCompatibility: $this->parserCompatibility,
+            parseFailures: $this->parseFailures,
+            parseRecoveries: $this->parseRecoveries,
+        );
+    }
 
     public function score(): int
     {
@@ -203,6 +266,13 @@ final class AnalysisReport
             })->all(),
             'metadata' => $this->metadata,
             'configuration' => $this->configuration,
+            'parser_compatibility' => $this->parserCompatibility?->toArray(),
+            'parse_failures' => array_map(
+                fn (ParseFailure $failure) => $failure->toArray() + [
+                    'recovered' => $failure->path !== null && in_array($failure->path, $this->parseRecoveries, true),
+                ],
+                $this->parseFailures,
+            ),
         ];
     }
 }

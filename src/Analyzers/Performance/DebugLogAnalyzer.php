@@ -9,7 +9,9 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 
@@ -166,12 +168,18 @@ class DebugLogAnalyzer extends AbstractAnalyzer
             // are not present in the file, so reporting a file/line location and a
             // "update config/logging.php" recommendation would be misleading.
             // "Injected" only when the channel is absent AND the file genuinely parsed.
-            // parseConfigArray() returns [] for a missing/unreadable/unparseable file, in
-            // which case we cannot tell — fall back to the legacy behaviour rather than
-            // mislabel. The second parse only runs when the channel was not found (&& short-circuits).
-            $authoredLine = ConfigFileHelper::findNestedArrayKeyLine($configPath, 'channels', $channel);
-            $isInjected = $authoredLine === null
-                && ConfigFileHelper::parseConfigArray($configPath) !== [];
+            // parseArray() returns [] for an unparseable file or one that returns no literal
+            // array, in which case we cannot tell, so fall back to the legacy behaviour rather
+            // than mislabel. The second parse only runs when the channel was not found (&&
+            // short-circuits). Both run over the shared parser so a logging.php that does not
+            // parse is named in the report, and neither runs for an unpublished file: there
+            // is nothing to read, and handing the parser a missing path would log one.
+            $isInjected = false;
+            if ($configPublished) {
+                $configParser = new ConfigFileParser(app(AstParser::class));
+                $isInjected = $configParser->findNestedArrayKeyLine($configPath, 'channels', $channel) === null
+                    && $configParser->parseArray($configPath) !== [];
+            }
 
             $lineNumber = $isInjected
                 ? null

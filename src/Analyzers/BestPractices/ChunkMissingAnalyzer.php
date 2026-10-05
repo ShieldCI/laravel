@@ -119,6 +119,20 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         'Illuminate\Support\Facades\Route',
     ];
 
+    /**
+     * Calls that make a chain a query handing its column to a subquery.
+     *
+     * @var list<string>
+     */
+    private const SUBQUERY_METHODS = ['select', 'addSelect', 'selectRaw', 'distinct', 'from', 'toBase'];
+
+    /**
+     * Calls that run a query, after which the chain holds values already loaded.
+     *
+     * @var list<string>
+     */
+    private const RUN_QUERY_METHODS = ['get', 'all', 'pluck', 'toArray', 'modelKeys', 'findMany'];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -366,64 +380,152 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // A DB::raw() call inside select() args signals a correlated subquery — explicit,
-        // developer-authored SQL that embeds per-row constraints inline.
-        if ($this->hasDbRawInSelectArgs($expr)) {
+        if ($hasChunking || $hasSmallDatasetModifier) {
             return false;
         }
 
-        return ! $hasChunking && ! $hasSmallDatasetModifier;
+        return ! $this->isBoundedByItsFilters($this->getChainCalls($expr));
     }
 
     /**
-     * Walk the method call chain and check whether any select() call's argument array
-     * contains a DB::raw() expression. This catches correlated-subquery enrichment
-     * patterns like ->select(['id', DB::raw('(SELECT ...)')]) ->get().
+     * Return true when the chain's own filters cap how many rows come back.
+     *
+     * A list of keys returns at most one row per key, the bound find($ids) is already
+     * trusted with. A groupBy() whose every column is pinned to a whereIn() list or an
+     * equality where() returns at most one row per combination of those values. Any or*
+     * constraint before the fetch widens the result past the filters, and a join returns a
+     * row per matching pair rather than per key, so either one voids both bounds.
+     *
+     * @param  list<Node\Expr\MethodCall|Node\Expr\StaticCall>  $calls
      */
-    private function hasDbRawInSelectArgs(Node\Expr $expr): bool
+    private function isBoundedByItsFilters(array $calls): bool
     {
-        $current = $expr;
+        $pinnedColumns = [];
+        $groupedColumns = [];
+        $isFilteredToKeys = false;
 
-        while ($current instanceof Node\Expr\MethodCall) {
-            if ($current->name instanceof Node\Identifier
-                && $current->name->toString() === 'select') {
-                foreach ($current->args as $arg) {
-                    // A first-class callable yields a VariadicPlaceholder, which has no value.
-                    if ($arg instanceof Node\Arg && $this->containsDbRaw($arg->value)) {
-                        return true;
-                    }
-                }
+        foreach ($calls as $call) {
+            if (! $call->name instanceof Node\Identifier) {
+                continue;
             }
 
-            $current = $current->var;
+            $name = $call->name->toString();
+            $column = $this->literalArg($call, 0);
+
+            // Past the fetch, whereIn() and groupBy() are Collection methods sorting rows
+            // already loaded, so only the calls before it shape the query.
+            if ($name === 'get' || $name === 'all') {
+                break;
+            }
+
+            // orWhere(), orWhereIn() and friends, but not orderBy().
+            if (preg_match('/^or[A-Z]/', $name) === 1) {
+                return false;
+            }
+
+            // join(), leftJoin(), crossJoin() and friends: whereIn('visits.id', $ids) over a
+            // join to a child table returns every child row of those keys.
+            if (stripos($name, 'join') !== false) {
+                return false;
+            }
+
+            if ($name === 'whereKey' && $this->isValueList($call, 0)) {
+                $isFilteredToKeys = true;
+            } elseif ($name === 'whereIn' && $column !== null && $this->isValueList($call, 1)) {
+                $isFilteredToKeys = $isFilteredToKeys || $column === 'id' || str_ends_with($column, '.id');
+                $pinnedColumns[] = $column;
+            } elseif ($name === 'where' && $column !== null && $this->isEqualityWhere($call)) {
+                $pinnedColumns[] = $column;
+            } elseif ($name === 'groupBy') {
+                foreach ($this->groupByColumns($call) as $grouped) {
+                    if ($grouped === null) {
+                        return false;
+                    }
+
+                    $groupedColumns[] = $grouped;
+                }
+            }
         }
 
-        return false;
+        return $isFilteredToKeys
+            || ($groupedColumns !== [] && array_diff($groupedColumns, $pinnedColumns) === []);
     }
 
     /**
-     * Recursively check whether an expression node is or contains a DB::raw() call.
-     * Descends into array literals so that select([..., DB::raw(...)]) is detected.
+     * Return true when the argument at $position is a list of values rather than a subquery.
+     *
+     * A closure, or a query that selects its column and has not been run, reads its values
+     * from a table, so that table and not a list in hand decides how many rows come back.
+     * A subquery has to select exactly one column, which is why a select() marks one.
      */
-    private function containsDbRaw(Node\Expr $node): bool
+    private function isValueList(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position): bool
     {
-        if ($node instanceof Node\Expr\StaticCall
-            && $node->class instanceof Node\Name
-            && $node->class->getLast() === 'DB'
-            && $node->name instanceof Node\Identifier
-            && $node->name->toString() === 'raw') {
+        $arg = $call->args[$position] ?? null;
+
+        if (! $arg instanceof Node\Arg) {
+            return false;
+        }
+
+        $value = $arg->value;
+
+        if ($value instanceof Node\Expr\Closure || $value instanceof Node\Expr\ArrowFunction) {
+            return false;
+        }
+
+        if (! $value instanceof Node\Expr\MethodCall && ! $value instanceof Node\Expr\StaticCall) {
             return true;
         }
 
-        if ($node instanceof Node\Expr\Array_) {
-            foreach ($node->items as $item) {
-                if ($item !== null && $this->containsDbRaw($item->value)) {
-                    return true;
+        $methods = $this->getMethodChain($value);
+
+        return array_intersect($methods, self::SUBQUERY_METHODS) === []
+            || array_intersect($methods, self::RUN_QUERY_METHODS) !== [];
+    }
+
+    /**
+     * Return true for where('col', $value) and where('col', '=', $value).
+     */
+    private function isEqualityWhere(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    {
+        return match (count($call->args)) {
+            2 => true,
+            3 => $this->literalArg($call, 1) === '=',
+            default => false,
+        };
+    }
+
+    /**
+     * The columns a groupBy() names, with null standing in for any that is not a string literal.
+     *
+     * @return list<string|null>
+     */
+    private function groupByColumns(Node\Expr\MethodCall|Node\Expr\StaticCall $call): array
+    {
+        $columns = [];
+
+        foreach ($call->args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Node\Expr\Array_) {
+                foreach ($arg->value->items as $item) {
+                    $columns[] = $item !== null && $item->value instanceof Node\Scalar\String_ ? $item->value->value : null;
                 }
+
+                continue;
             }
+
+            $columns[] = $arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_ ? $arg->value->value : null;
         }
 
-        return false;
+        return $columns;
+    }
+
+    /**
+     * Return the string value of a call's argument at $position, or null when it is not a string literal.
+     */
+    private function literalArg(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position): ?string
+    {
+        $arg = $call->args[$position] ?? null;
+
+        return $arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_ ? $arg->value->value : null;
     }
 
     /**
@@ -526,7 +628,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         if ($class === 'DB') {
             return $current->name instanceof Node\Identifier && $current->name->toString() === 'table'
-                ? $this->firstStringArg($current)
+                ? $this->literalArg($current, 0)
                 : null;
         }
 
@@ -535,31 +637,33 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Return the string value of a call's first argument, or null when it is not a string literal.
-     */
-    private function firstStringArg(Node\Expr\StaticCall $call): ?string
-    {
-        if (! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
-            return null;
-        }
-
-        $value = $call->args[0]->value;
-
-        return $value instanceof Node\Scalar\String_ ? $value->value : null;
-    }
-
-    /**
      * @return list<string>
      */
     private function getMethodChain(Node\Expr $expr): array
     {
         $chain = [];
+
+        foreach ($this->getChainCalls($expr) as $call) {
+            if ($call->name instanceof Node\Identifier) {
+                $chain[] = $call->name->toString();
+            }
+        }
+
+        return $chain;
+    }
+
+    /**
+     * The calls that make up a chain, root first.
+     *
+     * @return list<Node\Expr\MethodCall|Node\Expr\StaticCall>
+     */
+    private function getChainCalls(Node\Expr $expr): array
+    {
+        $calls = [];
         $current = $expr;
 
         while ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall) {
-            if ($current->name instanceof Node\Identifier) {
-                array_unshift($chain, $current->name->toString());
-            }
+            array_unshift($calls, $current);
 
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
@@ -575,7 +679,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             }
         }
 
-        return $chain;
+        return $calls;
     }
 
     /**

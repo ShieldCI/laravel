@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use PhpParser\Node;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class ChunkMissingAnalyzerTest extends AnalyzerTestCase
@@ -940,46 +943,44 @@ PHP;
         $this->assertFailed($result);
     }
 
-    public function test_passes_for_select_with_db_raw_correlated_subquery(): void
+    public function test_a_raw_select_is_bounded_by_its_key_filter_not_its_raw_sql(): void
     {
-        // Reproduces the false positive from ActivityController::computeScoreDeltas().
-        // The DB::raw() correlated subquery inside select() signals deliberate, expert-level
-        // SQL — the result set is bounded by the whereIn on page-scoped $reportIds.
+        // A correlated subquery in the select list makes each row dearer to build; it
+        // does not bound how many rows come back. The whereIn() on the key does: the
+        // fetch returns at most one row per id, as find($ids) would.
         $code = <<<'PHP'
 <?php
 
 namespace App\Http\Controllers;
 
-use App\Models\Report;
+use App\Models\Invoice;
 use Illuminate\Support\Facades\DB;
 
-class ActivityController
+class InvoiceController
 {
-    private function computeScoreDeltas(array $reportIds): array
+    private function balances(array $invoiceIds): array
     {
-        $rows = Report::query()
+        $rows = Invoice::query()
             ->select([
                 'id',
-                'score',
-                DB::raw('(SELECT p.score FROM reports p WHERE p.project_id = reports.project_id AND p.analyzed_at < reports.analyzed_at ORDER BY p.analyzed_at DESC LIMIT 1) AS prev_score'),
+                'total',
+                DB::raw('(SELECT SUM(p.amount) FROM payments p WHERE p.invoice_id = invoices.id) AS paid'),
             ])
-            ->whereIn('id', $reportIds)
+            ->whereIn('id', $invoiceIds)
             ->get();
 
-        $deltas = [];
+        $balances = [];
 
         foreach ($rows as $row) {
-            $deltas[$row->id] = $row->prev_score !== null
-                ? $row->score - (int) $row->prev_score
-                : null;
+            $balances[$row->id] = $row->total - (int) $row->paid;
         }
 
-        return $deltas;
+        return $balances;
     }
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Controllers/ActivityController.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Controllers/InvoiceController.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -988,6 +989,145 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider selectSpellingProvider
+     */
+    #[DataProvider('selectSpellingProvider')]
+    public function test_every_spelling_of_a_select_gets_the_same_verdict(string $fetch): void
+    {
+        // What the select list holds says nothing about the row count, so no spelling of
+        // it, raw or not, exempts the fetch.
+        $result = $this->analyzeVisitFetch($fetch);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function selectSpellingProvider(): array
+    {
+        $raw = "'team_id, MAX(created_at) as last_seen_at'";
+
+        return [
+            'select(DB::raw())' => ["Visit::query()->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'select([.., DB::raw()])' => ["Visit::query()->select(['team_id', DB::raw('COUNT(*) as visits')])->groupBy('team_id')->get()"],
+            'selectRaw()' => ["Visit::query()->selectRaw({$raw})->groupBy('team_id')->get()"],
+            'addSelect(DB::raw())' => ["Visit::query()->addSelect(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'static-root select(DB::raw())' => ["Visit::select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'DB::table()->select(DB::raw())' => ["DB::table('visits')->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'plain select()' => ["Visit::query()->select('team_id')->groupBy('team_id')->get()"],
+        ];
+    }
+
+    /**
+     * @dataProvider boundedByFiltersProvider
+     */
+    #[DataProvider('boundedByFiltersProvider')]
+    public function test_passes_a_fetch_its_filters_bound(string $fetch): void
+    {
+        // A list of keys caps the fetch at one row per key, and grouping on columns that
+        // are each pinned to a list caps it at one row per combination of those lists.
+        $this->assertPassed($this->analyzeVisitFetch($fetch));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function boundedByFiltersProvider(): array
+    {
+        $raw = "'team_id, day, MAX(created_at) as last_seen_at'";
+
+        return [
+            'whereIn on the key' => ["Visit::query()->whereIn('id', \$ids)->get()"],
+            'whereIn on the qualified key' => ["Visit::query()->whereIn('visits.id', \$ids)->get()"],
+            'static-root whereIn on the key' => ["Visit::whereIn('id', \$ids)->get()"],
+            'whereKey()' => ['Visit::query()->whereKey($ids)->get()'],
+            'key list with an orderBy' => ["Visit::query()->whereIn('id', \$ids)->orderBy('created_at')->orderByDesc('id')->get()"],
+            'groupBy on whereIn columns' => ["Visit::query()->whereIn('team_id', \$teamIds)->whereIn('day', \$days)->selectRaw({$raw})->groupBy('team_id', 'day')->get()"],
+            'groupBy array on an equality where' => ["Visit::query()->where('team_id', \$teamId)->select('team_id')->groupBy(['team_id'])->get()"],
+            'groupBy on an explicit = where' => ["Visit::query()->where('team_id', '=', \$teamId)->select('team_id')->groupBy('team_id')->get()"],
+            'key list already loaded by pluck()' => ["Visit::query()->whereIn('id', Pageview::query()->select('visit_id')->pluck('visit_id'))->get()"],
+            'key list from a collection' => ["Visit::query()->whereIn('id', collect(\$ids)->unique())->get()"],
+        ];
+    }
+
+    /**
+     * @dataProvider unboundedByFiltersProvider
+     */
+    #[DataProvider('unboundedByFiltersProvider')]
+    public function test_still_flags_a_fetch_its_filters_do_not_bound(string $fetch): void
+    {
+        $result = $this->analyzeVisitFetch($fetch);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unboundedByFiltersProvider(): array
+    {
+        return [
+            'whereIn on a non-key column' => ["Visit::query()->whereIn('team_id', \$teamIds)->get()"],
+            'whereNotIn on the key' => ["Visit::query()->whereNotIn('id', \$ids)->get()"],
+            'key list widened by orWhere' => ["Visit::query()->whereIn('id', \$ids)->orWhere('pinned', true)->get()"],
+            'groupBy on an unfiltered column' => ["Visit::query()->whereIn('team_id', \$teamIds)->groupBy('team_id', 'day')->get()"],
+            'grouped filter widened by orWhereIn' => ["Visit::query()->whereIn('team_id', \$teamIds)->orWhereIn('day', \$days)->groupBy('team_id')->get()"],
+            'groupBy on a range where' => ["Visit::query()->where('team_id', '>', \$teamId)->groupBy('team_id')->get()"],
+            'Collection whereIn after all()' => ["Visit::all()->whereIn('id', \$ids)"],
+            'Collection groupBy after get()' => ["Visit::query()->where('team_id', \$teamId)->get()->groupBy('team_id')"],
+            'groupBy on a non-literal column' => ["Visit::query()->whereIn('team_id', \$teamIds)->groupBy('team_id', \$column)->get()"],
+            'key list over a join' => ["Visit::query()->join('pageviews', 'pageviews.visit_id', '=', 'visits.id')->whereIn('visits.id', \$ids)->get()"],
+            'key list over a leftJoin on DB::table()' => ["DB::table('visits')->leftJoin('pageviews', 'pageviews.visit_id', '=', 'visits.id')->whereIn('visits.id', \$ids)->get()"],
+            'grouped filter over a crossJoin' => ["Visit::query()->crossJoin('days')->whereIn('team_id', \$teamIds)->groupBy('team_id')->get()"],
+            'key list from a closure subquery' => ["Visit::query()->whereIn('id', function (\$query) { \$query->select('visit_id')->from('pageviews'); })->get()"],
+            'key list from a model subquery' => ["Visit::query()->whereIn('id', Pageview::select('visit_id'))->get()"],
+            'key list from a DB::table() subquery' => ["Visit::query()->whereIn('id', DB::table('pageviews')->select('visit_id'))->get()"],
+            'whereKey() given a subquery' => ["Visit::query()->whereKey(Pageview::query()->select('visit_id'))->get()"],
+            'groupBy pinned to an arrow fn subquery' => ["Visit::query()->whereIn('team_id', fn (\$query) => \$query->select('id')->from('teams'))->groupBy('team_id')->get()"],
+        ];
+    }
+
+    /**
+     * Analyze a service that assigns one fetch and loops over the rows it returns.
+     */
+    private function analyzeVisitFetch(string $fetch): ResultInterface
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+use App\Models\Pageview;
+use App\Models\Visit;
+use Illuminate\Support\Facades\DB;
+
+class VisitReport
+{
+    public function build(array \$ids, array \$teamIds, array \$days, int \$teamId, string \$column): void
+    {
+        \$rows = {$fetch};
+
+        foreach (\$rows as \$row) {
+            echo \$row->team_id;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/VisitReport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        return $analyzer->analyze();
     }
 
     public function test_grammar_singular_vs_plural(): void

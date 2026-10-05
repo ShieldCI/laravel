@@ -10,7 +10,9 @@ use Mockery\MockInterface;
 use ShieldCI\Analyzers\Performance\DebugLogAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DebugLogAnalyzerTest extends AnalyzerTestCase
@@ -781,6 +783,38 @@ class DebugLogAnalyzerTest extends AnalyzerTestCase
                 ],
             ];
             PHP;
+    }
+
+    public function test_an_unpublished_logging_config_is_not_logged_as_a_parse_failure(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'single',
+            'logging.channels.single.level' => 'debug',
+        ], null);
+
+        $result = $analyzer->analyze();
+
+        // Laravel 11+ invites deleting config files you do not customise, so an absent
+        // logging.php is not a file anyone failed to read.
+        $this->assertFailed($result);
+        $this->assertSame([], app(AstParser::class)->failures());
+    }
+
+    public function test_a_published_logging_config_that_does_not_parse_is_on_the_shared_log(): void
+    {
+        $analyzer = $this->createAnalyzerWithLoggingFixture([
+            'app.env' => 'production',
+            'logging.default' => 'single',
+            'logging.channels.single.level' => 'debug',
+        ], "<?php\n\nreturn [\n    'channels' => [\n");
+
+        $analyzer->analyze();
+
+        $failures = app(AstParser::class)->failures();
+        $this->assertCount(1, $failures);
+        $this->assertStringEndsWith('/config/logging.php', (string) $failures[0]->path);
+        $this->assertSame(ParseFailureCause::SyntaxError, $failures[0]->cause);
     }
 
     public function test_injected_channel_at_debug_drops_location_and_names_real_lever(): void

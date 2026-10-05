@@ -9,7 +9,7 @@ use PhpParser\Node\Expr\FuncCall;
 use PhpParser\Node\Name;
 use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Support\AstParser;
-use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 
 /**
  * Trait for inspecting code using AST parsing.
@@ -25,11 +25,10 @@ trait InspectsCode
     /**
      * The shared parser, never a private instance.
      *
-     * AstParser records every file it was handed and could not parse. Nothing in this
-     * package reads that log back yet; consolidating onto the one instance the container
-     * hands out is what makes reading it possible later, because a parser of our own
-     * would log the files this analyzer skipped where no consumer could ever reach them.
-     * Until a consumer lands, an unparseable file is still reported as a pass.
+     * AstParser records every file it was handed and could not parse, and Reporter reads
+     * that log off the container singleton to name those files in the report. A parser of
+     * our own would log the files this analyzer skipped where the report cannot reach them,
+     * and each would pass as though it had been read.
      *
      * Its AST cache is drained between analyzers by AnalyzerManager::clearParserCache(),
      * which is what keeps the memory behaviour of #302 while the instance is shared.
@@ -125,13 +124,17 @@ trait InspectsCode
     /**
      * Parse a PHP config file and extract top-level array key-value pairs.
      *
-     * Delegates to ConfigFileHelper::parseConfigArray() in analyzers-core.
+     * Delegates to analyzers-core's ConfigFileParser over the shared parser, so a config
+     * file that does not parse lands on the failure log the report reads instead of
+     * reading as a file that sets no keys.
      *
      * @return array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>
      */
     protected function parseConfigArray(string $filePath): array
     {
-        return ConfigFileHelper::parseConfigArray($filePath);
+        $this->initializeParser();
+
+        return (new ConfigFileParser($this->parser))->parseArray($filePath);
     }
 
     /**

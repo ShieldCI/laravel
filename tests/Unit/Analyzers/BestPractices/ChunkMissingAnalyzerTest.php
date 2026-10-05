@@ -8,6 +8,8 @@ use PhpParser\Node;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\ChunkMissingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class ChunkMissingAnalyzerTest extends AnalyzerTestCase
@@ -941,11 +943,11 @@ PHP;
         $this->assertFailed($result);
     }
 
-    public function test_flags_a_raw_select_expression_like_any_other_column(): void
+    public function test_a_raw_select_is_bounded_by_its_key_filter_not_its_raw_sql(): void
     {
         // A correlated subquery in the select list makes each row dearer to build; it
-        // does not bound how many rows come back. Only the whereIn() can, and a loop
-        // straight over a whereIn() fetch is judged like any other row read.
+        // does not bound how many rows come back. The whereIn() on the key does: the
+        // fetch returns at most one row per id, as find($ids) would.
         $code = <<<'PHP'
 <?php
 
@@ -986,8 +988,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertCount(1, $result->getIssues());
+        $this->assertPassed($result);
     }
 
     /**
@@ -998,6 +999,96 @@ PHP;
     {
         // What the select list holds says nothing about the row count, so no spelling of
         // it, raw or not, exempts the fetch.
+        $result = $this->analyzeVisitFetch($fetch);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function selectSpellingProvider(): array
+    {
+        $raw = "'team_id, MAX(created_at) as last_seen_at'";
+
+        return [
+            'select(DB::raw())' => ["Visit::query()->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'select([.., DB::raw()])' => ["Visit::query()->select(['team_id', DB::raw('COUNT(*) as visits')])->groupBy('team_id')->get()"],
+            'selectRaw()' => ["Visit::query()->selectRaw({$raw})->groupBy('team_id')->get()"],
+            'addSelect(DB::raw())' => ["Visit::query()->addSelect(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'static-root select(DB::raw())' => ["Visit::select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'DB::table()->select(DB::raw())' => ["DB::table('visits')->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
+            'plain select()' => ["Visit::query()->select('team_id')->groupBy('team_id')->get()"],
+        ];
+    }
+
+    /**
+     * @dataProvider boundedByFiltersProvider
+     */
+    #[DataProvider('boundedByFiltersProvider')]
+    public function test_passes_a_fetch_its_filters_bound(string $fetch): void
+    {
+        // A list of keys caps the fetch at one row per key, and grouping on columns that
+        // are each pinned to a list caps it at one row per combination of those lists.
+        $this->assertPassed($this->analyzeVisitFetch($fetch));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function boundedByFiltersProvider(): array
+    {
+        $raw = "'team_id, day, MAX(created_at) as last_seen_at'";
+
+        return [
+            'whereIn on the key' => ["Visit::query()->whereIn('id', \$ids)->get()"],
+            'whereIn on the qualified key' => ["Visit::query()->whereIn('visits.id', \$ids)->get()"],
+            'static-root whereIn on the key' => ["Visit::whereIn('id', \$ids)->get()"],
+            'whereKey()' => ['Visit::query()->whereKey($ids)->get()'],
+            'key list with an orderBy' => ["Visit::query()->whereIn('id', \$ids)->orderBy('created_at')->orderByDesc('id')->get()"],
+            'groupBy on whereIn columns' => ["Visit::query()->whereIn('team_id', \$teamIds)->whereIn('day', \$days)->selectRaw({$raw})->groupBy('team_id', 'day')->get()"],
+            'groupBy array on an equality where' => ["Visit::query()->where('team_id', \$teamId)->select('team_id')->groupBy(['team_id'])->get()"],
+            'groupBy on an explicit = where' => ["Visit::query()->where('team_id', '=', \$teamId)->select('team_id')->groupBy('team_id')->get()"],
+        ];
+    }
+
+    /**
+     * @dataProvider unboundedByFiltersProvider
+     */
+    #[DataProvider('unboundedByFiltersProvider')]
+    public function test_still_flags_a_fetch_its_filters_do_not_bound(string $fetch): void
+    {
+        $result = $this->analyzeVisitFetch($fetch);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unboundedByFiltersProvider(): array
+    {
+        return [
+            'whereIn on a non-key column' => ["Visit::query()->whereIn('team_id', \$teamIds)->get()"],
+            'whereNotIn on the key' => ["Visit::query()->whereNotIn('id', \$ids)->get()"],
+            'key list widened by orWhere' => ["Visit::query()->whereIn('id', \$ids)->orWhere('pinned', true)->get()"],
+            'groupBy on an unfiltered column' => ["Visit::query()->whereIn('team_id', \$teamIds)->groupBy('team_id', 'day')->get()"],
+            'grouped filter widened by orWhereIn' => ["Visit::query()->whereIn('team_id', \$teamIds)->orWhereIn('day', \$days)->groupBy('team_id')->get()"],
+            'groupBy on a range where' => ["Visit::query()->where('team_id', '>', \$teamId)->groupBy('team_id')->get()"],
+            'Collection whereIn after all()' => ["Visit::all()->whereIn('id', \$ids)"],
+            'Collection groupBy after get()' => ["Visit::query()->where('team_id', \$teamId)->get()->groupBy('team_id')"],
+            'groupBy on a non-literal column' => ["Visit::query()->whereIn('team_id', \$teamIds)->groupBy('team_id', \$column)->get()"],
+        ];
+    }
+
+    /**
+     * Analyze a service that assigns one fetch and loops over the rows it returns.
+     */
+    private function analyzeVisitFetch(string $fetch): ResultInterface
+    {
         $code = <<<PHP
 <?php
 
@@ -1008,7 +1099,7 @@ use Illuminate\Support\Facades\DB;
 
 class VisitReport
 {
-    public function build(array \$teamIds): void
+    public function build(array \$ids, array \$teamIds, array \$days, int \$teamId, string \$column): void
     {
         \$rows = {$fetch};
 
@@ -1025,28 +1116,7 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertCount(1, $result->getIssues());
-    }
-
-    /**
-     * @return array<string, array{string}>
-     */
-    public static function selectSpellingProvider(): array
-    {
-        $raw = "'team_id, MAX(created_at) as last_seen_at'";
-
-        return [
-            'select(DB::raw())' => ["Visit::query()->whereIn('team_id', \$teamIds)->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
-            'select([.., DB::raw()])' => ["Visit::query()->select(['team_id', DB::raw('COUNT(*) as visits')])->groupBy('team_id')->get()"],
-            'selectRaw()' => ["Visit::query()->whereIn('team_id', \$teamIds)->selectRaw({$raw})->groupBy('team_id')->get()"],
-            'addSelect(DB::raw())' => ["Visit::query()->addSelect(DB::raw({$raw}))->groupBy('team_id')->get()"],
-            'static-root select(DB::raw())' => ["Visit::select(DB::raw({$raw}))->groupBy('team_id')->get()"],
-            'DB::table()->select(DB::raw())' => ["DB::table('visits')->select(DB::raw({$raw}))->groupBy('team_id')->get()"],
-            'plain select()' => ["Visit::query()->whereIn('team_id', \$teamIds)->select('team_id')->groupBy('team_id')->get()"],
-        ];
+        return $analyzer->analyze();
     }
 
     public function test_grammar_singular_vs_plural(): void

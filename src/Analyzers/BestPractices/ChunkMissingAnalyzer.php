@@ -366,7 +366,114 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        return ! $hasChunking && ! $hasSmallDatasetModifier;
+        if ($hasChunking || $hasSmallDatasetModifier) {
+            return false;
+        }
+
+        return ! $this->isBoundedByItsFilters($this->getChainCalls($expr));
+    }
+
+    /**
+     * Return true when the chain's own filters cap how many rows come back.
+     *
+     * A list of keys returns at most one row per key, the bound find($ids) is already
+     * trusted with. A groupBy() whose every column is pinned to a whereIn() list or an
+     * equality where() returns at most one row per combination of those values. Any or*
+     * constraint before the fetch widens the result past the filters, so it voids both bounds.
+     *
+     * @param  list<Node\Expr\MethodCall|Node\Expr\StaticCall>  $calls
+     */
+    private function isBoundedByItsFilters(array $calls): bool
+    {
+        $pinnedColumns = [];
+        $groupedColumns = [];
+        $isFilteredToKeys = false;
+
+        foreach ($calls as $call) {
+            if (! $call->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $name = $call->name->toString();
+            $column = $this->literalArg($call, 0);
+
+            // Past the fetch, whereIn() and groupBy() are Collection methods sorting rows
+            // already loaded, so only the calls before it shape the query.
+            if ($name === 'get' || $name === 'all') {
+                break;
+            }
+
+            // orWhere(), orWhereIn() and friends, but not orderBy().
+            if (preg_match('/^or[A-Z]/', $name) === 1) {
+                return false;
+            }
+
+            if ($name === 'whereKey') {
+                $isFilteredToKeys = true;
+            } elseif ($name === 'whereIn' && $column !== null) {
+                $isFilteredToKeys = $isFilteredToKeys || $column === 'id' || str_ends_with($column, '.id');
+                $pinnedColumns[] = $column;
+            } elseif ($name === 'where' && $column !== null && $this->isEqualityWhere($call)) {
+                $pinnedColumns[] = $column;
+            } elseif ($name === 'groupBy') {
+                foreach ($this->groupByColumns($call) as $grouped) {
+                    if ($grouped === null) {
+                        return false;
+                    }
+
+                    $groupedColumns[] = $grouped;
+                }
+            }
+        }
+
+        return $isFilteredToKeys
+            || ($groupedColumns !== [] && array_diff($groupedColumns, $pinnedColumns) === []);
+    }
+
+    /**
+     * Return true for where('col', $value) and where('col', '=', $value).
+     */
+    private function isEqualityWhere(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    {
+        return match (count($call->args)) {
+            2 => true,
+            3 => $this->literalArg($call, 1) === '=',
+            default => false,
+        };
+    }
+
+    /**
+     * The columns a groupBy() names, with null standing in for any that is not a string literal.
+     *
+     * @return list<string|null>
+     */
+    private function groupByColumns(Node\Expr\MethodCall|Node\Expr\StaticCall $call): array
+    {
+        $columns = [];
+
+        foreach ($call->args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Node\Expr\Array_) {
+                foreach ($arg->value->items as $item) {
+                    $columns[] = $item !== null && $item->value instanceof Node\Scalar\String_ ? $item->value->value : null;
+                }
+
+                continue;
+            }
+
+            $columns[] = $arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_ ? $arg->value->value : null;
+        }
+
+        return $columns;
+    }
+
+    /**
+     * Return the string value of a call's argument at $position, or null when it is not a string literal.
+     */
+    private function literalArg(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position): ?string
+    {
+        $arg = $call->args[$position] ?? null;
+
+        return $arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_ ? $arg->value->value : null;
     }
 
     /**
@@ -469,7 +576,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         if ($class === 'DB') {
             return $current->name instanceof Node\Identifier && $current->name->toString() === 'table'
-                ? $this->firstStringArg($current)
+                ? $this->literalArg($current, 0)
                 : null;
         }
 
@@ -478,31 +585,33 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Return the string value of a call's first argument, or null when it is not a string literal.
-     */
-    private function firstStringArg(Node\Expr\StaticCall $call): ?string
-    {
-        if (! isset($call->args[0]) || ! $call->args[0] instanceof Node\Arg) {
-            return null;
-        }
-
-        $value = $call->args[0]->value;
-
-        return $value instanceof Node\Scalar\String_ ? $value->value : null;
-    }
-
-    /**
      * @return list<string>
      */
     private function getMethodChain(Node\Expr $expr): array
     {
         $chain = [];
+
+        foreach ($this->getChainCalls($expr) as $call) {
+            if ($call->name instanceof Node\Identifier) {
+                $chain[] = $call->name->toString();
+            }
+        }
+
+        return $chain;
+    }
+
+    /**
+     * The calls that make up a chain, root first.
+     *
+     * @return list<Node\Expr\MethodCall|Node\Expr\StaticCall>
+     */
+    private function getChainCalls(Node\Expr $expr): array
+    {
+        $calls = [];
         $current = $expr;
 
         while ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall) {
-            if ($current->name instanceof Node\Identifier) {
-                array_unshift($chain, $current->name->toString());
-            }
+            array_unshift($calls, $current);
 
             if ($current instanceof Node\Expr\MethodCall) {
                 $current = $current->var;
@@ -518,7 +627,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             }
         }
 
-        return $chain;
+        return $calls;
     }
 
     /**

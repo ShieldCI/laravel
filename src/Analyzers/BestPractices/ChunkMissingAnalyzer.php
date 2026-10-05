@@ -119,6 +119,20 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
         'Illuminate\Support\Facades\Route',
     ];
 
+    /**
+     * Calls that make a chain a query handing its column to a subquery.
+     *
+     * @var list<string>
+     */
+    private const SUBQUERY_METHODS = ['select', 'addSelect', 'selectRaw', 'distinct', 'from', 'toBase'];
+
+    /**
+     * Calls that run a query, after which the chain holds values already loaded.
+     *
+     * @var list<string>
+     */
+    private const RUN_QUERY_METHODS = ['get', 'all', 'pluck', 'toArray', 'modelKeys', 'findMany'];
+
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
@@ -379,7 +393,8 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
      * A list of keys returns at most one row per key, the bound find($ids) is already
      * trusted with. A groupBy() whose every column is pinned to a whereIn() list or an
      * equality where() returns at most one row per combination of those values. Any or*
-     * constraint before the fetch widens the result past the filters, so it voids both bounds.
+     * constraint before the fetch widens the result past the filters, and a join returns a
+     * row per matching pair rather than per key, so either one voids both bounds.
      *
      * @param  list<Node\Expr\MethodCall|Node\Expr\StaticCall>  $calls
      */
@@ -408,9 +423,15 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                 return false;
             }
 
-            if ($name === 'whereKey') {
+            // join(), leftJoin(), crossJoin() and friends: whereIn('visits.id', $ids) over a
+            // join to a child table returns every child row of those keys.
+            if (stripos($name, 'join') !== false) {
+                return false;
+            }
+
+            if ($name === 'whereKey' && $this->isValueList($call, 0)) {
                 $isFilteredToKeys = true;
-            } elseif ($name === 'whereIn' && $column !== null) {
+            } elseif ($name === 'whereIn' && $column !== null && $this->isValueList($call, 1)) {
                 $isFilteredToKeys = $isFilteredToKeys || $column === 'id' || str_ends_with($column, '.id');
                 $pinnedColumns[] = $column;
             } elseif ($name === 'where' && $column !== null && $this->isEqualityWhere($call)) {
@@ -428,6 +449,37 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
 
         return $isFilteredToKeys
             || ($groupedColumns !== [] && array_diff($groupedColumns, $pinnedColumns) === []);
+    }
+
+    /**
+     * Return true when the argument at $position is a list of values rather than a subquery.
+     *
+     * A closure, or a query that selects its column and has not been run, reads its values
+     * from a table, so that table and not a list in hand decides how many rows come back.
+     * A subquery has to select exactly one column, which is why a select() marks one.
+     */
+    private function isValueList(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position): bool
+    {
+        $arg = $call->args[$position] ?? null;
+
+        if (! $arg instanceof Node\Arg) {
+            return false;
+        }
+
+        $value = $arg->value;
+
+        if ($value instanceof Node\Expr\Closure || $value instanceof Node\Expr\ArrowFunction) {
+            return false;
+        }
+
+        if (! $value instanceof Node\Expr\MethodCall && ! $value instanceof Node\Expr\StaticCall) {
+            return true;
+        }
+
+        $methods = $this->getMethodChain($value);
+
+        return array_intersect($methods, self::SUBQUERY_METHODS) === []
+            || array_intersect($methods, self::RUN_QUERY_METHODS) !== [];
     }
 
     /**

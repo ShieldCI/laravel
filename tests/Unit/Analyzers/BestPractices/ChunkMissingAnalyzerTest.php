@@ -1051,6 +1051,8 @@ PHP;
             'groupBy on whereIn columns' => ["Visit::query()->whereIn('team_id', \$teamIds)->whereIn('day', \$days)->selectRaw({$raw})->groupBy('team_id', 'day')->get()"],
             'groupBy array on an equality where' => ["Visit::query()->where('team_id', \$teamId)->select('team_id')->groupBy(['team_id'])->get()"],
             'groupBy on an explicit = where' => ["Visit::query()->where('team_id', '=', \$teamId)->select('team_id')->groupBy('team_id')->get()"],
+            'key list already loaded by pluck()' => ["Visit::query()->whereIn('id', Pageview::query()->select('visit_id')->pluck('visit_id'))->get()"],
+            'key list from a collection' => ["Visit::query()->whereIn('id', collect(\$ids)->unique())->get()"],
         ];
     }
 
@@ -1081,6 +1083,14 @@ PHP;
             'Collection whereIn after all()' => ["Visit::all()->whereIn('id', \$ids)"],
             'Collection groupBy after get()' => ["Visit::query()->where('team_id', \$teamId)->get()->groupBy('team_id')"],
             'groupBy on a non-literal column' => ["Visit::query()->whereIn('team_id', \$teamIds)->groupBy('team_id', \$column)->get()"],
+            'key list over a join' => ["Visit::query()->join('pageviews', 'pageviews.visit_id', '=', 'visits.id')->whereIn('visits.id', \$ids)->get()"],
+            'key list over a leftJoin on DB::table()' => ["DB::table('visits')->leftJoin('pageviews', 'pageviews.visit_id', '=', 'visits.id')->whereIn('visits.id', \$ids)->get()"],
+            'grouped filter over a crossJoin' => ["Visit::query()->crossJoin('days')->whereIn('team_id', \$teamIds)->groupBy('team_id')->get()"],
+            'key list from a closure subquery' => ["Visit::query()->whereIn('id', function (\$query) { \$query->select('visit_id')->from('pageviews'); })->get()"],
+            'key list from a model subquery' => ["Visit::query()->whereIn('id', Pageview::select('visit_id'))->get()"],
+            'key list from a DB::table() subquery' => ["Visit::query()->whereIn('id', DB::table('pageviews')->select('visit_id'))->get()"],
+            'whereKey() given a subquery' => ["Visit::query()->whereKey(Pageview::query()->select('visit_id'))->get()"],
+            'groupBy pinned to an arrow fn subquery' => ["Visit::query()->whereIn('team_id', fn (\$query) => \$query->select('id')->from('teams'))->groupBy('team_id')->get()"],
         ];
     }
 
@@ -1094,6 +1104,7 @@ PHP;
 
 namespace App\Services;
 
+use App\Models\Pageview;
 use App\Models\Visit;
 use Illuminate\Support\Facades\DB;
 

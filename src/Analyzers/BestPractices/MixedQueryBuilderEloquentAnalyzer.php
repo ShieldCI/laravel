@@ -598,11 +598,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
                         // P2.10: Detect QB-via-model patterns (toBase, getQuery) - configurable
                         if ($this->treatToBaseAsQueryBuilder && in_array($method, ['toBase', 'getQuery'], true)) {
-                            $tableName = $this->modelToTableName($className);
-                            $this->tableUsage[$tableName] = [
-                                'type' => 'query_builder',
-                                'line' => $node->getLine(),
-                            ];
+                            $this->trackQueryBuilderUsage($this->modelToTableName($className), $node->getLine());
 
                             return null;
                         }
@@ -754,20 +750,7 @@ class MixedQueryVisitor extends NodeVisitorAbstract
                     if ($rootStaticCall !== null && $rootStaticCall->class instanceof Node\Name) {
                         $className = $this->resolvedClassFqn($rootStaticCall->class);
                         if ($this->looksLikeModel($className)) {
-                            $tableName = $this->modelToTableName($className);
-
-                            // Check if table already tracked as eloquent
-                            if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                                $this->tableUsage[$tableName] = [
-                                    'type' => 'mixed',
-                                    'line' => $node->getLine(),
-                                ];
-                            } else {
-                                $this->tableUsage[$tableName] = [
-                                    'type' => 'query_builder',
-                                    'line' => $node->getLine(),
-                                ];
-                            }
+                            $this->trackQueryBuilderUsage($this->modelToTableName($className), $node->getLine());
                         }
                     }
                 }
@@ -818,20 +801,30 @@ class MixedQueryVisitor extends NodeVisitorAbstract
 
         $arg = $node->args[0];
         if ($arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_) {
-            $tableName = $arg->value->value;
-            $tableName = explode(' ', $tableName)[0];
-            // Check if table already tracked as eloquent
-            if (isset($this->tableUsage[$tableName]) && $this->tableUsage[$tableName]['type'] === 'eloquent') {
-                $this->tableUsage[$tableName] = [
-                    'type' => 'mixed',
-                    'line' => $node->getLine(),
-                ];
-            } else {
-                $this->tableUsage[$tableName] = [
-                    'type' => 'query_builder',
-                    'line' => $node->getLine(),
-                ];
-            }
+            $this->trackQueryBuilderUsage(explode(' ', $arg->value->value)[0], $node->getLine());
+        }
+    }
+
+    /**
+     * Book a query-builder use of a table, the counterpart of trackEloquentCall().
+     *
+     * An Eloquent table turns mixed, and the line moves to this call, which is where the finding
+     * points. A table already booked keeps its state and its line: a query-builder table is still
+     * one, a mixed table stays mixed whatever else reads it, and the line stays on the first
+     * query-builder call rather than the last.
+     */
+    private function trackQueryBuilderUsage(string $tableName, int $line): void
+    {
+        if (! isset($this->tableUsage[$tableName])) {
+            $this->tableUsage[$tableName] = [
+                'type' => 'query_builder',
+                'line' => $line,
+            ];
+        } elseif ($this->tableUsage[$tableName]['type'] === 'eloquent') {
+            $this->tableUsage[$tableName] = [
+                'type' => 'mixed',
+                'line' => $line,
+            ];
         }
     }
 

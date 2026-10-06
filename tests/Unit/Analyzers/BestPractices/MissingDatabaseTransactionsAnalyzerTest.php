@@ -3846,6 +3846,185 @@ PHP;
         }
     }
 
+    /**
+     * PHP names an anonymous class after its parent as it resolves it, so an imported parent
+     * contributes its full name, which is what a stack trace shows for the same class.
+     */
+    public function test_an_anonymous_class_is_named_after_its_imported_parent(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+use App\Support\Handler;
+
+class Billing
+{
+    public function handler(): object
+    {
+        return new class extends Handler
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        // Asserted from the opening quote, because the short spelling is a substring of the
+        // full one.
+        $this->assertStringContainsString('Method "App\\Support\\Handler@anonymous::close()"', $issues[0]->message);
+    }
+
+    /**
+     * A parent the file does not import resolves against the file's namespace, as PHP
+     * resolves it.
+     */
+    public function test_an_anonymous_class_is_named_after_a_parent_in_its_own_namespace(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+
+class Billing
+{
+    public function handler(): object
+    {
+        return new class extends BaseHandler
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Method "App\\Services\\BaseHandler@anonymous::close()"', $issues[0]->message);
+    }
+
+    /**
+     * With no parent, PHP borrows the first interface, resolved the same way: a qualified
+     * name is relative to the file's namespace.
+     */
+    public function test_an_anonymous_class_is_named_after_the_interface_it_implements(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+
+class Billing
+{
+    public function closer(): object
+    {
+        return new class implements Contracts\Closer
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Method "App\\Services\\Contracts\\Closer@anonymous::close()"', $issues[0]->message);
+    }
+
+    /**
+     * A finding attributed to a callback closure names its class the same way.
+     */
+    public function test_a_closure_in_an_anonymous_class_names_the_resolved_parent(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+use App\Support\Handler;
+
+class Billing
+{
+    public function handler(): object
+    {
+        return new class extends Handler
+        {
+            public function table($table)
+            {
+                return $table->actions([
+                    Action::make('close')->action(function () {
+                        Invoice::create([]);
+                        Invoice::create([]);
+                    }),
+                ]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Closure in "App\\Support\\Handler@anonymous::table()"', $issues[0]->message);
+    }
+
     public function test_writes_on_both_sides_of_an_anonymous_class_are_still_counted(): void
     {
         $code = <<<'PHP'

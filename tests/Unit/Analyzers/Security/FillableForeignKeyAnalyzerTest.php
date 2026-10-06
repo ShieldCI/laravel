@@ -1063,4 +1063,41 @@ PHP;
         $this->assertPassed($result);
         $this->assertIssueCount(0, $result);
     }
+
+    public function test_flags_a_model_whose_parent_is_written_relative_qualified(): void
+    {
+        // `Catalog\Record` in namespace App names App\Catalog\Record. Taken verbatim it was
+        // never found, so Listing was not recognised as a model and its fillable went
+        // unchecked.
+        $tempDir = $this->createTempDirectory([
+            'app/Catalog/Record.php' => <<<'PHP'
+<?php
+
+namespace App\Catalog;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Record extends Model {}
+PHP,
+            'app/Listing.php' => <<<'PHP'
+<?php
+
+namespace App;
+
+class Listing extends Catalog\Record
+{
+    protected $fillable = ['title', 'user_id'];
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('user_id', $result);
+    }
 }

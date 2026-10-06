@@ -768,4 +768,174 @@ PHP);
         $this->assertFalse($this->detector->isModelClassName('Ziggy', $referencing, '/nonexistent', unknownIs: false));
         $this->assertTrue($this->detector->isModelClassName('Ziggy', $referencing, '/nonexistent', unknownIs: true));
     }
+
+    public function test_relative_qualified_parent_resolves_against_the_namespace(): void
+    {
+        // `Catalog\Record` written in namespace App names App\Catalog\Record. Neither name
+        // sits in a Models namespace, so only following the chain to the declaration
+        // (step 5) can find the model.
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App;
+class Listing extends Catalog\Record {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_relative_qualified_parent_outside_models_is_not_taken_on_convention(): void
+    {
+        // In App\Models, `Casts\Amount` names App\Models\Casts\Amount, a plain class. Read
+        // verbatim it led nowhere, and the own-namespace convention (step 6) called the
+        // class a model.
+        $dir = $this->createTempDir(['app/Models/Casts/Amount.php' => <<<'PHP'
+<?php
+namespace App\Models\Casts;
+class Amount {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Models;
+class Total extends Casts\Amount {}
+PHP);
+
+        $this->assertFalse($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_qualified_parent_resolves_its_first_segment_through_an_import(): void
+    {
+        // PHP matches an import alias regardless of case, so `CATALOG\Record` reaches the
+        // `catalog` import and names App\Catalog\Record, not App\Http\CATALOG\Record.
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App\Http;
+use App\Catalog as catalog;
+class Listing extends CATALOG\Record {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_namespace_relative_parent_resolves_against_the_namespace(): void
+    {
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App;
+class Listing extends namespace\Catalog\Record {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_an_import_written_after_the_class_does_not_apply_to_it(): void
+    {
+        // PHP adds an import where it reads the `use`, so the alias below the class
+        // cannot redirect its parent away from App\Catalog\Record.
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App;
+class Listing extends Catalog\Record {}
+use App\Elsewhere as Catalog;
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_a_class_nested_in_a_statement_stops_the_walk_at_that_statement(): void
+    {
+        // The class sits inside an `if`, so the walk has to stop at the statement holding it
+        // rather than only at the class itself, or it reads on into the import below.
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        [$class, $ast] = $this->parseClass(<<<'PHP'
+<?php
+namespace App;
+if (! class_exists(Listing::class)) {
+    class Listing extends Catalog\Record {}
+}
+use App\Elsewhere as Catalog;
+PHP);
+
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_a_class_in_a_later_namespace_block_resolves_in_that_block(): void
+    {
+        // The first block's namespace and import do not carry into the second, which is
+        // where Listing is declared.
+        $dir = $this->createTempDir(['app/Catalog/Record.php' => <<<'PHP'
+<?php
+namespace App\Catalog;
+use Illuminate\Database\Eloquent\Model;
+class Record extends Model {}
+PHP]);
+
+        $ast = $this->parseAst(<<<'PHP'
+<?php
+namespace Vendor\Kit;
+use Vendor\Kit\Other as Catalog;
+class Helper {}
+namespace App;
+class Listing extends Catalog\Record {}
+PHP);
+        $class = (new AstParser)->findClasses($ast)[1];
+
+        $this->assertSame('Listing', $class->name?->toString());
+        $this->assertTrue($this->detector->verdictFor($class, $ast, $dir));
+    }
+
+    public function test_qualified_class_name_string_is_taken_as_fully_qualified(): void
+    {
+        // The class-name entry point takes NameResolver's output, which carries no leading
+        // backslash. Resolving it again against the referencing namespace would look for
+        // App\Http\Middleware\App\Entities\Order.
+        $dir = $this->createTempDir(['app/Entities/Order.php' => <<<'PHP'
+<?php
+namespace App\Entities;
+use Illuminate\Database\Eloquent\Model;
+class Order extends Model {}
+PHP]);
+
+        $referencing = $this->parseAst(<<<'PHP'
+<?php
+namespace App\Http\Middleware;
+class TrackOrder {}
+PHP);
+
+        $this->assertTrue($this->detector->verdictForClassName('App\\Entities\\Order', $referencing, $dir));
+    }
 }

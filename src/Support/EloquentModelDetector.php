@@ -5,11 +5,11 @@ declare(strict_types=1);
 namespace ShieldCI\Support;
 
 use PhpParser\Node;
+use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
-use PhpParser\Node\Stmt\GroupUse;
-use PhpParser\Node\Stmt\Use_;
-use PhpParser\Node\UseItem;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\Concerns\TracksImportedNames;
 
 /**
  * Answers one question: is this class declaration an Eloquent model?
@@ -19,12 +19,15 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
  * (the chain leaves the project into vendor code we cannot read). Callers choose what
  * `unknown` means for their polarity via isModel(..., unknownIs:).
  *
- * Resolves parent class names itself from the declaring file's use statements and
- * namespace, so it is correct whether or not the caller ran NameResolver: an already
- * resolved FullyQualified parent contains a backslash and passes through untouched.
+ * Resolves parent class names itself, through the imports and namespace in effect where
+ * the class is declared, so it is correct whether or not the caller ran NameResolver: a
+ * FullyQualified parent that NameResolver left behind passes through as written, and any
+ * other name is resolved the way PHP would, relative qualified ones included.
  */
 final class EloquentModelDetector
 {
+    use TracksImportedNames;
+
     /**
      * Sub-namespaces of a Models namespace that hold helpers rather than models.
      *
@@ -117,9 +120,13 @@ final class EloquentModelDetector
      * Three-valued Eloquent verdict for a class name as written at a usage site.
      *
      * Use this where the caller holds a *reference* — `new Order`, a type-hint, a `::class`
-     * — rather than the class declaration that verdictFor() takes. The name is resolved
-     * against the referencing file's imports and namespace, the declaring file is located
-     * under app/, and that declaration's verdict is returned.
+     * — rather than the class declaration that verdictFor() takes. A single-segment name is
+     * resolved against the referencing file's imports and namespace, the declaring file is
+     * located under app/, and that declaration's verdict is returned.
+     *
+     * A name with a backslash is taken as fully qualified, with or without a leading one. A
+     * string carries no sign of whether it was written relative, so the caller resolves a
+     * qualified name before passing it, as NameResolver's resolvedName attribute already is.
      *
      * An unreadable declaration stays `null` rather than becoming `false`: vendor code holds
      * real models (Laravel\Cashier\Subscription), so outside a Models namespace we genuinely
@@ -137,15 +144,13 @@ final class EloquentModelDetector
             return null;
         }
 
-        $fqn = self::resolveClassName(
-            $className,
-            $this->extractUseStatements($referencingFileAst),
-            $this->extractNamespace($referencingFileAst)
+        // A reference string carries no position, so it is resolved against the imports the
+        // file has declared by its end.
+        $this->startTrackingImports();
+        $this->trackImportsUntil($referencingFileAst, null);
+        $fqn = $this->resolvedClassFqn(
+            str_contains($className, '\\') ? new Name\FullyQualified($className) : new Name($className)
         );
-
-        if ($fqn === null) {
-            return null;
-        }
 
         // A verdict read off the real declaration outranks the convention below,
         // mirroring classVerdict()'s step 5 before step 6.
@@ -229,13 +234,12 @@ final class EloquentModelDetector
             return true;
         }
 
-        $useStatements = $this->extractUseStatements($fileAst);
-        $namespace = $this->extractNamespace($fileAst);
-
-        $parentFqn = self::resolveClassName($parentName, $useStatements, $namespace);
-        if ($parentFqn === null) {
-            return null;
-        }
+        // Both are read off the table now, before step 5 recurses into the parent's file and
+        // rebuilds it for that file instead.
+        $this->startTrackingImports();
+        $this->trackImportsUntil($fileAst, $class);
+        $parentFqn = $this->resolvedClassFqn($class->extends);
+        $namespace = $this->importedNames->getNamespace()?->toString();
 
         // Step 3: the resolved parent FQN is a known Eloquent base.
         if (in_array($parentFqn, self::ELOQUENT_BASE_FQNS, true)) {
@@ -264,6 +268,41 @@ final class EloquentModelDetector
 
         // Step 7: unknown.
         return null;
+    }
+
+    /**
+     * Fill the import table with what is in effect at $target, walking the statements in
+     * the order the file writes them.
+     *
+     * Imports are only legal at the top level or directly inside a namespace, so those two
+     * levels are all the walk visits. It stops at the statement that is $target or contains
+     * it, which covers a class nested in a function or a conditional and an anonymous class.
+     * With no target, or one the file does not contain, the table ends up holding the imports
+     * in effect at the end of the file.
+     *
+     * @param  array<Node>  $stmts
+     * @return bool Whether $target was reached
+     */
+    private function trackImportsUntil(array $stmts, ?Node $target): bool
+    {
+        foreach ($stmts as $stmt) {
+            $this->trackImports($stmt);
+
+            if ($stmt instanceof Stmt\Namespace_) {
+                if ($this->trackImportsUntil($stmt->stmts, $target)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($target !== null && ($stmt === $target
+                || (new NodeFinder)->findFirst($stmt, static fn (Node $node): bool => $node === $target) !== null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -301,12 +340,15 @@ final class EloquentModelDetector
     /**
      * Resolve a class name to an FQN.
      *
-     * A name containing a backslash is already qualified (this covers FullyQualified
-     * nodes produced by NameResolver). Otherwise consult the use map, then fall back
-     * to the enclosing namespace, matching PHP's own name resolution.
+     * A name containing a backslash is returned as written, which is only right for a fully
+     * qualified one: PHP resolves a relative qualified name such as `Models\Base` through the
+     * enclosing namespace or an import of its first segment. Otherwise consult the use map,
+     * then fall back to the enclosing namespace.
      *
-     * Static and public because the rule is not specific to model detection: the N+1
-     * relationship scanner resolves `extends` and trait-use names the same way.
+     * Nothing in this package calls it any more, but it is public API on a published
+     * package, so it stays until the next major.
+     *
+     * @deprecated Resolve the Name node through php-parser's NameContext, as TracksImportedNames does.
      *
      * @param  array<string, string>  $useStatements
      */
@@ -321,58 +363,5 @@ final class EloquentModelDetector
         }
 
         return $namespace !== null && $namespace !== '' ? $namespace.'\\'.$name : null;
-    }
-
-    /**
-     * Short-name => FQN map of the file's imports.
-     *
-     * @param  array<Node>  $fileAst
-     * @return array<string, string>
-     */
-    private function extractUseStatements(array $fileAst): array
-    {
-        $map = [];
-
-        /** @var array<Use_> $uses */
-        $uses = $this->parser->findNodes($fileAst, Use_::class);
-        foreach ($uses as $use) {
-            foreach ($use->uses as $useItem) {
-                if ($useItem instanceof UseItem) {
-                    $map[$useItem->getAlias()->toString()] = $useItem->name->toString();
-                }
-            }
-        }
-
-        /** @var array<GroupUse> $groupUses */
-        $groupUses = $this->parser->findNodes($fileAst, GroupUse::class);
-        foreach ($groupUses as $groupUse) {
-            $prefix = $groupUse->prefix->toString();
-            foreach ($groupUse->uses as $useItem) {
-                if ($useItem instanceof UseItem) {
-                    $map[$useItem->getAlias()->toString()] = $prefix.'\\'.$useItem->name->toString();
-                }
-            }
-        }
-
-        return $map;
-    }
-
-    /**
-     * The first namespace declared in a file, if any.
-     *
-     * @param  array<Node>  $fileAst
-     */
-    private function extractNamespace(array $fileAst): ?string
-    {
-        /** @var array<Stmt\Namespace_> $namespaces */
-        $namespaces = $this->parser->findNodes($fileAst, Stmt\Namespace_::class);
-
-        foreach ($namespaces as $namespace) {
-            if ($namespace->name !== null) {
-                return $namespace->name->toString();
-            }
-        }
-
-        return null;
     }
 }

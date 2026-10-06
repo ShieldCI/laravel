@@ -4025,6 +4025,104 @@ PHP;
         $this->assertStringContainsString('Closure in "App\\Support\\Handler@anonymous::table()"', $issues[0]->message);
     }
 
+    /**
+     * A fully qualified parent is spelled without its leading backslash, as PHP spells it.
+     */
+    public function test_an_anonymous_class_is_named_after_a_fully_qualified_parent(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Invoice;
+
+class Billing
+{
+    public function handler(): object
+    {
+        return new class extends \App\Support\Handler
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('Method "App\\Support\\Handler@anonymous::close()"', $issues[0]->message);
+    }
+
+    /**
+     * In a file with no namespace, an imported parent still contributes its full name and one
+     * that is not imported keeps the name as written.
+     */
+    public function test_an_anonymous_class_in_a_file_without_a_namespace_is_named_after_its_parent(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Invoice;
+use App\Support\Handler;
+
+class Billing
+{
+    public function handler(): object
+    {
+        return new class extends Handler
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+
+    public function fallback(): object
+    {
+        return new class extends BaseHandler
+        {
+            public function close(): void
+            {
+                Invoice::create([]);
+                Invoice::create([]);
+            }
+        };
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Billing.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(2, $issues);
+        $messages = implode("\n", array_map(fn ($issue) => $issue->message, $issues));
+        $this->assertStringContainsString('Method "App\\Support\\Handler@anonymous::close()"', $messages);
+        $this->assertStringContainsString('Method "BaseHandler@anonymous::close()"', $messages);
+    }
+
     public function test_writes_on_both_sides_of_an_anonymous_class_are_still_counted(): void
     {
         $code = <<<'PHP'

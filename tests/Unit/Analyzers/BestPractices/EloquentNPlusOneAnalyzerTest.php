@@ -6504,6 +6504,108 @@ PHP,
     }
 
     /**
+     * The relationship lookup is keyed the same way, and missing it is a false negative. The
+     * name heuristic takes category for a column, so only the registry knows Product declares
+     * it as a relationship, and a reference in another case has to find that entry for the lazy
+     * load in the loop to be reported.
+     */
+    public function test_flags_a_declared_relationship_on_a_model_referenced_in_a_different_case(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Acme\Catalog\RecordBase
+{
+    public function category()
+    {
+        return $this->belongsTo(Category::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = product::get();
+
+        foreach ($products as $product) {
+            echo $product->category->name;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('category', $result);
+    }
+
+    /**
+     * A model stating relationships of its own answers an absent name no, and that has to reach
+     * a reference in another case too. The parent is outside the scanned paths, so the model is
+     * not read in full and nothing else stops owner falling to the name heuristic.
+     */
+    public function test_answers_an_absent_name_from_own_relationships_for_a_model_referenced_in_a_different_case(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Acme\Catalog\RecordBase
+{
+    public function supplier()
+    {
+        return $this->belongsTo(Supplier::class);
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = product::get();
+
+        foreach ($products as $product) {
+            echo $product->owner;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
      * A model read in full answers an absent name conclusively, and that reading has to reach a
      * reference spelled differently from the declaration too. Product declares no member named
      * sku anywhere in its chain, so sku cannot be a relationship however the call site writes

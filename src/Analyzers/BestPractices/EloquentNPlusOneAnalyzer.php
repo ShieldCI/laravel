@@ -305,6 +305,10 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
  * Maps model class names to their Eloquent relationship method names, including the ones
  * reached through traits and parent classes.
  *
+ * The model is keyed folded, as ClassHierarchyIndex keys a declaration: PHP resolves a
+ * class name without regard to case, so `product::get()` names the class declared as
+ * `Product` and has to find what was filed under it.
+ *
  * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
  * is not covered by the package's backward-compatibility promise.
  */
@@ -324,12 +328,12 @@ class RelationshipRegistry
 
     public function add(string $model, string $relation): void
     {
-        $this->map[$model][] = $relation;
+        $this->map[ClassHierarchyIndex::key($model)][] = $relation;
     }
 
     public function has(string $model, string $relation): bool
     {
-        return in_array($relation, $this->map[$model] ?? [], true);
+        return in_array($relation, $this->map[ClassHierarchyIndex::key($model)] ?? [], true);
     }
 
     /**
@@ -342,12 +346,12 @@ class RelationshipRegistry
      */
     public function markSelfDeclared(string $model): void
     {
-        $this->selfDeclared[$model] = true;
+        $this->selfDeclared[ClassHierarchyIndex::key($model)] = true;
     }
 
     public function declaresOwn(string $model): bool
     {
-        return isset($this->selfDeclared[$model]);
+        return isset($this->selfDeclared[ClassHierarchyIndex::key($model)]);
     }
 
     /**
@@ -360,12 +364,12 @@ class RelationshipRegistry
      */
     public function markFullyResolved(string $model): void
     {
-        $this->fullyResolved[$model] = true;
+        $this->fullyResolved[ClassHierarchyIndex::key($model)] = true;
     }
 
     public function isFullyResolved(string $model): bool
     {
-        return isset($this->fullyResolved[$model]);
+        return isset($this->fullyResolved[ClassHierarchyIndex::key($model)]);
     }
 
     /**
@@ -374,12 +378,12 @@ class RelationshipRegistry
      */
     public function addMember(string $model, string $method): void
     {
-        $this->members[$model][] = $method;
+        $this->members[ClassHierarchyIndex::key($model)][] = $method;
     }
 
     public function hasMember(string $model, string $method): bool
     {
-        return in_array($method, $this->members[$model] ?? [], true);
+        return in_array($method, $this->members[ClassHierarchyIndex::key($model)] ?? [], true);
     }
 }
 
@@ -387,6 +391,8 @@ class RelationshipRegistry
  * Tracks model attributes (from $fillable, $casts, $appends) per model class.
  *
  * Used to distinguish regular column access from relationship access.
+ *
+ * The model is keyed folded, for the reason RelationshipRegistry gives.
  *
  * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
  * is not covered by the package's backward-compatibility promise.
@@ -398,12 +404,12 @@ class ModelAttributesRegistry
 
     public function add(string $model, string $attribute): void
     {
-        $this->map[$model][] = $attribute;
+        $this->map[ClassHierarchyIndex::key($model)][] = $attribute;
     }
 
     public function has(string $model, string $attribute): bool
     {
-        return in_array($attribute, $this->map[$model] ?? [], true);
+        return in_array($attribute, $this->map[ClassHierarchyIndex::key($model)] ?? [], true);
     }
 }
 
@@ -412,6 +418,8 @@ class ModelAttributesRegistry
  *
  * Derived from getXxxAttribute() method definitions. Accessors expose computed
  * properties and should never be mistaken for relationships.
+ *
+ * The model is keyed folded, for the reason RelationshipRegistry gives.
  *
  * @internal This class is an implementation detail of eloquent-n-plus-one, and its shape
  * is not covered by the package's backward-compatibility promise.
@@ -423,12 +431,12 @@ class AccessorRegistry
 
     public function add(string $model, string $accessor): void
     {
-        $this->map[$model][] = $accessor;
+        $this->map[ClassHierarchyIndex::key($model)][] = $accessor;
     }
 
     public function has(string $model, string $accessor): bool
     {
-        return in_array($accessor, $this->map[$model] ?? [], true);
+        return in_array($accessor, $this->map[ClassHierarchyIndex::key($model)] ?? [], true);
     }
 }
 
@@ -1016,9 +1024,15 @@ class EloquentModelRelationshipScanner
         // sharing one are answered together. Their relationships merge, as they always
         // have, but neither can be spoken for conclusively: an absent name would be
         // judged partly on a class the code never referred to.
-        $shortNameCounts = array_count_values(array_column(
-            array_filter($this->declarations, fn (array $d): bool => $d['kind'] === 'class'),
-            'short'
+        //
+        // Counted folded, because the registries key folded: `Product` and `PRODUCT` land
+        // in one entry, so they have to collide here too.
+        $shortNameCounts = array_count_values(array_map(
+            ClassHierarchyIndex::key(...),
+            array_column(
+                array_filter($this->declarations, fn (array $d): bool => $d['kind'] === 'class'),
+                'short'
+            )
         ));
 
         foreach ($this->declarations as $fqcn => $declaration) {
@@ -1053,7 +1067,7 @@ class EloquentModelRelationshipScanner
 
             if ($members['fully'] &&
                 ! $this->unattributedRegisteredRelation &&
-                ($shortNameCounts[$short] ?? 0) === 1) {
+                ($shortNameCounts[ClassHierarchyIndex::key($short)] ?? 0) === 1) {
                 $relationships->markFullyResolved($short);
             }
         }

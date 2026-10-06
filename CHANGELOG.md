@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.17.0
+
+### Changed
+- `chunk-missing` no longer exempts a fetch whose select uses `DB::raw()`, since raw columns change what each row holds, not how many rows return (#458)
+
+### Fixed
+- `chunk-missing` no longer flags a fetch filtered to a list of keys, such as `whereIn('id', $ids)` or `whereKey($ids)` (#458, #471)
+
 ## v1.16.1
 
 ### Changed

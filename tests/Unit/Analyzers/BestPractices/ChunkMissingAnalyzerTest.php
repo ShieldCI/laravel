@@ -1095,9 +1095,78 @@ PHP;
     }
 
     /**
-     * Analyze a service that assigns one fetch and loops over the rows it returns.
+     * @dataProvider subqueryHeldInAVariableProvider
      */
-    private function analyzeVisitFetch(string $fetch): ResultInterface
+    #[DataProvider('subqueryHeldInAVariableProvider')]
+    public function test_flags_a_fetch_filtered_by_a_subquery_held_in_a_variable(string $prelude, string $fetch): void
+    {
+        // Assigning the subquery first changes nothing about the rows it reads, so the fetch is
+        // flagged exactly as its inline spelling is.
+        $result = $this->analyzeVisitFetch($fetch, $prelude);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function subqueryHeldInAVariableProvider(): array
+    {
+        $modelSubquery = "\$visitIds = Pageview::query()->select('visit_id');";
+        $keyList = "Visit::query()->whereIn('id', \$visitIds)->get()";
+
+        return [
+            'model subquery' => [$modelSubquery, $keyList],
+            'DB::table() subquery' => ["\$visitIds = DB::table('pageviews')->select('visit_id');", $keyList],
+            'closure subquery' => ["\$visitIds = function (\$query) { \$query->select('visit_id')->from('pageviews'); };", $keyList],
+            'arrow fn subquery' => ["\$visitIds = fn (\$query) => \$query->select('visit_id')->from('pageviews');", $keyList],
+            'whereKey() given the subquery' => [$modelSubquery, 'Visit::query()->whereKey($visitIds)->get()'],
+            'subquery narrowed inline' => [$modelSubquery, "Visit::query()->whereIn('id', \$visitIds->where('bounced', false))->get()"],
+            'subquery narrowed into another variable' => [$modelSubquery." \$kept = \$visitIds->where('bounced', false);", "Visit::query()->whereIn('id', \$kept)->get()"],
+        ];
+    }
+
+    /**
+     * @dataProvider keyListHeldInAVariableProvider
+     */
+    #[DataProvider('keyListHeldInAVariableProvider')]
+    public function test_passes_a_fetch_filtered_by_a_key_list_held_in_a_variable(string $prelude, string $fetch): void
+    {
+        // Once the subquery has run, the variable holds values in hand, and a list of keys
+        // bounds the fetch however it was produced.
+        $this->assertPassed($this->analyzeVisitFetch($fetch, $prelude));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function keyListHeldInAVariableProvider(): array
+    {
+        $modelSubquery = "\$visitIds = Pageview::query()->select('visit_id');";
+        $keyList = "Visit::query()->whereIn('id', \$visitIds)->get()";
+
+        return [
+            'array of keys' => ['$visitIds = [1, 2, 3];', $keyList],
+            'keys loaded by pluck()' => ["\$visitIds = Pageview::query()->pluck('visit_id');", $keyList],
+            'subquery run inline by pluck()' => [$modelSubquery, "Visit::query()->whereIn('id', \$visitIds->pluck('visit_id'))->get()"],
+            'subquery reassigned to the keys it loads' => [$modelSubquery." \$visitIds = \$visitIds->pluck('visit_id');", $keyList],
+        ];
+    }
+
+    public function test_does_not_read_a_variable_holding_an_unrun_query_as_a_fetch(): void
+    {
+        // The variable is remembered so a whereIn() can tell it is a subquery, not because
+        // anything was loaded into it.
+        $this->assertPassed($this->analyzeVisitFetch("Pageview::query()->select('visit_id')"));
+    }
+
+    /**
+     * Analyze a service that assigns one fetch and loops over the rows it returns, after
+     * running the statements in $prelude.
+     */
+    private function analyzeVisitFetch(string $fetch, string $prelude = ''): ResultInterface
     {
         $code = <<<PHP
 <?php
@@ -1112,6 +1181,7 @@ class VisitReport
 {
     public function build(array \$ids, array \$teamIds, array \$days, int \$teamId, string \$column): void
     {
+        {$prelude}
         \$rows = {$fetch};
 
         foreach (\$rows as \$row) {
@@ -2127,6 +2197,120 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_a_closure_sees_the_subquery_it_captured_by_value(): void
+    {
+        // A captured builder is the same query object inside the closure, so the fetch it
+        // filters is as unbounded there as it would be in the method.
+        $result = $this->analyzeVisitExport(<<<'PHP'
+        $visitIds = Pageview::query()->select('visit_id');
+
+        return function () use ($visitIds): void {
+            $visits = Visit::query()->whereIn('id', $visitIds)->get();
+
+            foreach ($visits as $visit) {
+                echo $visit->id;
+            }
+        };
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    public function test_a_subquery_bound_by_reference_inside_a_closure_reaches_the_caller(): void
+    {
+        $result = $this->analyzeVisitExport(<<<'PHP'
+        $visitIds = [];
+
+        $narrow = function () use (&$visitIds): void {
+            $visitIds = Pageview::query()->select('visit_id');
+        };
+        $narrow();
+
+        $visits = Visit::query()->whereIn('id', $visitIds)->get();
+
+        foreach ($visits as $visit) {
+            echo $visit->id;
+        }
+
+        return $narrow;
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+    }
+
+    public function test_a_subquery_bound_inside_a_closure_does_not_reach_the_caller(): void
+    {
+        // The closure's $visitIds is a variable of its own, so the method's list of keys is
+        // still a list when the method filters by it.
+        $result = $this->analyzeVisitExport(<<<'PHP'
+        $visitIds = [1, 2, 3];
+
+        $narrow = function (): void {
+            $visitIds = Pageview::query()->select('visit_id');
+        };
+
+        $visits = Visit::query()->whereIn('id', $visitIds)->get();
+
+        foreach ($visits as $visit) {
+            echo $visit->id;
+        }
+
+        return $narrow;
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_an_arrow_function_parameter_shadows_an_enclosing_subquery(): void
+    {
+        $result = $this->analyzeVisitExport(<<<'PHP'
+        $visitIds = Pageview::query()->select('visit_id');
+
+        return fn (array $visitIds) => function () use ($visitIds): void {
+            $visits = Visit::query()->whereIn('id', $visitIds)->get();
+
+            foreach ($visits as $visit) {
+                echo $visit->id;
+            }
+        };
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * Analyze a service method whose body is $body and which returns a callable.
+     */
+    private function analyzeVisitExport(string $body): ResultInterface
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Services;
+
+use App\Models\Pageview;
+use App\Models\Visit;
+
+class VisitExport
+{
+    public function exporter(): callable
+    {
+{$body}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/VisitExport.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        return $analyzer->analyze();
     }
 
     public function test_resolves_the_names_that_do_not_collide_in_a_file_php_would_reject(): void

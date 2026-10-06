@@ -136,7 +136,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string|null}> */
     private array $issues = [];
 
-    /** @var array<string, Node\Expr> Track variable assignments */
+    /**
+     * Variables assigned a fetch, or a query left unrun to be read as a subquery, each with
+     * the expression it was assigned. The verdict is taken at the assignment, so a later
+     * change to a variable the expression read does not alter what this one holds.
+     *
+     * @var array<string, array{expr: Node\Expr, isSubquery: bool}>
+     */
     private array $variableAssignments = [];
 
     /**
@@ -146,7 +152,7 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
      * the method fetched, and a variable the closure assigned by value is not that
      * collection. What the closure took by reference is, and travels with it either way.
      *
-     * @var list<array<string, Node\Expr>>
+     * @var list<array<string, array{expr: Node\Expr, isSubquery: bool}>>
      */
     private array $assignmentStack = [];
 
@@ -194,12 +200,15 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
                 : array_intersect_key($enclosing, $captures);
         }
 
-        // Track variable assignments with ->all() or ->get()
+        // Track variable assignments with ->all() or ->get(), and those of an unrun subquery
+        // a later whereIn() could be handed
         if ($node instanceof Node\Expr\Assign) {
             if ($node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
                 $name = $node->var->name;
                 if ($this->isFetchCollectionCall($node->expr)) {
-                    $this->variableAssignments[$name] = $node->expr;
+                    $this->variableAssignments[$name] = ['expr' => $node->expr, 'isSubquery' => false];
+                } elseif ($this->isSubquery($node->expr)) {
+                    $this->variableAssignments[$name] = ['expr' => $node->expr, 'isSubquery' => true];
                 } else {
                     unset($this->variableAssignments[$name]);
                 }
@@ -222,12 +231,13 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
             }
             // Check if iterator is a variable that was assigned with ->all() or ->get()
             elseif ($loopIterator instanceof Node\Expr\Variable && is_string($loopIterator->name)) {
-                if (isset($this->variableAssignments[$loopIterator->name])
-                    && ! $this->isSeededCatalogueChain($this->variableAssignments[$loopIterator->name])) {
+                $held = $this->variableAssignments[$loopIterator->name] ?? null;
+
+                if ($held !== null && ! $held['isSubquery'] && ! $this->isSeededCatalogueChain($held['expr'])) {
                     $this->issues[] = [
                         'message' => 'Looping over a variable assigned with ->all() or ->get() can cause memory issues on large datasets',
                         'line' => $node->getLine(),
-                        'severity' => $this->severityFor($this->variableAssignments[$loopIterator->name]),
+                        'severity' => $this->severityFor($held['expr']),
                         'recommendation' => 'Use the chunk method to process records in batches, or the cursor or lazy methods for generator-based iteration, to avoid loading the entire dataset into memory.',
                         'code' => $this->getCodeSnippet($loopIterator),
                     ];
@@ -454,32 +464,61 @@ class ChunkMissingVisitor extends NodeVisitorAbstract
     /**
      * Return true when the argument at $position is a list of values rather than a subquery.
      *
-     * A closure, or a query that selects its column and has not been run, reads its values
-     * from a table, so that table and not a list in hand decides how many rows come back.
-     * A subquery has to select exactly one column, which is why a select() marks one.
+     * A subquery reads its values from a table, so that table and not a list in hand
+     * decides how many rows come back.
      */
     private function isValueList(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position): bool
     {
         $arg = $call->args[$position] ?? null;
 
-        if (! $arg instanceof Node\Arg) {
-            return false;
+        return $arg instanceof Node\Arg && ! $this->isSubquery($arg->value);
+    }
+
+    /**
+     * Return true when the expression is a subquery: a closure, a query that selects its
+     * column and has not been run, or a variable assigned either one.
+     *
+     * A subquery has to select exactly one column, which is why a select() marks one. A chain
+     * continued from a variable holding a subquery is the same query narrowed further, until
+     * a call such as pluck() runs it and hands back values.
+     */
+    private function isSubquery(Node\Expr $value): bool
+    {
+        if ($value instanceof Node\Expr\Closure || $value instanceof Node\Expr\ArrowFunction) {
+            return true;
         }
 
-        $value = $arg->value;
-
-        if ($value instanceof Node\Expr\Closure || $value instanceof Node\Expr\ArrowFunction) {
-            return false;
+        if ($value instanceof Node\Expr\Variable) {
+            return $this->holdsSubquery($value);
         }
 
         if (! $value instanceof Node\Expr\MethodCall && ! $value instanceof Node\Expr\StaticCall) {
-            return true;
+            return false;
         }
 
         $methods = $this->getMethodChain($value);
 
-        return array_intersect($methods, self::SUBQUERY_METHODS) === []
-            || array_intersect($methods, self::RUN_QUERY_METHODS) !== [];
+        if (array_intersect($methods, self::RUN_QUERY_METHODS) !== []) {
+            return false;
+        }
+
+        $root = $value;
+
+        while ($root instanceof Node\Expr\MethodCall) {
+            $root = $root->var;
+        }
+
+        return array_intersect($methods, self::SUBQUERY_METHODS) !== []
+            || ($root instanceof Node\Expr\Variable && $this->holdsSubquery($root));
+    }
+
+    /**
+     * Return true when the variable was last assigned a subquery in this scope.
+     */
+    private function holdsSubquery(Node\Expr\Variable $variable): bool
+    {
+        return is_string($variable->name)
+            && ($this->variableAssignments[$variable->name]['isSubquery'] ?? false);
     }
 
     /**

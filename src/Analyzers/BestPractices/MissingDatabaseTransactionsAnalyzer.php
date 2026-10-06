@@ -391,7 +391,7 @@ class TransactionVisitor extends NodeVisitorAbstract
     private array $methodScopeStack = [];
 
     /**
-     * @param  array<string, true>  $transactionDelegatedMethods
+     * @param  array<int, true>  $transactionDelegatedMethods  file positions of the delegated methods
      */
     public function __construct(
         private int $threshold,
@@ -737,8 +737,9 @@ class TransactionVisitor extends NodeVisitorAbstract
         $this->currentMethodName = $node->name->toString();
         $this->methodStartLine = $node->getStartLine();
         // Start inside a virtual transaction if this method is exclusively called
-        // from within DB::transaction() closures (determined by the pre-scan).
-        $this->transactionDepth = isset($this->transactionDelegatedMethods[$this->currentMethodName]) ? 1 : 0;
+        // from within DB::transaction() closures (determined by the pre-scan, which
+        // identifies a method by where its declaration starts, not by its name).
+        $this->transactionDepth = isset($this->transactionDelegatedMethods[$node->getStartFilePos()]) ? 1 : 0;
         $this->manualTransactionDepth = 0;
         $this->transactionClosurePositions = [];
         $this->closureScopeStack = [];
@@ -1270,8 +1271,8 @@ class TransactionVisitor extends NodeVisitorAbstract
  * inside a DB::transaction() — and which therefore should not be flagged for
  * missing transaction protection.
  *
- * Protection is resolved transitively over the intra-class `$this->method()`
- * call graph. A method is "delegated" when, for every call site:
+ * Protection is resolved transitively over the file's `$this->method()` call
+ * graph. A method is "delegated" when, for every call site:
  *   - the call sits lexically inside a DB::transaction() closure, OR
  *   - the caller is itself a delegated *private/protected* method (so it has
  *     no externally-reachable entry point that could bypass the transaction).
@@ -1280,10 +1281,18 @@ class TransactionVisitor extends NodeVisitorAbstract
  * intermediary may be invoked externally without a transaction, so protection
  * never flows *through* it. A method whose call sites are *all* directly inside
  * transaction closures is delegated regardless of its own visibility.
+ *
+ * A method is identified by its declaration, never by its name: two classes in one file can
+ * each declare a method of the same name, and a call to one says nothing about the other. The
+ * name a finding is reported under is no substitute either, because two anonymous classes in
+ * one method share it, and so do two classes of one short name in two namespaces. So each
+ * method is keyed by where its declaration starts in the file, which TransactionVisitor reads
+ * off the same node.
  */
 class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 {
     use IdentifiesNonQueryClasses;
+    use ReadsClassDeclarations;
     use TracksImportedNames;
 
     private const DB_FACADE = ['Illuminate\\Support\\Facades\\DB'];
@@ -1293,31 +1302,53 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     private int $transactionDepth = 0;
 
-    private ?string $currentMethodName = null;
+    /** File position of the method the walk is inside, null outside any. */
+    private ?int $currentMethod = null;
 
     /**
-     * Saved name and transaction depth of each enclosing method. A method body can declare a
+     * Saved method and transaction depth of each enclosing method. A method body can declare a
      * class of its own, and both halves have to come back when that class's method ends: the
-     * name, or the call edges recorded after it carry no caller and break the chain protection
+     * method, or the call edges recorded after it carry no caller and break the chain protection
      * propagates along; the depth, or a call later in the same transaction closure loses it.
      *
      * The depth is also reset on the way in. A class declared inside a transaction closure does
      * not run its methods there, because the object can leave the closure and be called after
      * the transaction has committed, so its call edges are not protected by that closure.
      *
-     * @var list<array{name: string|null, depth: int}>
+     * @var list<array{method: int|null, depth: int}>
      */
     private array $methodScopeStack = [];
 
-    /** @var array<string, bool> Method name → whether it is declared private or protected. */
+    /** @var list<int> File positions of the class-like declarations the walk is inside, innermost last. */
+    private array $declarationStack = [];
+
+    /**
+     * Every class-like declaration in the file, by file position: the folded names of the
+     * declarations it draws members from directly, traits first as PHP orders them, and the
+     * methods it declares, by lowercased name, since PHP resolves a method name without regard
+     * to case. `preferred` holds the folded name of the trait an `insteadof` picks for a method,
+     * which overrides the order the traits are listed in.
+     *
+     * @var array<int, array{ancestors: list<string>, methods: array<string, int>, preferred: array<string, string>}>
+     */
+    private array $declarations = [];
+
+    /** @var array<string, int> Folded name of each named declaration in the file => its file position. */
+    private array $declarationsByKey = [];
+
+    /** @var array<int, bool> Method file position → whether it is declared private or protected. */
     private array $methodIsHidden = [];
 
     /**
-     * Intra-class call edges keyed by callee method name.
+     * Each `$this->method()` call, with the method and declaration it sits in. Which method it
+     * reaches is only known once every declaration in the file has been read.
      *
-     * @var array<string, list<array{caller: string|null, inTx: bool}>>
+     * @var list<array{caller: int|null, from: int, method: string, inTx: bool}>
      */
-    private array $edgesByCallee = [];
+    private array $calls = [];
+
+    /** @var array<int, list<int>> Declaration file position => its lineage, memoised. */
+    private array $lineages = [];
 
     public function enterNode(Node $node): ?Node
     {
@@ -1325,12 +1356,32 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
         // reached, which is the set PHP applies at this point in the file.
         $this->trackImports($node);
 
+        if ($node instanceof Node\Stmt\ClassLike) {
+            $position = $node->getStartFilePos();
+            $this->declarationStack[] = $position;
+            $this->declarations[$position] = [
+                'ancestors' => array_map(ClassHierarchyIndex::key(...), $this->declaredAncestorsOf($node)),
+                'methods' => [],
+                'preferred' => $this->preferredTraitsOf($node),
+            ];
+
+            $fqn = $this->declarationFqn($node);
+            if ($fqn !== null) {
+                $this->declarationsByKey[ClassHierarchyIndex::key($fqn)] = $position;
+            }
+        }
+
         // Track the method we are currently inside (and its visibility).
         if ($node instanceof Node\Stmt\ClassMethod) {
-            $this->methodScopeStack[] = ['name' => $this->currentMethodName, 'depth' => $this->transactionDepth];
-            $this->currentMethodName = $node->name->toString();
+            $this->methodScopeStack[] = ['method' => $this->currentMethod, 'depth' => $this->transactionDepth];
+            $this->currentMethod = $node->getStartFilePos();
             $this->transactionDepth = 0;
-            $this->methodIsHidden[$this->currentMethodName] = $node->isPrivate() || $node->isProtected();
+            $this->methodIsHidden[$this->currentMethod] = $node->isPrivate() || $node->isProtected();
+
+            $declaration = end($this->declarationStack);
+            if ($declaration !== false) {
+                $this->declarations[$declaration]['methods'][strtolower($node->name->toString())] = $this->currentMethod;
+            }
         }
 
         // Record closures passed directly to DB::transaction(), including the
@@ -1353,15 +1404,21 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
             }
         }
 
-        // Record each $this->method() call edge with its caller and transaction context.
+        // Record each $this->method() call with its caller and transaction context. Outside
+        // any class-like, $this is whatever the closure gets bound to at runtime, which names
+        // no method in this file.
+        $declaration = end($this->declarationStack);
         if (
-            $node instanceof Node\Expr\MethodCall
+            $declaration !== false
+            && $node instanceof Node\Expr\MethodCall
             && $node->var instanceof Node\Expr\Variable
             && $node->var->name === 'this'
             && $node->name instanceof Node\Identifier
         ) {
-            $this->edgesByCallee[$node->name->toString()][] = [
-                'caller' => $this->currentMethodName,
+            $this->calls[] = [
+                'caller' => $this->currentMethod,
+                'from' => $declaration,
+                'method' => strtolower($node->name->toString()),
                 'inTx' => $this->transactionDepth > 0,
             ];
         }
@@ -1391,9 +1448,13 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
 
     public function leaveNode(Node $node): ?Node
     {
+        if ($node instanceof Node\Stmt\ClassLike) {
+            array_pop($this->declarationStack);
+        }
+
         if ($node instanceof Node\Stmt\ClassMethod) {
             $frame = array_pop($this->methodScopeStack);
-            $this->currentMethodName = $frame['name'] ?? null;
+            $this->currentMethod = $frame['method'] ?? null;
             $this->transactionDepth = $frame['depth'] ?? 0;
         }
 
@@ -1407,20 +1468,28 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
     }
 
     /**
-     * Returns method names whose every call path runs inside a transaction,
-     * resolved to a fixed point over the intra-class call graph.
+     * File positions of the methods whose every call path runs inside a transaction,
+     * resolved to a fixed point over the file's call graph.
      *
-     * @return array<string, true>
+     * @return array<int, true>
      */
     public function getDelegatedMethods(): array
     {
-        /** @var array<string, true> $delegated */
+        /** @var array<int, list<array{caller: int|null, from: int, method: string, inTx: bool}>> $callsByCallee */
+        $callsByCallee = [];
+        foreach ($this->calls as $call) {
+            foreach ($this->methodsReached($call['from'], $call['method']) as $callee) {
+                $callsByCallee[$callee][] = $call;
+            }
+        }
+
+        /** @var array<int, true> $delegated */
         $delegated = [];
 
         do {
             $changed = false;
 
-            foreach ($this->edgesByCallee as $callee => $edges) {
+            foreach ($callsByCallee as $callee => $calls) {
                 if (isset($delegated[$callee])) {
                     continue;
                 }
@@ -1428,15 +1497,15 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
                 $allInTx = true;
                 $allProtected = true;
 
-                foreach ($edges as $edge) {
-                    if ($edge['inTx']) {
+                foreach ($calls as $call) {
+                    if ($call['inTx']) {
                         continue;
                     }
                     $allInTx = false;
 
-                    // A non-transaction edge is only protected when the caller is
+                    // A non-transaction call is only protected when the caller is
                     // itself a delegated private/protected method (no external entry).
-                    $caller = $edge['caller'];
+                    $caller = $call['caller'];
                     $safeCaller = $caller !== null
                         && isset($delegated[$caller])
                         && ($this->methodIsHidden[$caller] ?? false);
@@ -1458,6 +1527,128 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
         } while ($changed);
 
         return $delegated;
+    }
+
+    /**
+     * The methods in this file a `$this->$method()` call written in $from can run.
+     *
+     * $this there is an instance of $from or of anything drawing from it: a subclass, or for a
+     * trait the class using it. So every declaration in the file whose lineage passes through
+     * $from is a candidate, and for each the call runs the first declaration of the method along
+     * that lineage, which is PHP's own precedence of own over trait over inherited, with an
+     * `insteadof` deciding between two traits that both declare it. That is what
+     * keeps a helper a class takes from a trait or a parent, a trait method calling into the
+     * class using it, and a parent calling an override, connected as they are at runtime.
+     *
+     * A declaration outside the file contributes nothing, as before: its call sites are not here.
+     *
+     * @return list<int>
+     */
+    private function methodsReached(int $from, string $method): array
+    {
+        $reached = [];
+
+        foreach (array_keys($this->declarations) as $candidate) {
+            $lineage = $this->lineageOf($candidate);
+            if (! in_array($from, $lineage, true)) {
+                continue;
+            }
+
+            $declared = $this->methodRunBy($candidate, $method, []);
+            if ($declared !== null) {
+                $reached[$declared] = true;
+            }
+        }
+
+        return array_keys($reached);
+    }
+
+    /**
+     * The method in this file an instance of $declaration runs for $method: the first along its
+     * lineage to declare it, unless a declaration on the way settles a trait conflict with
+     * `insteadof`, which hands the method to the trait it names. Null when that trait, or every
+     * declaration of the method, lies outside the file.
+     *
+     * @param  list<int>  $visited  traits already followed, which ends an `insteadof` chain that names its own user
+     */
+    private function methodRunBy(int $declaration, string $method, array $visited): ?int
+    {
+        foreach ($this->lineageOf($declaration) as $current) {
+            $declared = $this->declarations[$current]['methods'][$method] ?? null;
+            if ($declared !== null) {
+                return $declared;
+            }
+
+            $preferred = $this->declarations[$current]['preferred'][$method] ?? null;
+            if ($preferred === null) {
+                continue;
+            }
+
+            $trait = $this->declarationsByKey[$preferred] ?? null;
+            if ($trait === null || in_array($trait, $visited, true)) {
+                return null;
+            }
+
+            return $this->methodRunBy($trait, $method, [...$visited, $trait]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The trait each `insteadof` in $class picks for a method, by lowercased method name.
+     *
+     * @return array<string, string>
+     */
+    private function preferredTraitsOf(Node\Stmt\ClassLike $class): array
+    {
+        $preferred = [];
+
+        foreach ($class->getTraitUses() as $use) {
+            foreach ($use->adaptations as $adaptation) {
+                if ($adaptation instanceof Node\Stmt\TraitUseAdaptation\Precedence && $adaptation->trait !== null) {
+                    $preferred[strtolower($adaptation->method->toString())] = ClassHierarchyIndex::key($this->resolvedClassFqn($adaptation->trait));
+                }
+            }
+        }
+
+        return $preferred;
+    }
+
+    /**
+     * A declaration followed by every declaration in this file it draws members from, depth
+     * first and traits before the parent, so that the first to declare a method is the one PHP
+     * would run. The visited set ends a hierarchy that refers back to itself, which an AST can
+     * express even though PHP could not load it.
+     *
+     * @return list<int>
+     */
+    private function lineageOf(int $declaration): array
+    {
+        if (isset($this->lineages[$declaration])) {
+            return $this->lineages[$declaration];
+        }
+
+        /** @var array<int, true> $seen */
+        $seen = [];
+        $pending = [$declaration];
+
+        while ($pending !== []) {
+            $current = array_pop($pending);
+            if (isset($seen[$current])) {
+                continue;
+            }
+            $seen[$current] = true;
+
+            // Pushed in reverse so the first ancestor is popped, and so walked, first.
+            foreach (array_reverse($this->declarations[$current]['ancestors'] ?? []) as $ancestor) {
+                if (isset($this->declarationsByKey[$ancestor])) {
+                    $pending[] = $this->declarationsByKey[$ancestor];
+                }
+            }
+        }
+
+        return $this->lineages[$declaration] = array_keys($seen);
     }
 }
 

@@ -4144,6 +4144,680 @@ PHP;
     }
 
     /**
+     * A method is one declaration's, not every same-named method's in the file. The outer
+     * class's helper is only reached inside a transaction; the anonymous class's own helper of
+     * the same name is reached outside one, and only that one is reported.
+     */
+    public function test_a_helper_stays_delegated_when_another_class_in_the_file_shares_its_name(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Payout;
+use Illuminate\Support\Facades\DB;
+
+class PayoutRunner
+{
+    public function run(): void
+    {
+        DB::transaction(function () {
+            $this->reconcile();
+        });
+    }
+
+    public function preview(): object
+    {
+        return new class
+        {
+            public function show(): void
+            {
+                $this->reconcile();
+            }
+
+            private function reconcile(): void
+            {
+                Payout::create([]);
+                Payout::create([]);
+            }
+        };
+    }
+
+    private function reconcile(): void
+    {
+        Payout::create([]);
+        Payout::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/PayoutRunner.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('"PayoutRunner@anonymous::reconcile()"', $issues[0]->message);
+    }
+
+    /**
+     * The reverse of the above: a call inside a transaction protects the method it reaches,
+     * not a same-named public method of another class that nothing in the file calls.
+     */
+    public function test_a_call_inside_a_transaction_does_not_protect_a_same_named_method_of_another_class(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentBooker
+{
+    public function book(): void
+    {
+        DB::transaction(function () {
+            $this->reconcile();
+        });
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+    }
+}
+
+class ShipmentAuditor
+{
+    public function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('"ShipmentAuditor::reconcile()"', $issues[0]->message);
+    }
+
+    public function test_two_named_classes_in_one_file_keep_separate_verdicts(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentBooker
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+class ShipmentAuditor
+{
+    public function audit(): void
+    {
+        $this->reconcile();
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('"ShipmentAuditor::reconcile()"', $issues[0]->message);
+    }
+
+    /**
+     * Both anonymous classes report under the same name, so the name cannot be what tells
+     * their methods apart.
+     */
+    public function test_two_anonymous_classes_in_one_method_keep_separate_verdicts(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class Handlers
+{
+    public function all(): array
+    {
+        return [
+            new class
+            {
+                public function handle(): void
+                {
+                    DB::transaction(fn () => $this->reconcile());
+                }
+
+                private function reconcile(): void
+                {
+                    Shipment::create([]);
+                    Shipment::create([]);
+                }
+            },
+            new class
+            {
+                public function handle(): void
+                {
+                    $this->reconcile();
+                }
+
+                private function reconcile(): void
+                {
+                    Shipment::create([]);
+                    Shipment::create([]);
+                }
+            },
+        ];
+    }
+}
+PHP;
+
+        $line = null;
+        foreach (explode("\n", $code) as $index => $lineText) {
+            if (str_contains($lineText, 'private function reconcile')) {
+                $line = $index + 1;
+            }
+        }
+
+        $tempDir = $this->createTempDirectory(['Services/Handlers.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame($line, $issues[0]->location->line);
+    }
+
+    /**
+     * Two classes of one short name in two namespaces of one file are two classes.
+     */
+    public function test_same_named_classes_in_two_namespaces_keep_separate_verdicts(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Billing {
+    use App\Models\Shipment;
+    use Illuminate\Support\Facades\DB;
+
+    class Reconciler
+    {
+        public function run(): void
+        {
+            DB::transaction(fn () => $this->reconcile());
+        }
+
+        private function reconcile(): void
+        {
+            Shipment::create([]);
+            Shipment::create([]);
+        }
+    }
+}
+
+namespace App\Shipping {
+    use App\Models\Shipment;
+
+    class Reconciler
+    {
+        public function run(): void
+        {
+            $this->reconcile();
+        }
+
+        private function reconcile(): void
+        {
+            Shipment::create([]);
+            Shipment::create([]);
+        }
+    }
+}
+PHP;
+
+        $line = null;
+        foreach (explode("\n", $code) as $index => $lineText) {
+            if (str_contains($lineText, 'private function reconcile')) {
+                $line = $index + 1;
+            }
+        }
+
+        $tempDir = $this->createTempDirectory(['Services/Reconciler.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame($line, $issues[0]->location->line);
+    }
+
+    /**
+     * PHP resolves a method name without regard to case.
+     */
+    public function test_a_call_spelled_in_another_case_still_reaches_the_helper(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentBooker
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->Reconcile());
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A call reaches a helper the class takes from a trait declared in the same file.
+     */
+    public function test_a_helper_from_a_trait_in_the_same_file_stays_delegated(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait Reconciles
+{
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+class ShipmentBooker
+{
+    use Reconciles;
+
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A call reaches a helper the class inherits from a parent declared in the same file.
+     */
+    public function test_a_helper_from_a_parent_in_the_same_file_stays_delegated(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+abstract class BaseBooker
+{
+    protected function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+class ShipmentBooker extends BaseBooker
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * `insteadof` hands the method to the trait it names, whatever order the traits are listed
+     * in, so the call protects that trait's helper. The one it excludes is never called here.
+     */
+    public function test_an_insteadof_decides_which_trait_helper_the_call_reaches(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait ReconcilesLocally
+{
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+trait ReconcilesRemotely
+{
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+class ShipmentBooker
+{
+    use ReconcilesLocally, ReconcilesRemotely {
+        ReconcilesRemotely::reconcile insteadof ReconcilesLocally;
+    }
+
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('"ReconcilesLocally::reconcile()"', $issues[0]->message);
+    }
+
+    /**
+     * A method the class declares itself beats every trait method, so an `insteadof` settling
+     * the conflict between two traits does not move the call off the class's own helper.
+     */
+    public function test_an_insteadof_does_not_override_the_class_s_own_helper(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait ReconcilesLocally
+{
+    private function reconcile(): void
+    {
+    }
+}
+
+trait ReconcilesRemotely
+{
+    private function reconcile(): void
+    {
+    }
+}
+
+class ShipmentBooker
+{
+    use ReconcilesLocally, ReconcilesRemotely {
+        ReconcilesRemotely::reconcile insteadof ReconcilesLocally;
+    }
+
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * `$this` in a trait method is the class using it, so the call reaches that class's helper.
+     */
+    public function test_a_trait_method_reaches_the_helper_of_the_class_using_it(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait Books
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+}
+
+class ShipmentBooker
+{
+    use Books;
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A parent's call dispatches to the override a subclass in the same file declares.
+     */
+    public function test_a_parent_call_reaches_the_override_a_child_declares(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+abstract class BaseBooker
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+
+    abstract protected function reconcile(): void;
+}
+
+class ShipmentBooker extends BaseBooker
+{
+    protected function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * An anonymous subclass is a subclass like any other: the parent's call reaches its override.
+     */
+    public function test_a_parent_call_reaches_the_override_an_anonymous_subclass_declares(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentBooker
+{
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+
+    public function withHistory(): self
+    {
+        return new class extends ShipmentBooker
+        {
+            protected function reconcile(): void
+            {
+                Shipment::create([]);
+                Shipment::create([]);
+            }
+        };
+    }
+
+    protected function reconcile(): void
+    {
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
      * #427 taught the receiver check to find a property declared on a trait the writing
      * class uses. This is the mirror: the trait holds the method and the class using it
      * declares the client, so the trait's own declaration has nothing to look up.

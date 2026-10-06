@@ -417,7 +417,9 @@ class TransactionVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Stmt\ClassLike) {
             $this->classNameStack[] = $this->currentClassName;
             $this->propertyTypeStack[] = $this->propertyTypes;
-            $this->currentClassName = $this->declarationName($node, $this->currentClassName);
+            // An anonymous class borrows its parent's name the way PHP spells it, resolved
+            // against the imports, so the subject matches a stack trace.
+            $this->currentClassName = $this->declarationName($node, $this->currentClassName, $this->resolvedClassFqn(...));
             // Own declarations first: array + array keeps the left-hand entry, so a
             // property the class redeclares wins over the one it would have inherited,
             // and what a declaration drawing from this one says is the last resort.

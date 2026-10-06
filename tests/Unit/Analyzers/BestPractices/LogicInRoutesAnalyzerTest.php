@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\LogicInRoutesAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -2267,5 +2268,80 @@ PHP;
 
         // Without a use statement, we can't determine namespace - assume not a model
         $this->assertPassed($result);
+    }
+
+    public function test_colliding_imports_do_not_drop_the_route_file(): void
+    {
+        // Two imports landing on one alias. NameResolver's default handler throws on the
+        // second, and the file loop's catch used to drop the route file without a finding.
+        $code = <<<'PHP'
+<?php
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
+
+Route::post('/invoices/{id}/approve', function ($id) {
+    DB::table('invoices')->where('id', $id)->update(['approved' => true]);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_does_not_replace_names_in_the_shared_parse_cache(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
+
+Route::post('/invoices/{id}/approve', function ($id) {
+    DB::table('invoices')->where('id', $id)->update(['approved' => true]);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed.
+        $path = $tempDir.'/routes/web.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Expr\StaticCall> $calls */
+        $calls = $this->parser->findNodes($ast, Node\Expr\StaticCall::class);
+        $this->assertCount(2, $calls);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        // A finding says the walk reached this tree rather than skipping it.
+        $this->assertFailed($analyzer->analyze());
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        foreach ($calls as $call) {
+            $class = $call->class;
+            if (! $class instanceof Node\Name) {
+                self::fail('Expected the static call to name a class.');
+            }
+
+            // Still the name as written, with the resolution left beside it.
+            $this->assertSame(Node\Name::class, $class::class);
+            $resolved = $class->getAttribute('resolvedName');
+            $this->assertInstanceOf(Node\Name\FullyQualified::class, $resolved);
+            $this->assertStringStartsWith('Illuminate\Support\Facades\\', $resolved->toString());
+        }
     }
 }

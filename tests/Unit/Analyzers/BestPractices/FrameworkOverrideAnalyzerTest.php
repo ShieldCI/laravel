@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\FrameworkOverrideAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -990,5 +991,104 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result); // Should pass because Request is now allowed
+    }
+
+    public function test_colliding_imports_do_not_drop_the_file(): void
+    {
+        // Two imports landing on one alias. NameResolver's default handler throws on the
+        // second, and the file loop's catch used to drop the file without a finding.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+use Illuminate\Foundation\Http\Kernel;
+
+class CustomKernel extends Kernel
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_colliding_imports_keep_the_first_spelling(): void
+    {
+        // The second Kernel is the project's own, which is not flagged, so a last-wins
+        // resolution would pass this file.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel;
+use App\Legacy\Kernel;
+
+class CustomKernel extends Kernel
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Illuminate\Foundation\Http\Kernel', $result);
+    }
+
+    public function test_does_not_replace_names_in_the_shared_parse_cache(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel;
+
+class CustomKernel extends Kernel
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed. The cache key is the path as spelled, so setPaths() has to name
+        // 'Http' rather than '.', or the analyzer would parse a tree of its own.
+        $path = $tempDir.'/Http/CustomKernel.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Stmt\Class_> $classes */
+        $classes = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $classes);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Http']);
+
+        // A finding says the walk reached this tree rather than skipping it.
+        $this->assertFailed($analyzer->analyze());
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        $parent = $classes[0]->extends;
+        $this->assertNotNull($parent);
+        $this->assertSame(Node\Name::class, $parent::class);
+        $this->assertSame('Kernel', $parent->toString());
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\CodeQuality;
 
 use PhpParser\Comment\Doc;
+use PhpParser\ErrorHandler;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -241,6 +242,9 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
      *
      * Uses one CloningVisitor + NameResolver traversal to resolve parent/interface names
      * to FQN before checking, mirroring the detector pattern used across the analyzers.
+     * A colliding import (two `use` statements on one alias) is recorded and ignored rather
+     * than thrown: the first spelling is kept and every other name still resolves, so a
+     * contract imported after the collision still exempts its methods.
      *
      * @param  array<Node>  $ast
      * @return array<string> lowercased contract-method names to skip
@@ -265,7 +269,7 @@ class MissingDocBlockAnalyzer extends AbstractFileAnalyzer
 
         $traverser = new NodeTraverser;
         $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
+        $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting));
         $resolvedAst = $traverser->traverse($ast);
 
         foreach ($resolvedAst as $node) {

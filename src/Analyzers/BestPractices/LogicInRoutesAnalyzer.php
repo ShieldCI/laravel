@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\ErrorHandler;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
@@ -80,7 +81,11 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 
                 $visitor = new LogicInRoutesVisitor($this->maxClosureLines, $this->allowSimpleReads);
                 $traverser = new NodeTraverser;
-                $traverser->addVisitor(new NameResolver);
+                // replaceNodes stays off because parseFile() hands back a shared, cached AST;
+                // the visitor reads the resolvedName attribute instead. A colliding import is
+                // recorded and ignored rather than thrown, so the file is not dropped by the
+                // catch below.
+                $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting, ['replaceNodes' => false]));
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -250,8 +255,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
      * Determine if a class name likely represents an Eloquent model.
      *
      * Uses fully qualified name from NameResolver when available.
-     * After NameResolver runs, class names are resolved to FullyQualified nodes
-     * containing the complete namespace (e.g., "Product" becomes "App\Models\Product").
+     * After NameResolver runs, each class name carries a resolvedName attribute
+     * holding the complete namespace (e.g., "Product" resolves to "App\Models\Product").
      *
      * This method is public static so anonymous visitor classes can call it.
      *

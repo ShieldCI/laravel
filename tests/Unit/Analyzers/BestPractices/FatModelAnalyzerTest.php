@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PhpParser\Node;
 use ShieldCI\Analyzers\BestPractices\FatModelAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -1845,5 +1846,89 @@ PHP;
         // convention (steps 4 and 6) cannot help — only the chain walk finds this.
         $this->assertWarning($result);
         $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_colliding_imports_do_not_drop_the_model(): void
+    {
+        // Two imports landing on one alias. NameResolver's default handler throws on the
+        // second, and the file loop's catch used to drop the model without a finding.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+use Illuminate\Database\Eloquent\Model;
+
+class Invoice extends Model
+{
+    public function approve() { return $this->update(['approved' => true]); }
+    public function reject() { return $this->update(['approved' => false]); }
+    public function archive() { return $this->update(['archived' => true]); }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Invoice.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'fat-model' => [
+                'method_threshold' => 2,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('business methods', $result);
+    }
+
+    public function test_does_not_replace_names_in_the_shared_parse_cache(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Invoice extends Model
+{
+    public function approve() { return $this->update(['approved' => true]); }
+    public function reject() { return $this->update(['approved' => false]); }
+    public function archive() { return $this->update(['archived' => true]); }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Invoice.php' => $code]);
+
+        // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
+        // analyzer was handed. The cache key is the path as spelled, so setPaths() has to name
+        // 'Models' rather than '.', or the analyzer would parse a tree of its own.
+        $path = $tempDir.'/Models/Invoice.php';
+        $ast = $this->parser->parseFile($path);
+
+        /** @var array<int, Node\Stmt\Class_> $classes */
+        $classes = $this->parser->findNodes($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $classes);
+
+        $analyzer = $this->createAnalyzer([
+            'fat-model' => [
+                'method_threshold' => 2,
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['Models']);
+
+        // A finding says the walk reached this tree rather than skipping it.
+        $this->assertWarning($analyzer->analyze());
+        $this->assertSame(1, $this->cachedTreesFor($path));
+
+        $parent = $classes[0]->extends;
+        $this->assertNotNull($parent);
+        $this->assertSame(Node\Name::class, $parent::class);
+        $this->assertSame('Model', $parent->toString());
     }
 }

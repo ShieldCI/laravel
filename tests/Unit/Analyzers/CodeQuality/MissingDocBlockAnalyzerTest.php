@@ -3032,4 +3032,57 @@ PHP;
 
         $this->fail("No issue found for method '{$method}'");
     }
+
+    /** @test */
+    #[Test]
+    public function test_contract_imported_after_colliding_imports_still_excludes_its_methods(): void
+    {
+        // Two imports landing on one alias. NameResolver's default handler throws on the
+        // second, which used to error the analyzer. Catching that and reading the names as
+        // written would leave ValidationRule bare, and validate() would be reported.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Rules;
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+use Closure;
+use Illuminate\Contracts\Validation\ValidationRule;
+
+class Lowercase implements ValidationRule
+{
+    public function validate(string $attribute, mixed $value, Closure $fail): void
+    {
+        $normalized = strtolower((string) $value);
+
+        if ($normalized !== $value) {
+            $fail('The :attribute must be lowercase.');
+        }
+    }
+
+    public function normalize($value)
+    {
+        $trimmed = trim($value);
+
+        return strtolower($trimmed) . $value;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Rules/Lowercase.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // The rest of the file is still analysed: only the contract method is excluded.
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("'normalize'", $result);
+    }
 }

@@ -4111,7 +4111,8 @@ PHP;
     public function test_a_later_query_builder_read_does_not_clear_a_mixed_table(): void
     {
         // The second query-builder read finds the table already mixed. Booking it as a query-builder
-        // table again would forget the Eloquent read, and the class would pass.
+        // table again would forget the Eloquent read, and the class would pass. The finding stays on
+        // the read that made the table mixed.
         $code = <<<'PHP'
 <?php
 
@@ -4141,6 +4142,10 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "shipments"', $result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame(13, $issues[0]->location->line);
     }
 
     public function test_a_query_builder_read_on_both_sides_of_an_eloquent_one_is_mixed(): void

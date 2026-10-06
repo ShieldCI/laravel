@@ -6405,6 +6405,208 @@ PHP,
     }
 
     /**
+     * The same rule on the lookup side. `product::get()` names the class declared as `Product`,
+     * but the registries were keyed by the short name as the declaration spells it and asked
+     * with the name as the call site spells it, so the reference found no $fillable and a plain
+     * column read fell back to the name heuristic.
+     *
+     * The parent is outside the scanned paths, so the model is not read in full and only the
+     * $fillable lookup can answer sku. A model read in full would pass on its conclusive absence
+     * alone, which the next test covers, and this one would then pin nothing of its own.
+     */
+    public function test_does_not_flag_a_fillable_column_on_a_model_referenced_in_a_different_case(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Acme\Catalog\RecordBase
+{
+    protected $fillable = ['sku'];
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * The accessor lookup is keyed the same way, and on a model not read in full it is the only
+     * thing that tells a computed property from a relationship.
+     */
+    public function test_does_not_flag_an_accessor_on_a_model_referenced_in_a_different_case(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Acme\Catalog\RecordBase
+{
+    public function getOwnerAttribute()
+    {
+        return $this->attributes['owner_name'];
+    }
+}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = product::get();
+
+        foreach ($products as $product) {
+            echo $product->owner;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A model read in full answers an absent name conclusively, and that reading has to reach a
+     * reference spelled differently from the declaration too. Product declares no member named
+     * sku anywhere in its chain, so sku cannot be a relationship however the call site writes
+     * the class.
+     */
+    public function test_answers_an_absent_name_conclusively_for_a_model_referenced_in_a_different_case(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = PRODUCT::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Once the lookup ignores case, `Product` and `PRODUCT` are one name to it, so two classes
+     * spelled that way share an entry exactly as two spelled alike do. Neither may be read
+     * conclusively, or an absent name would be judged partly on a class the code never meant.
+     */
+    public function test_short_names_differing_only_in_case_are_never_answered_conclusively(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Product extends Model {}
+PHP,
+            'app/Legacy/PRODUCT.php' => <<<'PHP'
+<?php
+
+namespace App\Legacy;
+
+use Illuminate\Database\Eloquent\Model;
+
+class PRODUCT extends Model {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $rows = Product::get();
+
+        foreach ($rows as $row) {
+            echo $row->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('sku', $result);
+    }
+
+    /**
      * An import applies from its own line, not across the enclosing block, so the parent below
      * is App\Models\BaseProduct and not the one the trailing `use` names. Collecting a scope's
      * imports before walking it answered the other way.

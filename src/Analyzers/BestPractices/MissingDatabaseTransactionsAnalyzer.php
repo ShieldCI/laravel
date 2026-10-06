@@ -1326,9 +1326,10 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
      * Every class-like declaration in the file, by file position: the folded names of the
      * declarations it draws members from directly, traits first as PHP orders them, and the
      * methods it declares, by lowercased name, since PHP resolves a method name without regard
-     * to case.
+     * to case. `preferred` holds the folded name of the trait an `insteadof` picks for a method,
+     * which overrides the order the traits are listed in.
      *
-     * @var array<int, array{ancestors: list<string>, methods: array<string, int>}>
+     * @var array<int, array{ancestors: list<string>, methods: array<string, int>, preferred: array<string, string>}>
      */
     private array $declarations = [];
 
@@ -1361,6 +1362,7 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
             $this->declarations[$position] = [
                 'ancestors' => array_map(ClassHierarchyIndex::key(...), $this->declaredAncestorsOf($node)),
                 'methods' => [],
+                'preferred' => $this->preferredTraitsOf($node),
             ];
 
             $fqn = $this->declarationFqn($node);
@@ -1533,7 +1535,8 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
      * $this there is an instance of $from or of anything drawing from it: a subclass, or for a
      * trait the class using it. So every declaration in the file whose lineage passes through
      * $from is a candidate, and for each the call runs the first declaration of the method along
-     * that lineage, which is PHP's own precedence of own over trait over inherited. That is what
+     * that lineage, which is PHP's own precedence of own over trait over inherited, with an
+     * `insteadof` deciding between two traits that both declare it. That is what
      * keeps a helper a class takes from a trait or a parent, a trait method calling into the
      * class using it, and a parent calling an override, connected as they are at runtime.
      *
@@ -1551,16 +1554,65 @@ class TransactionDelegatedMethodScanner extends NodeVisitorAbstract
                 continue;
             }
 
-            foreach ($lineage as $declaration) {
-                $declared = $this->declarations[$declaration]['methods'][$method] ?? null;
-                if ($declared !== null) {
-                    $reached[$declared] = true;
-                    break;
-                }
+            $declared = $this->methodRunBy($candidate, $method, []);
+            if ($declared !== null) {
+                $reached[$declared] = true;
             }
         }
 
         return array_keys($reached);
+    }
+
+    /**
+     * The method in this file an instance of $declaration runs for $method: the first along its
+     * lineage to declare it, unless a declaration on the way settles a trait conflict with
+     * `insteadof`, which hands the method to the trait it names. Null when that trait, or every
+     * declaration of the method, lies outside the file.
+     *
+     * @param  list<int>  $visited  traits already followed, which ends an `insteadof` chain that names its own user
+     */
+    private function methodRunBy(int $declaration, string $method, array $visited): ?int
+    {
+        foreach ($this->lineageOf($declaration) as $current) {
+            $declared = $this->declarations[$current]['methods'][$method] ?? null;
+            if ($declared !== null) {
+                return $declared;
+            }
+
+            $preferred = $this->declarations[$current]['preferred'][$method] ?? null;
+            if ($preferred === null) {
+                continue;
+            }
+
+            $trait = $this->declarationsByKey[$preferred] ?? null;
+            if ($trait === null || in_array($trait, $visited, true)) {
+                return null;
+            }
+
+            return $this->methodRunBy($trait, $method, [...$visited, $trait]);
+        }
+
+        return null;
+    }
+
+    /**
+     * The trait each `insteadof` in $class picks for a method, by lowercased method name.
+     *
+     * @return array<string, string>
+     */
+    private function preferredTraitsOf(Node\Stmt\ClassLike $class): array
+    {
+        $preferred = [];
+
+        foreach ($class->getTraitUses() as $use) {
+            foreach ($use->adaptations as $adaptation) {
+                if ($adaptation instanceof Node\Stmt\TraitUseAdaptation\Precedence && $adaptation->trait !== null) {
+                    $preferred[strtolower($adaptation->method->toString())] = ClassHierarchyIndex::key($this->resolvedClassFqn($adaptation->trait));
+                }
+            }
+        }
+
+        return $preferred;
     }
 
     /**

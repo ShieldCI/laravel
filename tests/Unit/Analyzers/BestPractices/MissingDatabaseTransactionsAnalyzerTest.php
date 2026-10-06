@@ -4572,6 +4572,65 @@ PHP;
     }
 
     /**
+     * `insteadof` hands the method to the trait it names, whatever order the traits are listed
+     * in, so the call protects that trait's helper. The one it excludes is never called here.
+     */
+    public function test_an_insteadof_decides_which_trait_helper_the_call_reaches(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait ReconcilesLocally
+{
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+trait ReconcilesRemotely
+{
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+
+class ShipmentBooker
+{
+    use ReconcilesLocally, ReconcilesRemotely {
+        ReconcilesRemotely::reconcile insteadof ReconcilesLocally;
+    }
+
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('"ReconcilesLocally::reconcile()"', $issues[0]->message);
+    }
+
+    /**
      * `$this` in a trait method is the class using it, so the call reaches that class's helper.
      */
     public function test_a_trait_method_reaches_the_helper_of_the_class_using_it(): void

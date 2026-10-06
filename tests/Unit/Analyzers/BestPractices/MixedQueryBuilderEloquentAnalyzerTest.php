@@ -4107,4 +4107,185 @@ PHP;
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_a_later_query_builder_read_does_not_clear_a_mixed_table(): void
+    {
+        // The second query-builder read finds the table already mixed. Booking it as a query-builder
+        // table again would forget the Eloquent read, and the class would pass. The finding stays on
+        // the read that made the table mixed.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentService
+{
+    public function report()
+    {
+        Shipment::where('late', 1)->get();
+        DB::table('shipments')->count();
+        DB::table('shipments')->max('weight');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "shipments"', $result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame(13, $issues[0]->location->line);
+    }
+
+    public function test_a_query_builder_read_on_both_sides_of_an_eloquent_one_is_mixed(): void
+    {
+        // The order of the calls does not change what the class does with the table.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentService
+{
+    public function report()
+    {
+        DB::table('shipments')->count();
+        Shipment::where('late', 1)->get();
+        DB::table('shipments')->max('weight');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "shipments"', $result);
+    }
+
+    public function test_a_later_tobase_chain_does_not_clear_a_mixed_table(): void
+    {
+        // A toBase() chain books the query-builder side like DB::table() does, so it must not
+        // clear a table that is already mixed either.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentService
+{
+    public function report()
+    {
+        Shipment::where('late', 1)->get();
+        DB::table('shipments')->count();
+        Shipment::query()->toBase()->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "shipments"', $result);
+    }
+
+    public function test_a_static_tobase_after_an_eloquent_read_is_mixed(): void
+    {
+        // The static form books the query-builder side too, and must promote an Eloquent table to
+        // mixed rather than overwrite it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentService
+{
+    public function report()
+    {
+        Shipment::where('late', 1)->get();
+        Shipment::toBase()->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('uses both Eloquent and Query Builder for table "shipments"', $result);
+    }
+
+    public function test_mixed_usage_reports_the_first_query_builder_call(): void
+    {
+        // The finding points at the first query-builder call on the table, not whichever came last
+        // before the Eloquent read.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+class ShipmentService
+{
+    public function report()
+    {
+        DB::table('shipments')->count();
+        DB::table('shipments')->max('weight');
+        Shipment::where('late', 1)->get();
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertSame(12, $issues[0]->location->line);
+    }
 }

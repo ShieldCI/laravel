@@ -4631,6 +4631,62 @@ PHP;
     }
 
     /**
+     * A method the class declares itself beats every trait method, so an `insteadof` settling
+     * the conflict between two traits does not move the call off the class's own helper.
+     */
+    public function test_an_insteadof_does_not_override_the_class_s_own_helper(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Models\Shipment;
+use Illuminate\Support\Facades\DB;
+
+trait ReconcilesLocally
+{
+    private function reconcile(): void
+    {
+    }
+}
+
+trait ReconcilesRemotely
+{
+    private function reconcile(): void
+    {
+    }
+}
+
+class ShipmentBooker
+{
+    use ReconcilesLocally, ReconcilesRemotely {
+        ReconcilesRemotely::reconcile insteadof ReconcilesLocally;
+    }
+
+    public function book(): void
+    {
+        DB::transaction(fn () => $this->reconcile());
+    }
+
+    private function reconcile(): void
+    {
+        Shipment::create([]);
+        Shipment::create([]);
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ShipmentBooker.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
      * `$this` in a trait method is the class using it, so the call reaches that class's helper.
      */
     public function test_a_trait_method_reaches_the_helper_of_the_class_using_it(): void

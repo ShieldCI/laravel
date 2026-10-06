@@ -5943,6 +5943,68 @@ PHP,
     }
 
     /**
+     * `parent::` forwards late static binding the way `self::` does, so a model that
+     * registers through it extends itself, not its parent. Taken as a class name, `parent`
+     * matched no declaration and the registration was dropped while the model still read
+     * as fully known.
+     */
+    public function test_relation_registered_through_parent_is_flagged(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Item.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Item extends Model {}
+PHP,
+            'app/Models/Gadget.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Gadget extends Item
+{
+    protected static function booted()
+    {
+        parent::resolveRelationUsing('maker', fn ($gadget) => $gadget->belongsTo(Maker::class));
+    }
+}
+PHP,
+            'app/Http/Controllers/GadgetController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Gadget;
+
+class GadgetController
+{
+    public function index()
+    {
+        $gadgets = Gadget::get();
+
+        foreach ($gadgets as $gadget) {
+            echo $gadget->maker;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('maker', $result);
+    }
+
+    /**
      * When the registration names its model through a variable, any model could be the
      * one being extended, so no model can be spoken for and every reading falls back to
      * the heuristic.

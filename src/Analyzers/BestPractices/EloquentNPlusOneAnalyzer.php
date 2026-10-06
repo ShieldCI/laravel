@@ -874,8 +874,10 @@ class EloquentModelRelationshipScanner
             return;
         }
 
+        // `parent::` forwards late static binding like `self::`, and resolveRelationUsing()
+        // records against static::class, so all three register on the calling class.
         $target = ClassHierarchyIndex::key(
-            in_array(strtolower($class->toString()), ['self', 'static'], true)
+            in_array(strtolower($class->toString()), ['self', 'static', 'parent'], true)
                 ? $fqcn
                 : $this->resolvedClassFqn($class)
         );

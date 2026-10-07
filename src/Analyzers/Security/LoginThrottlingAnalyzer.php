@@ -201,11 +201,22 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Read a PHP file with its comments blanked out, line numbering preserved,
+     * so commented-out code is never matched as live code.
+     */
+    private function readCode(string $path): ?string
+    {
+        $content = FileParser::readFile($path);
+
+        return $content === null ? null : FileParser::stripAllComments($content);
+    }
+
+    /**
      * Check if a file contains login-specific throttling patterns.
      */
     private function hasLoginThrottlingInFile(string $file): bool
     {
-        $content = FileParser::readFile($file);
+        $content = $this->readCode($file);
         if ($content === null) {
             return false;
         }
@@ -821,12 +832,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $fileThrottled = in_array($normalizedPath, $throttledFiles, true)
                     || ($isApiRoute ? $apiThrottled : $webThrottled);
                 $groupCovered = $fileThrottled || ($isApiRoute ? $apiLimited : $webLimited);
-                $content = FileParser::readFile($filePath);
+                $content = $this->readCode($filePath);
                 if ($content === null) {
                     continue;
                 }
 
-                $lines = FileParser::getLines($filePath);
+                // Comment-free source, split so index $i is line $i + 1: stripAllComments()
+                // keeps every newline, so line numbers match the file and the AST ranges.
+                $lines = explode("\n", $content);
 
                 // A route reference string carries no position, so controller names
                 // resolve against the imports the file declares by its end.
@@ -839,11 +852,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $throttledRanges = $bootstrapParser->getThrottledGroupLineRanges($filePath);
 
                 foreach ($lines as $lineNumber => $line) {
-                    if (! is_string($line)) {
-                        continue;
-                    }
-
-                    // FileParser::getLines is 0-based; findings report $lineNumber + 1,
+                    // $lines is 0-based; findings report $lineNumber + 1,
                     // which is the 1-based scale the AST ranges use.
                     $inThrottledGroup = $this->lineInRanges($lineNumber + 1, $throttledRanges);
 
@@ -1423,7 +1432,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     }
 
                     if ($file->isFile() && $file->getExtension() === 'php') {
-                        $content = FileParser::readFile($file->getPathname());
+                        $content = $this->readCode($file->getPathname());
                         if ($content === null) {
                             continue;
                         }
@@ -1470,7 +1479,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Check Fortify configuration file
         $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
         if (file_exists($fortifyConfigPath)) {
-            $fortifyConfig = FileParser::readFile($fortifyConfigPath);
+            $fortifyConfig = $this->readCode($fortifyConfigPath);
             if ($fortifyConfig !== null) {
                 // Check if limiters configuration exists
                 if (! preg_match('/["\']limiters["\']\s*=>/i', $fortifyConfig)) {
@@ -1512,7 +1521,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $authRoutesPath = $basePath.DIRECTORY_SEPARATOR.'routes'.DIRECTORY_SEPARATOR.'auth.php';
 
         if (file_exists($authRoutesPath)) {
-            $authRoutes = FileParser::readFile($authRoutesPath);
+            $authRoutes = $this->readCode($authRoutesPath);
             if ($authRoutes !== null) {
                 // Check if these are custom routes (not using Fortify/Breeze defaults)
                 $hasCustomLoginRoute = preg_match('/Route::(post|get|any)\s*\(["\'][^"\']*login[^"\']*["\'],\s*\[.*Controller/i', $authRoutes);

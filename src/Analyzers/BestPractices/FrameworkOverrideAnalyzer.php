@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\ErrorHandler;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
@@ -132,8 +133,12 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
                 );
 
                 $traverser = new NodeTraverser;
-                // NameResolver resolves all class names to fully qualified names
-                $traverser->addVisitor(new NameResolver);
+                // NameResolver annotates each class name with its fully qualified name.
+                // It leaves the nodes in place because parseFile() hands back a shared,
+                // cached AST. A colliding import (two `use` statements on one alias) is
+                // recorded and ignored rather than thrown, so the file is still analysed
+                // instead of being dropped by the catch below.
+                $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting, ['replaceNodes' => false]));
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -187,8 +192,9 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
 /**
  * Visitor to detect framework class overrides.
  *
- * Note: This visitor expects NameResolver to run first, so all class names
- * (including $node->extends) are already fully qualified.
+ * Note: This visitor expects NameResolver to run first with `replaceNodes => false`, so
+ * each class name (including $node->extends) carries its fully qualified name in the
+ * `resolvedName` attribute.
  */
 class FrameworkOverrideVisitor extends NodeVisitorAbstract
 {
@@ -210,8 +216,9 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
     {
         if ($node instanceof Node\Stmt\Class_) {
             if ($node->extends !== null) {
-                // NameResolver has already resolved extends to fully qualified name
-                $parentClass = ltrim($node->extends->toString(), '\\');
+                // NameResolver has already put the fully qualified name in the attribute
+                $resolved = $node->extends->getAttribute('resolvedName');
+                $parentClass = ltrim(($resolved instanceof Node\Name ? $resolved : $node->extends)->toString(), '\\');
 
                 // Skip if extending an explicitly allowed class
                 if ($this->isOkToExtend($parentClass)) {
@@ -267,7 +274,7 @@ class FrameworkOverrideVisitor extends NodeVisitorAbstract
 
     /**
      * Check if className matches coreClass.
-     * Both names should be fully qualified after NameResolver.
+     * Both names should be fully qualified (the class name read from NameResolver's attribute).
      */
     private function matchesClass(string $className, string $coreClass): bool
     {

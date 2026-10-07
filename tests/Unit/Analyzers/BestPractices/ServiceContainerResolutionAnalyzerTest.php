@@ -3799,4 +3799,108 @@ PHP;
 
         $this->assertPassed($analyzer->analyze());
     }
+
+    public function test_colliding_imports_do_not_error_the_analysis(): void
+    {
+        // Two imports landing on one alias. NameResolver's default handler throws on the
+        // second, which used to error the analyzer and, through the exit code, the run.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+
+class InvoiceService
+{
+    public function send()
+    {
+        return app('mailer');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/InvoiceService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_scope_imported_after_colliding_imports_still_exempts_the_class(): void
+    {
+        // Catching the throw and reading the names as written would leave Scope bare,
+        // because NameResolver stops at the collision, and the exemption would be lost.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Scopes;
+
+use App\Billing\Ledger;
+use App\Legacy\Ledger;
+use Illuminate\Database\Eloquent\Scope;
+
+class ActiveScope implements Scope
+{
+    public function send()
+    {
+        return app('mailer');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Scopes/ActiveScope.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_colliding_imports_keep_the_first_spelling(): void
+    {
+        // The two spellings of Scope give opposite verdicts, so which one wins is observable:
+        // the Eloquent contract exempts the class, the project's own Scope does not.
+        $collidingCode = <<<'PHP'
+<?php
+
+namespace App\Scopes;
+
+use Illuminate\Database\Eloquent\Scope;
+use App\Legacy\Scope;
+
+class ActiveScope implements Scope
+{
+    public function send()
+    {
+        return app('mailer');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Scopes/ActiveScope.php' => $collidingCode]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+
+        // Control: the second spelling on its own is not exempt.
+        $secondOnly = str_replace("use Illuminate\\Database\\Eloquent\\Scope;\n", '', $collidingCode);
+        $tempDir = $this->createTempDirectory(['app/Scopes/ActiveScope.php' => $secondOnly]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertFailed($analyzer->analyze());
+    }
 }

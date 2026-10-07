@@ -7,7 +7,6 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\Node;
 use PhpParser\NodeTraverser;
-use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -100,8 +99,12 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                     $ast,
                     $this->getBasePath(),
                 );
+                // No NameResolver: the visitor reads a model in enterNode(Class_), before any
+                // child name could be resolved, and EloquentModelDetector tracks the file's
+                // imports itself. One here would resolve nothing the visitor reads, while
+                // mutating the shared, cached AST: even with replaceNodes off it writes
+                // resolvedName and namespacedName attributes onto the nodes.
                 $traverser = new NodeTraverser;
-                $traverser->addVisitor(new NameResolver);
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 

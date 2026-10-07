@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\BestPractices;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use PhpParser\ErrorHandler;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -313,13 +314,15 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $isServiceProvider = $this->isServiceProviderFromAst($ast, $file);
+            $resolvedAst = $this->resolvedCopy($ast);
+
+            $isServiceProvider = $this->isServiceProviderFromAst($resolvedAst, $file);
             $isEloquentModel = $this->isEloquentModelFromAst($ast);
-            $isShouldQueue = $this->isShouldQueueFromAst($ast);
-            $isFilamentClass = $this->isFilamentClassFromAst($ast);
-            $isEloquentScope = $this->isEloquentScopeFromAst($ast);
-            $isMiddleware = $this->isMiddlewareFromAst($ast);
-            $isFormRequest = $this->isFormRequestFromAst($ast);
+            $isShouldQueue = $this->isShouldQueueFromAst($resolvedAst);
+            $isFilamentClass = $this->isFilamentClassFromAst($resolvedAst);
+            $isEloquentScope = $this->isEloquentScopeFromAst($resolvedAst);
+            $isMiddleware = $this->isMiddlewareFromAst($resolvedAst);
+            $isFormRequest = $this->isFormRequestFromAst($resolvedAst);
 
             $visitor = new ServiceContainerVisitor(
                 $this->whitelistClasses,
@@ -392,27 +395,40 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if AST represents a service provider by checking class extends.
+     * A copy of the file's AST with every class name replaced by its FQN, for the context
+     * detectors to read.
      *
-     * Uses PhpParser's NameResolver to resolve all class names to FQN before
-     * checking, ensuring accurate detection even when using short names like
-     * `extends ServiceProvider` with a `use` statement.
+     * CloningVisitor runs first so NameResolver replaces nodes in the copy only: the AST
+     * itself comes from parseFile()'s shared cache, and the visitor walks it as written.
      *
-     * Uses CloningVisitor to clone nodes before NameResolver modifies them,
-     * preserving the original AST for subsequent pattern matching in analysis.
+     * A colliding import (two `use` statements landing on one alias) is recorded and
+     * ignored rather than thrown. The first spelling is kept and every other name in the
+     * file still resolves. Catching a throw instead would leave every name after the
+     * collision as written, and a class whose base is imported after it would lose its
+     * exemption.
      *
      * @param  array<Node>  $ast
+     * @return array<Node>
      */
-    private function isServiceProviderFromAst(array $ast, string $file): bool
+    private function resolvedCopy(array $ast): array
     {
-        // Note: PHP arrays are copy-on-write, but AST nodes are objects.
-        // CloningVisitor ensures NameResolver only mutates cloned nodes,
-        // preserving the original AST for analysis.
         $traverser = new NodeTraverser;
         $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
+        $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting));
 
+        return $traverser->traverse($ast);
+    }
+
+    /**
+     * Check if AST represents a service provider by checking class extends.
+     *
+     * Reads the copy resolvedCopy() returns, so `extends ServiceProvider` with a `use`
+     * statement is matched by its FQN.
+     *
+     * @param  array<Node>  $resolvedAst
+     */
+    private function isServiceProviderFromAst(array $resolvedAst, string $file): bool
+    {
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {
@@ -498,18 +514,12 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if AST represents a ShouldQueue class by checking class implements.
      *
-     * Uses the same CloningVisitor + NameResolver pattern as isServiceProviderFromAst
-     * to resolve interface names to FQN before checking.
+     * Reads the copy resolvedCopy() returns, so interface names are FQN.
      *
-     * @param  array<Node>  $ast
+     * @param  array<Node>  $resolvedAst
      */
-    private function isShouldQueueFromAst(array $ast): bool
+    private function isShouldQueueFromAst(array $resolvedAst): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
-
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {
@@ -552,21 +562,15 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if AST represents a Filament Resource/Page/RelationManager.
      *
-     * Uses the same CloningVisitor + NameResolver pattern as the other detectors
-     * to resolve parent class names to FQN before checking. A class is treated as
-     * a Filament UI class when it extends a Filament base class OR lives in a
+     * Reads the copy resolvedCopy() returns, so parent class names are FQN. A class is
+     * treated as a Filament UI class when it extends a Filament base class OR lives in a
      * Filament namespace (catches project-local intermediate bases such as
      * App\Filament\BaseResource that ultimately extend a Filament class).
      *
-     * @param  array<Node>  $ast
+     * @param  array<Node>  $resolvedAst
      */
-    private function isFilamentClassFromAst(array $ast): bool
+    private function isFilamentClassFromAst(array $resolvedAst): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
-
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 $namespace = $node->name?->toString();
@@ -621,17 +625,12 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      *
      * A scope (implements Illuminate\Database\Eloquent\Scope) is instantiated with `new` by user
      * code and its apply(Builder, Model) signature is framework-fixed, so constructor DI is
-     * impossible. Uses the same CloningVisitor + NameResolver pattern as the other detectors.
+     * impossible. Reads the copy resolvedCopy() returns.
      *
-     * @param  array<Node>  $ast
+     * @param  array<Node>  $resolvedAst
      */
-    private function isEloquentScopeFromAst(array $ast): bool
+    private function isEloquentScopeFromAst(array $resolvedAst): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
-
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {
@@ -680,15 +679,10 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
      * This catches modern verb-named middleware (HandleInertiaRequests, EnsureSubscribed) that the
      * *Middleware whitelist pattern misses.
      *
-     * @param  array<Node>  $ast
+     * @param  array<Node>  $resolvedAst
      */
-    private function isMiddlewareFromAst(array $ast): bool
+    private function isMiddlewareFromAst(array $resolvedAst): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
-
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 $namespace = $node->name?->toString();
@@ -750,18 +744,12 @@ class ServiceContainerResolutionAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if AST represents a FormRequest.
      *
-     * Uses the same CloningVisitor + NameResolver pattern as the other detectors to resolve the
-     * parent class to FQN before checking.
+     * Reads the copy resolvedCopy() returns, so the parent class is FQN.
      *
-     * @param  array<Node>  $ast
+     * @param  array<Node>  $resolvedAst
      */
-    private function isFormRequestFromAst(array $ast): bool
+    private function isFormRequestFromAst(array $resolvedAst): bool
     {
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor(new CloningVisitor);
-        $traverser->addVisitor(new NameResolver);
-        $resolvedAst = $traverser->traverse($ast);
-
         foreach ($resolvedAst as $node) {
             if ($node instanceof Stmt\Namespace_) {
                 foreach ($node->stmts as $stmt) {

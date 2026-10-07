@@ -174,13 +174,15 @@ trait ParsesPHPStanResults
     /**
      * Describe a run that PHPStan cut short at files it could not process.
      *
+     * Gives no count: when PHPStan cuts a run short it keeps one error per distinct
+     * message, so two files that fail the same way are reported as one.
+     *
      * @param  list<string>  $stoppedAt
      */
     protected function describeIncompleteRun(array $stoppedAt): string
     {
         return sprintf(
-            'PHPStan stopped at %d file(s) it could not process, so the rest of the project was not analysed: %s',
-            count($stoppedAt),
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: %s',
             $this->summarizeAnalysisErrors($stoppedAt)
         );
     }

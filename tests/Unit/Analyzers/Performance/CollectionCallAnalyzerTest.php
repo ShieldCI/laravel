@@ -163,7 +163,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         ]]);
 
         $this->assertError($result);
-        $this->assertStringContainsString('PHPStan stopped at 1 file(s) it could not process', $result->getMessage());
+        $this->assertStringContainsString('PHPStan stopped at file(s) it could not process', $result->getMessage());
         $this->assertStringContainsString('app/Services/ExampleService.php:7', $result->getMessage());
         $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
         $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());

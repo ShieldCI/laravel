@@ -1087,7 +1087,7 @@ PHP;
         $this->assertHasIssueContaining('Compile Errors detected', $result);
         $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
         $this->assertStringContainsString(
-            'PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php:4',
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php:4',
             $result->getMessage()
         );
         $this->assertSame(['app/Services/ExampleService.php:4'], $result->getMetadata()['stopped_at']);
@@ -1223,7 +1223,7 @@ PHP;
         $result = $this->analyzeIssues($issues);
 
         $this->assertIssueCount(3, $result);
-        $this->assertStringContainsString('PHPStan stopped at 1 file(s) it could not process', $result->getMessage());
+        $this->assertStringContainsString('PHPStan stopped at file(s) it could not process', $result->getMessage());
         $this->assertSame(['app/Services/ExampleService.php:2'], $result->getMetadata()['stopped_at']);
     }
 
@@ -1231,15 +1231,17 @@ PHP;
     {
         // A circular class hierarchy or an undiscoverable symbol stops PHPStan the same
         // way a parse error does, but says nothing about whether PHP can compile the file,
-        // so it keeps its Other category. PHPStan gives it no line.
+        // so it keeps its Other category. PHPStan gives it no line. Other is Medium, but
+        // the run still fails: disabling Other turns the same run into an error, and
+        // enabling a category must not grade a run more leniently than disabling it.
         $result = $this->analyzeIssues([
             ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: Circular reference to class "App\Services\ExampleService"', 'line' => 0],
         ]);
 
-        $this->assertWarning($result);
+        $this->assertFailed($result);
         $this->assertHasIssueContaining('Other PHPStan Issues', $result);
         $this->assertStringContainsString(
-            'PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php',
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php',
             $result->getMessage()
         );
         $this->assertStringNotContainsString('ExampleService.php:', $result->getMessage());

@@ -681,6 +681,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
 
         $metadata += $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
 
+        // A run PHPStan cut short cannot grade below one that finished. A parse error
+        // fails on its own as Critical, but a reflection error lands in Medium Other,
+        // and the findings it displaced may have been anything. Failed rather than
+        // error, so the rows naming what PHPStan could not reflect are kept.
+        if ($stoppedAt !== []) {
+            return $this->failed($message, $allIssueObjects, $metadata);
+        }
+
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
     }
 

@@ -351,7 +351,7 @@ class ParsesPHPStanResultsTest extends TestCase
 
         $message = $class->publicAppendIncompleteRunNotice('Found 5 issue(s)', ['a.php:1', 'b.php:1', 'c.php:1', 'd.php:1', 'e.php:1']);
 
-        $this->assertStringContainsString('PHPStan stopped at 5 file(s)', $message);
+        $this->assertStringContainsString('PHPStan stopped at file(s)', $message);
         $this->assertStringEndsWith('c.php:1 (and 2 more)', $message);
     }
 
@@ -371,7 +371,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $class = $this->createParsesPHPStanResultsClass();
 
         $this->assertSame(
-            'Found 1 issue(s). PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
+            'Found 1 issue(s). PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
             $class->publicAppendIncompleteRunNotice('Found 1 issue(s)', ['app/Broken.php:4'])
         );
     }
@@ -383,7 +383,7 @@ class ParsesPHPStanResultsTest extends TestCase
         $class = $this->createParsesPHPStanResultsClass();
 
         $this->assertSame(
-            'PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
             $class->publicDescribeIncompleteRunWithoutFindings([], ['app/Broken.php:4'])
         );
 
@@ -394,7 +394,7 @@ class ParsesPHPStanResultsTest extends TestCase
 
         $both = $class->publicDescribeIncompleteRunWithoutFindings(['Internal error: child died.'], ['app/Broken.php:4']);
 
-        $this->assertStringStartsWith('PHPStan stopped at 1 file(s)', $both);
+        $this->assertStringStartsWith('PHPStan stopped at file(s)', $both);
         $this->assertStringEndsWith('. PHPStan reported 1 analysis error(s): Internal error: child died.', $both);
     }
 

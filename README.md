@@ -193,11 +193,11 @@ ShieldCI includes **73 comprehensive analyzers** across five categories:
 | Code Quality | 5 | Improve maintainability |
 | Best Practices | 15 | Laravel-specific patterns |
 
-→ [Full Analyzer Reference](https://docs.shieldci.com/analyzers/): all 73 analyzers with examples and fix guidance
+→ [Full Analyzer Reference](https://docs.shieldci.com/analyzers/): all 155 analyzers (73 free + 82 Pro) with examples and fix guidance
 
 ### ShieldCI Pro
 
-[ShieldCI Pro](https://shieldci.com) adds **82 advanced analyzers** on top of the free package:
+[ShieldCI Pro](https://shieldci.com) adds **82 advanced analyzers** on top of the free package, 155 in total:
 
 | Category | Count | Coverage |
 |---|---|---|
@@ -285,7 +285,7 @@ composer analyse        # PHPStan Level 9
 
 - [Full Documentation](https://docs.shieldci.com) - Installation, configuration, and analyzer guides
 - [Getting Started](https://docs.shieldci.com/getting-started/installation) - Quick start guide
-- [Analyzer Reference](https://docs.shieldci.com/analyzers/) - All 73 analyzers with examples and fix guidance
+- [Analyzer Reference](https://docs.shieldci.com/analyzers/) - All 155 analyzers (73 free + 82 Pro) with examples and fix guidance
 - [Analyzers Core](https://github.com/ShieldCI/analyzers-core/blob/master/README.md) - Core package documentation
 
 ## License

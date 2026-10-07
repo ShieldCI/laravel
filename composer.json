@@ -1,6 +1,6 @@
 {
     "name": "shieldci/laravel",
-    "description": "Automated code analysis for Laravel applications covering security, performance, reliability, code quality and best practices.",
+    "description": "Automated code analysis for Laravel applications with 73 open-source analyzers covering security, performance, reliability, code quality, and best practices. ShieldCI Pro adds 82 more (155 total).",
     "keywords": [
         "laravel",
         "security",

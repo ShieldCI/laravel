@@ -14,8 +14,7 @@
 - `service-container-resolution` names an enum it reports, such as `App\Enums\Status::label`, rather than `Unknown::label` (#454)
 - `service-container-resolution` names an anonymous class such as `LabelService@anonymous::label`, rather than a non-existent `App\Services\Anonymous::label` (#454)
 - `missing-database-transactions` names an anonymous class after its resolved parent, such as `App\Support\Handler@anonymous` (#470)
-- `phpstan` reports a compile error as `Compile Errors detected`, so a baselined row is reported once more (#474)
-- `phpstan` reports a used void result as `Used Void Results detected`, so a baselined void row is reported once more (#479)
+- `phpstan` reports compile errors and used void results as `Compile Errors detected` and `Used Void Results detected`, so a baselined row is reported once more (#474, #479)
 
 ### Fixed
 - `chunk-missing` no longer flags a fetch bounded by a key list, such as `whereIn('id', $ids)`, unless the list is a subquery (#458, #471)

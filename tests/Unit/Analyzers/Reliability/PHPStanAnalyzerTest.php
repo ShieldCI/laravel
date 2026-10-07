@@ -8,6 +8,7 @@ use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
@@ -1070,6 +1071,195 @@ PHP;
         $this->assertSame('class.notFound', $issues[0]->metadata['phpstan_identifier']);
     }
 
+    public function test_a_parse_error_is_a_critical_compile_error_that_marks_the_run_incomplete(): void
+    {
+        // PHPStan reports a file it cannot parse and drops every other file's findings,
+        // so this one row stands in for a whole project that was never analysed.
+        $result = $this->analyzeIssues([
+            [
+                'identifier' => 'phpstan.parse',
+                'message' => 'Cannot use Vendor\Second\Widget as Widget because the name is already in use on line 4',
+                'line' => 4,
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Compile Errors detected', $result);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+        $this->assertStringContainsString(
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php:4',
+            $result->getMessage()
+        );
+        $this->assertSame(['app/Services/ExampleService.php:4'], $result->getMetadata()['stopped_at']);
+        $this->assertSame(1, $result->getMetadata()['issues_by_category']['compile-errors']);
+        $this->assertStringContainsString('PHPStan stopped analysing', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_routes_compile_time_fatals_to_compile_errors(): void
+    {
+        $rows = [
+            ['class.nameInUse', 'Cannot declare class App\Services\Widget because the name is already in use.'],
+            ['interface.nameInUse', 'Cannot declare interface App\Services\Widget because the name is already in use.'],
+            ['use.nameInUse', 'Cannot use Vendor\Widget as Widget because the name is already in use.'],
+            ['class.duplicateMethod', 'Cannot redeclare method App\Services\ExampleService::run().'],
+            ['trait.duplicateProperty', 'Cannot redeclare property App\Services\Helpers::$name.'],
+            ['class.duplicateConstant', 'Cannot redeclare constant App\Services\ExampleService::LIMIT.'],
+            ['enum.duplicateEnumCase', 'Cannot redeclare enum case App\Enums\Status::Open.'],
+            ['parameter.duplicate', 'Redefinition of parameter $name.'],
+            ['closure.useDuplicate', 'Cannot use lexical variable $name since a parameter with the same name already exists.'],
+        ];
+
+        foreach ($rows as [$identifier, $message]) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $this->assertHasIssueContaining('Compile Errors detected', $result);
+            $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity, $identifier);
+            $this->assertStringContainsString('PHP will refuse to load this file', $result->getIssues()[0]->recommendation);
+        }
+    }
+
+    public function test_the_identifier_alone_routes_compile_errors(): void
+    {
+        // Messages chosen to match no category pattern, so each identifier entry is the
+        // only thing that can place its error. A parse error's wording is open-ended:
+        // php-parser reports invalid names and modifiers under the same identifier.
+        $rows = [
+            'phpstan.parse' => "'\\self' is an invalid class name on line 3",
+            'class.nameInUse' => 'Declaration rejected.',
+            'use.nameInUse' => 'Declaration rejected.',
+            'class.duplicateMethod' => 'Declaration rejected.',
+            'trait.duplicateProperty' => 'Declaration rejected.',
+            'class.duplicateConstant' => 'Declaration rejected.',
+            'enum.duplicateEnumCase' => 'Declaration rejected.',
+            'parameter.duplicate' => 'Declaration rejected.',
+            'closure.useDuplicate' => 'Declaration rejected.',
+        ];
+
+        foreach ($rows as $identifier => $message) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $this->assertSame('Compile Errors detected', $result->getIssues()[0]->message ?? null, $identifier);
+        }
+    }
+
+    public function test_a_compile_rule_error_does_not_mark_the_run_incomplete(): void
+    {
+        // Rule errors do not stop PHPStan, so the rest of the project was analysed.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'class.duplicateMethod', 'message' => 'Cannot redeclare method App\Services\ExampleService::run().'],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertStringNotContainsString('could not process', $result->getMessage());
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+        $this->assertStringNotContainsString('PHPStan stopped analysing', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_compile_errors_lead_the_report(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $missing'],
+            ['identifier' => 'class.duplicateMethod', 'message' => 'Cannot redeclare method App\Services\ExampleService::run().'],
+        ]);
+
+        $this->assertSame('Compile Errors detected', $result->getIssues()[0]->message);
+    }
+
+    public function test_a_disabled_compile_category_does_not_pass_a_truncated_run(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'phpstan.parse', 'message' => 'Syntax error, unexpected EOF on line 7']],
+            ['disabled_categories' => ['compile-errors']]
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('could not process', $result->getMessage());
+        $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
+        $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());
+    }
+
+    public function test_describes_both_a_stopping_file_and_analysis_errors_when_nothing_is_reported(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'phpstan.parse', 'message' => 'Syntax error, unexpected EOF on line 7']],
+            ['disabled_categories' => ['compile-errors']],
+            ['Internal error: child process died.']
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('could not process', $result->getMessage());
+        $this->assertStringContainsString('child process died', $result->getMessage());
+        $this->assertSame(['Internal error: child process died.'], $result->getMetadata()['analysis_errors']);
+        $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_notes_a_stopping_file_and_analysis_errors_next_to_findings(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'phpstan.parse', 'message' => 'Syntax error, unexpected EOF on line 7']],
+            [],
+            ['Internal error: child process died.']
+        );
+
+        $this->assertFailed($result);
+        $this->assertStringContainsString('so the rest of the project was not analysed', $result->getMessage());
+        $this->assertStringContainsString('so these findings may be incomplete', $result->getMessage());
+    }
+
+    public function test_names_a_file_with_several_parse_errors_once(): void
+    {
+        // php-parser recovers and keeps reporting, so one broken file can carry several
+        // parse errors. They are still one file PHPStan stopped at.
+        $issues = [];
+
+        foreach ([2, 3, 5] as $line) {
+            $issues[] = ['identifier' => 'phpstan.parse', 'message' => "Syntax error, unexpected ';' on line {$line}", 'line' => $line];
+        }
+
+        $result = $this->analyzeIssues($issues);
+
+        $this->assertIssueCount(3, $result);
+        $this->assertStringContainsString('PHPStan stopped at file(s) it could not process', $result->getMessage());
+        $this->assertSame(['app/Services/ExampleService.php:2'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_a_reflection_error_marks_the_run_incomplete(): void
+    {
+        // A circular class hierarchy or an undiscoverable symbol stops PHPStan the same
+        // way a parse error does, but says nothing about whether PHP can compile the file,
+        // so it keeps its Other category. PHPStan gives it no line. Other is Medium, but
+        // the run still fails: disabling Other turns the same run into an error, and
+        // enabling a category must not grade a run more leniently than disabling it.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: Circular reference to class "App\Services\ExampleService"', 'line' => 0],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Other PHPStan Issues', $result);
+        $this->assertStringContainsString(
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php',
+            $result->getMessage()
+        );
+        $this->assertStringNotContainsString('ExampleService.php:', $result->getMessage());
+        $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_a_disabled_other_category_does_not_pass_a_run_stopped_by_a_reflection_error(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Missing not found.', 'line' => 0]],
+            ['disabled_categories' => ['other']]
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('could not process', $result->getMessage());
+        $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
+    }
+
     public function test_identifier_and_pattern_paths_agree(): void
     {
         $rows = [
@@ -1079,6 +1269,12 @@ PHP;
             ['class.notFound', 'Instantiated class App\Nope not found.', 'Invalid Imports'],
             ['property.notFound', 'Access to an undefined property App\Services\ExampleService::$name.', 'Invalid Property Access'],
             ['larastan.relationExistence', "Relation 'widgets' is not found in App\Models\Team model.", 'Missing Model Relations'],
+            ['phpstan.parse', "Syntax error, unexpected '}', expecting T_VARIABLE on line 7", 'Compile Errors'],
+            ['phpstan.parse', 'Cannot use Vendor\Second\Widget as Widget because the name is already in use on line 4', 'Compile Errors'],
+            ['class.nameInUse', 'Cannot declare class App\Services\Widget because the name is already in use.', 'Compile Errors'],
+            ['class.duplicateMethod', 'Cannot redeclare method App\Services\ExampleService::run().', 'Compile Errors'],
+            ['parameter.duplicate', 'Redefinition of parameter $name.', 'Compile Errors'],
+            ['closure.useDuplicate', 'Cannot use lexical variable $name since a parameter with the same name already exists.', 'Compile Errors'],
         ];
 
         foreach ($rows as [$identifier, $message, $expectedCategory]) {

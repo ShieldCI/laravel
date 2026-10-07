@@ -21,6 +21,7 @@ use ShieldCI\Support\PHPStanRunner;
  * Consolidated PHPStan analyzer that replaces 13 separate analyzers.
  *
  * This analyzer runs PHPStan once and categorizes issues into:
+ * - Compile Errors
  * - Dead Code
  * - Deprecated Code
  * - Invalid Method Calls
@@ -53,6 +54,17 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     private const OTHER_CATEGORY = 'other';
 
     /**
+     * Categories reported unless disabled by name, even when a category list is pinned.
+     *
+     * Both used to be one bucket: compile errors landed in Other before they had a
+     * category of their own, so making them opt-in would take them away from exactly the
+     * users who pinned a list.
+     *
+     * @var list<string>
+     */
+    private const OPT_OUT_CATEGORIES = ['compile-errors', self::OTHER_CATEGORY];
+
+    /**
      * All issue categories with their patterns and severity levels.
      *
      * Declaration order is LOAD-BEARING: categoryFromMessage() evaluates these in
@@ -65,6 +77,23 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * @var array<string, array{severity: Severity, patterns: array<string>, regex?: string, name: string, description: string}>
      */
     private const ISSUE_CATEGORIES = [
+        // First, so these lead the report: a file PHP will not compile is fatal the
+        // moment it is loaded, and one PHPStan cannot parse stops the whole analysis.
+        // The patterns serve PHPStan 1.10, which sets no identifier on a parse error.
+        'compile-errors' => [
+            'name' => 'Compile Errors',
+            'description' => 'Files PHP refuses to compile: syntax errors, colliding names and declarations made twice',
+            'severity' => Severity::Critical,
+            'patterns' => [
+                'Syntax error, *',
+                'Cannot use * as * because the name is already in use*',
+                'Cannot declare * because the name is already in use*',
+                'Cannot redeclare *',
+                'Redefinition of parameter *',
+                'Cannot use lexical variable * since a parameter with the same name already exists*',
+            ],
+        ],
+
         'dead-code' => [
             'name' => 'Dead Code',
             'description' => 'Unreachable code, unused variables, and statements with no effect',
@@ -293,6 +322,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * @var array<string, string>
      */
     private const IDENTIFIER_SUFFIX_MAP = [
+        // PHPStan builds these as "<class|interface|trait|enum>.<suffix>". Each one is a
+        // declaration PHP rejects at compile time.
+        '.nameInUse' => 'compile-errors',
+        '.duplicateMethod' => 'compile-errors',
+        '.duplicateProperty' => 'compile-errors',
+        '.duplicateConstant' => 'compile-errors',
+        '.duplicateEnumCase' => 'compile-errors',
+
         '.deprecatedAttribute' => 'deprecated-code',
         '.deprecated' => 'deprecated-code',
 
@@ -314,6 +351,10 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * @var array<string, string>
      */
     private const IDENTIFIER_MAP = [
+        PHPStanRunner::PARSE_ERROR_IDENTIFIER => 'compile-errors',
+        'parameter.duplicate' => 'compile-errors',
+        'closure.useDuplicate' => 'compile-errors',
+
         'deadCode.unreachable' => 'dead-code',
         'foreach.emptyArray' => 'dead-code',
         'catch.alreadyCaught' => 'dead-code',
@@ -545,14 +586,16 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // Filter categories
         $activeCategories = array_values(array_diff($enabledCategories, $disabledCategories));
 
-        // The fallback bucket is an opt-out, not an opt-in. An allow-list of known
-        // categories cannot express informed consent about unknown errors, and anyone
-        // who pinned a category list before this bucket existed never had the chance
-        // to include it. Opt-in would leave exactly the users who configured the
-        // analyzer still losing findings.
-        if (! in_array(self::OTHER_CATEGORY, $disabledCategories, true)
-            && ! in_array(self::OTHER_CATEGORY, $activeCategories, true)) {
-            $activeCategories[] = self::OTHER_CATEGORY;
+        // The fallback bucket and the compile errors split out of it are opt-outs, not
+        // opt-ins. An allow-list of known categories cannot express informed consent
+        // about unknown errors, and anyone who pinned a category list before these
+        // existed never had the chance to include them. Opt-in would leave exactly the
+        // users who configured the analyzer still losing findings.
+        foreach (self::OPT_OUT_CATEGORIES as $category) {
+            if (! in_array($category, $disabledCategories, true)
+                && ! in_array($category, $activeCategories, true)) {
+                $activeCategories[] = $category;
+            }
         }
 
         $timeoutConfig = $this->config->get('shieldci.timeout', 300);
@@ -568,6 +611,10 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             // An error PHPStan could not attach to a file is still a failed analysis
             $analysisErrors = $runner->getAnalysisErrors();
 
+            // Read before category filtering: a file PHPStan could not process means the
+            // rest of the project went unanalysed, whichever category its error lands in.
+            $stoppedAt = $this->stoppedAtFiles($runner->getRunStoppingErrors());
+
             // Categorize all issues
             $categorizedIssues = $this->categorizeIssues($runner->getIssues(), $activeCategories);
         } catch (\Throwable $e) {
@@ -582,7 +629,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $totalIssues = array_sum(array_map(fn ($issues) => $issues->count(), $categorizedIssues));
 
         if ($totalIssues === 0) {
-            return $this->noFileIssuesResult($analysisErrors);
+            return $this->noFileIssuesResult($analysisErrors, $stoppedAt);
         }
 
         // Create issue objects for each category
@@ -597,14 +644,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 $issues,
                 $categoryConfig['name'].' detected',
                 $categoryConfig['severity'],
-                fn (string $message) => $this->getRecommendation($category, $message)
+                fn (string $message, ?string $identifier) => $this->getRecommendation($category, $message, $identifier)
             );
 
             $allIssueObjects = array_merge($allIssueObjects, $issueObjects);
         }
 
         if ($allIssueObjects === []) {
-            return $this->noFileIssuesResult($analysisErrors);
+            return $this->noFileIssuesResult($analysisErrors, $stoppedAt);
         }
 
         $displayedCount = count($allIssueObjects);
@@ -627,10 +674,19 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // severity-derived and the analysis errors ride along instead of being dropped.
         // PHPStan throws away the file results when it hits an internal error, so findings
         // that arrive next to one are a partial view and have to say so.
+        // A file PHPStan could not process is reported alone: PHPStan drops every other
+        // file's findings and says so only on stderr, so the result has to say it instead.
+        $message = $this->appendIncompleteRunNotice($message, $stoppedAt);
         $message = $this->appendAnalysisErrorNotice($message, $analysisErrors);
 
-        if ($analysisErrors !== []) {
-            $metadata['analysis_errors'] = $analysisErrors;
+        $metadata += $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
+
+        // A run PHPStan cut short cannot grade below one that finished. A parse error
+        // fails on its own as Critical, but a reflection error lands in Medium Other,
+        // and the findings it displaced may have been anything. Failed rather than
+        // error, so the rows naming what PHPStan could not reflect are kept.
+        if ($stoppedAt !== []) {
+            return $this->failed($message, $allIssueObjects, $metadata);
         }
 
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
@@ -684,17 +740,21 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      * reported outside the per-file map, and an aborted run reports nothing at all.
      * Calling either of those "passed" claims a clean analysis that never happened.
      *
+     * The same holds for a file PHPStan could not process when the category its error
+     * lands in is disabled: the error is filtered out, but the findings it displaced are gone.
+     *
      * @param  list<string>  $analysisErrors
+     * @param  list<string>  $stoppedAt
      */
-    private function noFileIssuesResult(array $analysisErrors): ResultInterface
+    private function noFileIssuesResult(array $analysisErrors, array $stoppedAt): ResultInterface
     {
-        if ($analysisErrors === []) {
+        if ($analysisErrors === [] && $stoppedAt === []) {
             return $this->passed('No PHPStan issues detected');
         }
 
         return $this->error(
-            $this->describeAnalysisErrors($analysisErrors),
-            ['analysis_errors' => $analysisErrors]
+            $this->describeIncompleteRunWithoutFindings($analysisErrors, $stoppedAt),
+            $this->incompleteRunMetadata($analysisErrors, $stoppedAt)
         );
     }
 
@@ -881,8 +941,19 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     /**
      * Get recommendation message based on category and PHPStan message.
      */
-    private function getRecommendation(string $category, string $message): string
+    private function getRecommendation(string $category, string $message, ?string $identifier = null): string
     {
+        if ($category === 'compile-errors') {
+            $recommendation = 'PHP will refuse to load this file, so any request, job or command that loads it ends in a fatal error. '
+                .'Fix the declaration or syntax PHPStan names before anything else.';
+
+            if ($identifier === PHPStanRunner::PARSE_ERROR_IDENTIFIER) {
+                $recommendation .= ' PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once it parses.';
+            }
+
+            return $recommendation.' PHPStan message: '.$message;
+        }
+
         // The fallback bucket has no keyword table by definition - these are the
         // errors we could not identify - so say what is actually known and let
         // PHPStan's own message and tip carry the detail.

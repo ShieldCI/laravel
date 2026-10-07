@@ -58,6 +58,21 @@ class PHPStanRunner
     private const MAX_OUTPUT_SNIPPET = 500;
 
     /**
+     * Identifier PHPStan gives a file it could not parse.
+     */
+    public const PARSE_ERROR_IDENTIFIER = 'phpstan.parse';
+
+    /**
+     * Identifiers of the file errors after which PHPStan reports nothing else.
+     *
+     * phpstan.internal is absent on purpose: it always carries a stack trace, which sends
+     * it to the top-level "errors" list instead.
+     *
+     * @var list<string>
+     */
+    private const RUN_STOPPING_IDENTIFIERS = [self::PARSE_ERROR_IDENTIFIER, 'phpstan.reflection'];
+
+    /**
      * @var array<string, mixed>|null
      */
     private ?array $result = null;
@@ -449,6 +464,31 @@ class PHPStanRunner
         $collected = collect($issues);
 
         return $this->filterKnownFalsePositives($collected);
+    }
+
+    /**
+     * Get the errors that made PHPStan stop before it covered the project.
+     *
+     * From PHPStan 1.11.6, a file it cannot parse, or cannot reflect (an undiscoverable
+     * symbol, a circular class hierarchy), is reported on its own: every other file's
+     * findings are dropped, the top-level "errors" list stays empty, and the only sign of
+     * it is a warning on stderr. Name resolution happens during parsing, so colliding
+     * imports stop the run as well as syntax errors do.
+     *
+     * The identifiers are reliable on every version that truncates. 1.11.0 to 1.11.5 move
+     * these errors into the "errors" list instead, which getAnalysisErrors() already
+     * reports, and 1.10 neither truncates nor sets identifiers.
+     *
+     * @return Collection<int, PHPStanIssue>
+     */
+    public function getRunStoppingErrors(): Collection
+    {
+        /** @var Collection<int, PHPStanIssue> $errors */
+        $errors = $this->getIssues()
+            ->filter(static fn (array $issue): bool => in_array($issue['identifier'] ?? null, self::RUN_STOPPING_IDENTIFIERS, true))
+            ->values();
+
+        return $errors;
     }
 
     /**

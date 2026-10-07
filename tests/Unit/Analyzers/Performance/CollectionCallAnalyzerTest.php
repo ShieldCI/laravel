@@ -153,6 +153,48 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         );
     }
 
+    public function test_reports_an_error_when_phpstan_stopped_at_a_file_it_could_not_process(): void
+    {
+        // PHPStan drops every other file's findings when one file will not parse, so
+        // an empty collection-call list here says nothing about the rest of the project.
+        $result = $this->analyzeIssues([[
+            'message' => 'Syntax error, unexpected \'}\' on line 7',
+            'identifier' => 'phpstan.parse',
+        ]]);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan stopped at 1 file(s) it could not process', $result->getMessage());
+        $this->assertStringContainsString('app/Services/ExampleService.php:7', $result->getMessage());
+        $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
+        $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());
+    }
+
+    public function test_reports_an_error_when_a_reflection_error_stopped_phpstan(): void
+    {
+        $result = $this->analyzeIssues([[
+            'message' => 'Reflection error: Circular reference to class "App\\Services\\ExampleService"',
+            'identifier' => 'phpstan.reflection',
+            'line' => 0,
+        ]]);
+
+        $this->assertError($result);
+        $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_describes_both_a_stopping_file_and_analysis_errors(): void
+    {
+        $result = $this->analyzeIssues(
+            [['message' => 'Syntax error, unexpected EOF on line 7', 'identifier' => 'phpstan.parse']],
+            analysisErrors: ['Internal error: child process died.']
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('could not process', $result->getMessage());
+        $this->assertStringContainsString('child process died', $result->getMessage());
+        $this->assertSame(['Internal error: child process died.'], $result->getMetadata()['analysis_errors']);
+        $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
+    }
+
     public function test_keeps_the_failed_result_when_analysis_errors_accompany_findings(): void
     {
         // A file finding still drives the status, so a partial run is not downgraded

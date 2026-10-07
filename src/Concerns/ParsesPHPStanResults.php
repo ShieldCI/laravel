@@ -26,7 +26,7 @@ trait ParsesPHPStanResults
      * @param  Collection<int, array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}>  $issues
      * @param  string  $issueMessage  The message to display for each issue
      * @param  Severity  $severity  The severity level for issues
-     * @param  callable(string): string  $recommendationCallback  Callback to generate recommendations
+     * @param  callable(string, ?string): string  $recommendationCallback  Callback to generate recommendations from the message and identifier
      * @return array<int, Issue>
      */
     protected function createIssuesFromPHPStanResults(
@@ -62,7 +62,7 @@ trait ParsesPHPStanResults
 
             // PHPStan's own tip is often the actionable half of the error, and it is the
             // only guidance available for issues we could not categorise.
-            $recommendation = $recommendationCallback($message);
+            $recommendation = $recommendationCallback($message, $identifier);
 
             if ($tip !== null) {
                 $recommendation .= ' PHPStan tip: '.$tip;
@@ -150,6 +150,101 @@ trait ParsesPHPStanResults
     }
 
     /**
+     * Name each file PHPStan stopped at, once, by its first error.
+     *
+     * php-parser recovers from a syntax error and reports the next, so one broken file
+     * can carry several errors. The line is dropped when PHPStan had none to give, as for
+     * a reflection error.
+     *
+     * @param  Collection<int, array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}>  $runStoppingErrors
+     * @return list<string>
+     */
+    protected function stoppedAtFiles(Collection $runStoppingErrors): array
+    {
+        return array_values($runStoppingErrors
+            ->unique('file')
+            ->map(function (array $issue): string {
+                $path = $this->getRelativePath($issue['file']);
+
+                return $issue['line'] > 0 ? $path.':'.$issue['line'] : $path;
+            })
+            ->all());
+    }
+
+    /**
+     * Describe a run that PHPStan cut short at files it could not process.
+     *
+     * @param  list<string>  $stoppedAt
+     */
+    protected function describeIncompleteRun(array $stoppedAt): string
+    {
+        return sprintf(
+            'PHPStan stopped at %d file(s) it could not process, so the rest of the project was not analysed: %s',
+            count($stoppedAt),
+            $this->summarizeAnalysisErrors($stoppedAt)
+        );
+    }
+
+    /**
+     * Note on a findings message that PHPStan never reached the rest of the project.
+     *
+     * Returns the message untouched when PHPStan covered the project.
+     *
+     * @param  list<string>  $stoppedAt
+     */
+    protected function appendIncompleteRunNotice(string $message, array $stoppedAt): string
+    {
+        if ($stoppedAt === []) {
+            return $message;
+        }
+
+        return $message.'. '.$this->describeIncompleteRun($stoppedAt);
+    }
+
+    /**
+     * Describe a run that left nothing to report but did not complete.
+     *
+     * @param  list<string>  $analysisErrors
+     * @param  list<string>  $stoppedAt
+     */
+    protected function describeIncompleteRunWithoutFindings(array $analysisErrors, array $stoppedAt): string
+    {
+        $parts = [];
+
+        if ($stoppedAt !== []) {
+            $parts[] = $this->describeIncompleteRun($stoppedAt);
+        }
+
+        if ($analysisErrors !== []) {
+            $parts[] = $this->describeAnalysisErrors($analysisErrors);
+        }
+
+        return implode('. ', $parts);
+    }
+
+    /**
+     * Result metadata for a run that did not complete, each key present only when it has entries.
+     *
+     * @param  list<string>  $analysisErrors
+     * @param  list<string>  $stoppedAt
+     * @return array{analysis_errors?: list<string>, stopped_at?: list<string>}
+     */
+    protected function incompleteRunMetadata(array $analysisErrors, array $stoppedAt): array
+    {
+        $metadata = [];
+
+        if ($analysisErrors !== []) {
+            $metadata['analysis_errors'] = $analysisErrors;
+        }
+
+        if ($stoppedAt !== []) {
+            $metadata['stopped_at'] = $stoppedAt;
+        }
+
+        return $metadata;
+    }
+
+    /**
      * Format the issue count message.
      *
      * @param  int  $totalCount  Total number of issues found
@@ -186,4 +281,9 @@ trait ParsesPHPStanResults
         ?int $contextLines = null,
         array $metadata = []
     ): Issue;
+
+    /**
+     * Provided by AbstractAnalyzer.
+     */
+    abstract protected function getRelativePath(string $file): string;
 }

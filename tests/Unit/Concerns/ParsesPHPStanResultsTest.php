@@ -327,6 +327,111 @@ class ParsesPHPStanResultsTest extends TestCase
         $this->assertStringContainsString('ran out of memory', $message);
     }
 
+    /** @test */
+    #[Test]
+    public function it_names_each_stopped_at_file_once_relative_to_the_project(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $files = $class->publicStoppedAtFiles(collect([
+            ['file' => '/project/app/Broken.php', 'line' => 4, 'message' => 'Syntax error, unexpected EOF', 'identifier' => 'phpstan.parse'],
+            ['file' => '/project/app/Broken.php', 'line' => 9, 'message' => 'Syntax error, unexpected EOF', 'identifier' => 'phpstan.parse'],
+            ['file' => '/project/routes/web.php', 'line' => 12, 'message' => 'Syntax error, unexpected EOF', 'identifier' => 'phpstan.parse'],
+            ['file' => '/project/app/Cycle.php', 'line' => 0, 'message' => 'Reflection error: Circular reference', 'identifier' => 'phpstan.reflection'],
+        ]));
+
+        $this->assertSame(['app/Broken.php:4', 'routes/web.php:12', 'app/Cycle.php'], $files);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_caps_the_quoted_stopped_at_files(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $message = $class->publicAppendIncompleteRunNotice('Found 5 issue(s)', ['a.php:1', 'b.php:1', 'c.php:1', 'd.php:1', 'e.php:1']);
+
+        $this->assertStringContainsString('PHPStan stopped at 5 file(s)', $message);
+        $this->assertStringEndsWith('c.php:1 (and 2 more)', $message);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_leaves_a_findings_message_alone_when_every_file_parsed(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $this->assertSame('Found 2 issue(s)', $class->publicAppendIncompleteRunNotice('Found 2 issue(s)', []));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_notes_that_the_rest_of_the_project_was_not_analysed(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $this->assertSame(
+            'Found 1 issue(s). PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
+            $class->publicAppendIncompleteRunNotice('Found 1 issue(s)', ['app/Broken.php:4'])
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function it_describes_each_reason_a_run_without_findings_did_not_complete(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $this->assertSame(
+            'PHPStan stopped at 1 file(s) it could not process, so the rest of the project was not analysed: app/Broken.php:4',
+            $class->publicDescribeIncompleteRunWithoutFindings([], ['app/Broken.php:4'])
+        );
+
+        $this->assertSame(
+            'PHPStan reported 1 analysis error(s): Internal error: child died.',
+            $class->publicDescribeIncompleteRunWithoutFindings(['Internal error: child died.'], [])
+        );
+
+        $both = $class->publicDescribeIncompleteRunWithoutFindings(['Internal error: child died.'], ['app/Broken.php:4']);
+
+        $this->assertStringStartsWith('PHPStan stopped at 1 file(s)', $both);
+        $this->assertStringEndsWith('. PHPStan reported 1 analysis error(s): Internal error: child died.', $both);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_only_sets_incomplete_run_metadata_keys_that_have_entries(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $this->assertSame([], $class->publicIncompleteRunMetadata([], []));
+        $this->assertSame(['stopped_at' => ['app/Broken.php:4']], $class->publicIncompleteRunMetadata([], ['app/Broken.php:4']));
+        $this->assertSame(
+            ['analysis_errors' => ['Internal error: child died.'], 'stopped_at' => ['app/Broken.php:4']],
+            $class->publicIncompleteRunMetadata(['Internal error: child died.'], ['app/Broken.php:4'])
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function it_passes_the_identifier_to_the_recommendation_callback(): void
+    {
+        $class = $this->createParsesPHPStanResultsClass();
+
+        $issues = $class->publicCreateIssuesFromPHPStanResults(
+            collect([
+                ['file' => '/app/Test.php', 'line' => 3, 'message' => 'Syntax error', 'identifier' => 'phpstan.parse'],
+                ['file' => '/app/Test.php', 'line' => 4, 'message' => 'Undefined variable'],
+            ]),
+            'Issue',
+            Severity::High,
+            fn (string $message, ?string $identifier): string => $identifier ?? 'none'
+        );
+
+        $this->assertSame('phpstan.parse', $issues[0]->recommendation);
+        $this->assertSame('none', $issues[1]->recommendation);
+    }
+
     /**
      * @return object
      */
@@ -376,6 +481,47 @@ class ParsesPHPStanResultsTest extends TestCase
             public function publicAppendAnalysisErrorNotice(string $message, array $analysisErrors): string
             {
                 return $this->appendAnalysisErrorNotice($message, $analysisErrors);
+            }
+
+            /**
+             * @param  Collection<int, array{file: string, line: int, message: string, identifier?: string|null, tip?: string|null}>  $parseErrors
+             * @return list<string>
+             */
+            public function publicStoppedAtFiles(Collection $parseErrors): array
+            {
+                return $this->stoppedAtFiles($parseErrors);
+            }
+
+            /**
+             * @param  list<string>  $stoppedAt
+             */
+            public function publicAppendIncompleteRunNotice(string $message, array $stoppedAt): string
+            {
+                return $this->appendIncompleteRunNotice($message, $stoppedAt);
+            }
+
+            /**
+             * @param  list<string>  $analysisErrors
+             * @param  list<string>  $stoppedAt
+             */
+            public function publicDescribeIncompleteRunWithoutFindings(array $analysisErrors, array $stoppedAt): string
+            {
+                return $this->describeIncompleteRunWithoutFindings($analysisErrors, $stoppedAt);
+            }
+
+            /**
+             * @param  list<string>  $analysisErrors
+             * @param  list<string>  $stoppedAt
+             * @return array{analysis_errors?: list<string>, stopped_at?: list<string>}
+             */
+            public function publicIncompleteRunMetadata(array $analysisErrors, array $stoppedAt): array
+            {
+                return $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
+            }
+
+            protected function getRelativePath(string $file): string
+            {
+                return ltrim(str_replace('/project', '', $file), '/');
             }
 
             /**

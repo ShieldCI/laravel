@@ -123,6 +123,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             );
 
             $analysisErrors = $runner->getAnalysisErrors();
+            $stoppedAt = $this->stoppedAtFiles($runner->getRunStoppingErrors());
             $collectionCalls = $runner->getIssues()->filter(
                 static fn (array $issue): bool => self::isCollectionCall($issue)
             );
@@ -138,14 +139,17 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         // Counted before createIssuesFromPHPStanResults(), which caps the rows it renders.
         $totalIssues = $collectionCalls->count();
 
+        // A file PHPStan could not process makes it drop every other file's findings, so an
+        // empty list from that run is not a clean one. Truncation leaves only the stopping
+        // errors behind, which is why the findings branch below never meets one.
         if ($totalIssues === 0) {
-            if ($analysisErrors === []) {
+            if ($analysisErrors === [] && $stoppedAt === []) {
                 return $this->passed('No inefficient collection calls detected');
             }
 
             return $this->error(
-                $this->describeAnalysisErrors($analysisErrors),
-                ['analysis_errors' => $analysisErrors]
+                $this->describeIncompleteRunWithoutFindings($analysisErrors, $stoppedAt),
+                $this->incompleteRunMetadata($analysisErrors, $stoppedAt)
             );
         }
 

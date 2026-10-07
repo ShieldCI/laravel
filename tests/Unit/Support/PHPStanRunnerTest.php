@@ -743,6 +743,48 @@ class PHPStanRunnerTest extends TestCase
         );
     }
 
+    public function test_get_run_stopping_errors_returns_parse_and_reflection_errors_only(): void
+    {
+        $this->createMockPHPStan([
+            [
+                'file' => $this->tempDir.'/app/Broken.php',
+                'line' => 4,
+                'message' => 'Cannot use Vendor\Second\Widget as Widget because the name is already in use on line 4',
+                'identifier' => 'phpstan.parse',
+            ],
+            [
+                'file' => $this->tempDir.'/app/Other.php',
+                'line' => 9,
+                'message' => 'Cannot redeclare method App\Other::run().',
+                'identifier' => 'class.duplicateMethod',
+            ],
+            [
+                'file' => $this->tempDir.'/app/Cycle.php',
+                'line' => 0,
+                'message' => 'Reflection error: Circular reference to class "App\Cycle"',
+                'identifier' => 'phpstan.reflection',
+            ],
+        ]);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $errors = $runner->getRunStoppingErrors();
+
+        $this->assertSame(
+            [$this->tempDir.'/app/Broken.php', $this->tempDir.'/app/Cycle.php'],
+            $errors->pluck('file')->all()
+        );
+        $this->assertSame([0, 1], $errors->keys()->all());
+    }
+
+    public function test_get_run_stopping_errors_is_empty_without_analysis(): void
+    {
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $this->assertTrue($runner->getRunStoppingErrors()->isEmpty());
+    }
+
     public function test_get_analysis_errors_is_empty_for_a_clean_run(): void
     {
         $this->createMockPHPStan([]);

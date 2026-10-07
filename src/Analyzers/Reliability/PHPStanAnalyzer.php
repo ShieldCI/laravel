@@ -941,8 +941,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     /**
      * Sentence telling a row PHPStan stopped at why it outranks its category, or ''.
      *
-     * Such a row is graded Critical whatever its category, and without this an Other row
-     * would carry that grade with nothing but "no specific guidance" to explain it.
+     * Such a row is graded Critical whatever its category, so every recommendation path
+     * appends it: a reflection error usually lands in Other, but its message can match
+     * another category's patterns, and either way the grade would otherwise go unexplained.
      */
     private function runStoppedNotice(?string $identifier): string
     {
@@ -1042,7 +1043,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         if (isset($recommendations[$category])) {
             foreach ($recommendations[$category] as $keyword => $recommendation) {
                 if (str_contains($message, $keyword)) {
-                    return $recommendation.' PHPStan message: '.$message;
+                    return $recommendation.$this->runStoppedNotice($identifier).' PHPStan message: '.$message;
                 }
             }
         }
@@ -1050,6 +1051,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // Fallback to generic recommendation
         $categoryName = self::ISSUE_CATEGORIES[$category]['name'] ?? 'issue';
 
-        return 'Fix the '.$categoryName.' detected by PHPStan. PHPStan message: '.$message;
+        return 'Fix the '.$categoryName.' detected by PHPStan.'.$this->runStoppedNotice($identifier).' PHPStan message: '.$message;
     }
 }

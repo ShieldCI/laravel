@@ -1258,6 +1258,40 @@ PHP;
         $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
     }
 
+    public function test_a_reflection_error_routed_by_its_message_still_explains_its_grade(): void
+    {
+        // A reflection row has no identifier mapping, so its message decides the category.
+        // When the message matches another category's patterns, the row is still graded
+        // Critical, and both the keyword and the generic recommendation have to say why.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: class App\Legacy\Widget is deprecated.', 'line' => 0],
+            ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Legacy\Gadget is deprecated.', 'line' => 0],
+        ]);
+
+        $this->assertIssueCount(2, $result);
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertSame('Deprecated Code detected', $issue->message);
+            $this->assertSame(Severity::Critical, $issue->severity);
+            $this->assertStringContainsString(
+                'PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once PHPStan can load it. PHPStan message: ',
+                $issue->recommendation
+            );
+        }
+
+        $this->assertStringStartsWith('Replace deprecated class/interface', $result->getIssues()[0]->recommendation);
+        $this->assertStringStartsWith('Fix the Deprecated Code detected by PHPStan.', $result->getIssues()[1]->recommendation);
+    }
+
+    public function test_an_ordinary_keyword_row_gets_no_run_stopped_notice(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'method.deprecated', 'message' => 'Call to deprecated method run() of class App\Legacy\Widget.'],
+        ]);
+
+        $this->assertStringNotContainsString('PHPStan stopped analysing', $result->getIssues()[0]->recommendation);
+    }
+
     public function test_an_ordinary_other_row_keeps_its_medium_grade(): void
     {
         // The floor follows the identifier, not the category: an error ShieldCI cannot

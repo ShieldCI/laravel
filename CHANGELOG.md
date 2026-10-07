@@ -4,28 +4,32 @@
 
 ### Added
 - The report lists files the parser could not read under `parse_failures`, so an unparsable file no longer passes silently (#457)
+- The report includes `parser_compatibility`, and the console warns when the installed php-parser is older than the running PHP (#457)
 - `phpstan` reports declarations PHP refuses to compile, such as a colliding import, under a new Critical `compile-errors` category (#474)
 
 ### Changed
 - Requires `shieldci/analyzers-core ^2.8` (was `^2.6`), for parse-failure reporting (#457)
 - `chunk-missing` no longer exempts a fetch because its select uses `DB::raw()` (#458)
-- `service-container-resolution` names an enum or anonymous class it reports, such as `LabelService@anonymous::label`, rather than `Unknown::label` (#454)
+- `service-container-resolution` names an enum it reports, such as `App\Enums\Status::label`, rather than `Unknown::label` (#454)
+- `service-container-resolution` names an anonymous class such as `LabelService@anonymous::label`, rather than a non-existent `App\Services\Anonymous::label` (#454)
 - `missing-database-transactions` names an anonymous class after its resolved parent, such as `App\Support\Handler@anonymous` (#470)
 
 ### Fixed
 - `chunk-missing` no longer flags a fetch bounded by a key list, such as `whereIn('id', $ids)`, unless the list is a subquery (#458, #471)
+- `chunk-missing` no longer flags a fetch grouped only by columns its `whereIn()` or `where()` filters pin, since it returns one row per combination (#458)
 - `chunk-missing` reports a loop over a fetch captured by a closure's `use` (#454)
 - `missing-database-transactions` tells apart same-named methods of different classes in one file (#466)
 - `missing-database-transactions` no longer treats a helper as protected when only a class declared inside `DB::transaction()` calls it (#454)
 - `mixed-query-builder-eloquent` no longer drops a file with two imports on one alias and reports a pass (#452)
-- `mixed-query-builder-eloquent` counts connection-qualified writes and `updateFrom()` or `incrementEach()` against its `withoutGlobalScope()` exemption (#460)
+- `mixed-query-builder-eloquent` counts connection-qualified writes and further write methods, such as `updateFrom()`, against its `withoutGlobalScope()` exemption (#460)
 - `mixed-query-builder-eloquent` keeps a table reported as mixed after a later query-builder read (#464)
 - `authentication-authorization` no longer errors on a file with two imports on one alias (#463)
-- `service-container-resolution` and `missing-docblock` no longer error on a file with two imports on one alias, and `framework-override`, `fat-model` and `logic-in-routes` no longer skip it (#473)
+- `service-container-resolution` and `missing-docblock` no longer error on a file with two imports on one alias (#473)
+- `framework-override`, `fat-model` and `logic-in-routes` no longer skip a file with two imports on one alias (#473)
 - `eloquent-n-plus-one` recognises a model referenced in a different case, such as `product::get()` (#465)
 - `eloquent-n-plus-one` flags a relationship registered through `parent::resolveRelationUsing()` (#468)
-- `fillable-foreign-key` and `mass-assignment-vulnerabilities` recognise a model whose parent is a relative name such as `Catalog\Record` (#467)
-- `phpstan` fails and lists the files under `stopped_at` when PHPStan stops at a file it cannot parse, instead of warning (#474)
+- `fillable-foreign-key` and `mass-assignment-vulnerabilities` recognise a model whose parent is a relative name, such as `Catalog\Record` (#467)
+- `phpstan` fails and lists the files under `stopped_at` when PHPStan stops at a file it cannot parse or reflect, instead of warning (#474)
 - `collection-call-optimization` returns an error instead of a pass when PHPStan stops at a file (#474)
 
 ## v1.16.1

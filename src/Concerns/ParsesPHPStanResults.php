@@ -27,13 +27,15 @@ trait ParsesPHPStanResults
      * @param  string  $issueMessage  The message to display for each issue
      * @param  Severity  $severity  The severity level for issues
      * @param  callable(string, ?string): string  $recommendationCallback  Callback to generate recommendations from the message and identifier
+     * @param  (callable(?string): Severity)|null  $severityCallback  Grades a row by its identifier; every row gets $severity without it
      * @return array<int, Issue>
      */
     protected function createIssuesFromPHPStanResults(
         Collection $issues,
         string $issueMessage,
         Severity $severity,
-        callable $recommendationCallback
+        callable $recommendationCallback,
+        ?callable $severityCallback = null
     ): array {
         $issueObjects = [];
 
@@ -72,7 +74,7 @@ trait ParsesPHPStanResults
                 message: $issueMessage,
                 filePath: $file,
                 lineNumber: $line,
-                severity: $severity,
+                severity: $severityCallback !== null ? $severityCallback($identifier) : $severity,
                 recommendation: $recommendation,
                 metadata: [
                     'phpstan_message' => $message,

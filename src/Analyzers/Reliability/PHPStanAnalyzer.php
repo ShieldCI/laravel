@@ -35,6 +35,7 @@ use ShieldCI\Support\PHPStanRunner;
  * - Invalid Method Overrides
  * - Foreach Iterable Issues
  * - Missing Model Relations
+ * - Used Void Results
  *
  * Every error is assigned to exactly one category. Anything that matches no
  * category lands in "Other PHPStan Issues" rather than being discarded.
@@ -56,13 +57,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     /**
      * Categories reported unless disabled by name, even when a category list is pinned.
      *
-     * Both used to be one bucket: compile errors landed in Other before they had a
-     * category of their own, so making them opt-in would take them away from exactly the
-     * users who pinned a list.
+     * Each was split out of a category a pinned list may already hold: compile errors
+     * landed in Other before they had a category of their own, and used void results
+     * were reported as invalid method calls, invalid function calls or foreach issues.
+     * Making them opt-in would take them away from exactly the users who pinned a list.
      *
      * @var list<string>
      */
-    private const OPT_OUT_CATEGORIES = ['compile-errors', self::OTHER_CATEGORY];
+    private const OPT_OUT_CATEGORIES = ['compile-errors', 'used-void-result', self::OTHER_CATEGORY];
 
     /**
      * All issue categories with their patterns and severity levels.
@@ -151,7 +153,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 'Parameter * of function * expects*',
                 'Missing parameter * in call to function *',
                 'Unknown parameter * in call to function *',
-                'Result of function * (void) is used*',
                 'Cannot call function * on *',
             ],
         ],
@@ -194,8 +195,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 'Cannot call abstract* method *::*',
                 '* invoked with * parameter* required*',
                 'Parameter * of * expects * given*',
-                'Result of * (void) is used*',
-                'Result of method *',
             ],
         ],
 
@@ -299,6 +298,18 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             ],
         ],
 
+        // One condition however it is reached: a function, method, closure, match or
+        // yield whose value is void, so what is read is always null. A logic error worth
+        // fixing, never a fatal one, so it grades High whatever was called.
+        'used-void-result' => [
+            'name' => 'Used Void Results',
+            'description' => 'Void results used as a value, which is always null',
+            'severity' => Severity::High,
+            'patterns' => [
+                'Result of * (void) is used*',
+            ],
+        ],
+
         // Terminal fallback. Must stay last and must stay pattern-less: it is
         // assigned explicitly when nothing else claims an error, which is what
         // guarantees no PHPStan finding is ever silently discarded. Medium keeps
@@ -377,7 +388,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
 
         'function.notFound' => 'invalid-function-calls',
         'function.nameCase' => 'invalid-function-calls',
-        'function.void' => 'invalid-function-calls',
         'callable.nonCallable' => 'invalid-function-calls',
         'callable.notSupported' => 'invalid-function-calls',
         'callable.inaccessibleMethod' => 'invalid-function-calls',
@@ -403,7 +413,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         'method.staticCall' => 'invalid-method-calls',
         'method.abstract' => 'invalid-method-calls',
         'method.nameCase' => 'invalid-method-calls',
-        'method.void' => 'invalid-method-calls',
         'staticMethod.notFound' => 'invalid-method-calls',
         'staticMethod.nonObject' => 'invalid-method-calls',
         'staticMethod.private' => 'invalid-method-calls',
@@ -463,6 +472,16 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         'nullCoalesce.variable' => 'undefined-variable',
         'empty.variable' => 'undefined-variable',
         'unset.variable' => 'undefined-variable',
+
+        // Listed one by one rather than as a ".void" suffix: return.void, cast.void,
+        // throws.void and the pure*.void family share the suffix but report other
+        // conditions.
+        'function.void' => 'used-void-result',
+        'method.void' => 'used-void-result',
+        'staticMethod.void' => 'used-void-result',
+        'callable.void' => 'used-void-result',
+        'match.void' => 'used-void-result',
+        'generator.void' => 'used-void-result',
     ];
 
     /**
@@ -1022,6 +1041,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             'undefined-variable' => [
                 'Undefined variable' => 'Fix the variable reference - the variable is used before it is defined. Ensure the variable is initialized before use.',
                 'might not be defined' => 'Fix the variable reference - the variable might not be defined in all code paths. Ensure the variable is initialized in all branches.',
+            ],
+            'used-void-result' => [
+                '(void) is used' => 'Stop using this result - the expression returns void, so the value read from it is always null. Remove the assignment or use, or give the callee a return type and return a value if a result was intended.',
             ],
         ];
 

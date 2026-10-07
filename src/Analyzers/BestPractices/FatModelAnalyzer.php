@@ -102,7 +102,8 @@ class FatModelAnalyzer extends AbstractFileAnalyzer
                 // No NameResolver: the visitor reads a model in enterNode(Class_), before any
                 // child name could be resolved, and EloquentModelDetector tracks the file's
                 // imports itself. One here would resolve nothing the visitor reads, while
-                // rewriting the shared, cached AST.
+                // mutating the shared, cached AST: even with replaceNodes off it writes
+                // resolvedName and namespacedName attributes onto the nodes.
                 $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);

@@ -313,7 +313,8 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // Terminal fallback. Must stay last and must stay pattern-less: it is
         // assigned explicitly when nothing else claims an error, which is what
         // guarantees no PHPStan finding is ever silently discarded. Medium keeps
-        // errors we could not identify from failing a build on their own.
+        // errors we could not identify from failing a build on their own. A reflection
+        // error PHPStan stopped at lands here too, but is graded Critical per row.
         self::OTHER_CATEGORY => [
             'name' => 'Other PHPStan Issues',
             'description' => 'PHPStan errors that do not map to a specific ShieldCI category',
@@ -663,7 +664,14 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 $issues,
                 $categoryConfig['name'].' detected',
                 $categoryConfig['severity'],
-                fn (string $message, ?string $identifier) => $this->getRecommendation($category, $message, $identifier)
+                fn (string $message, ?string $identifier) => $this->getRecommendation($category, $message, $identifier),
+                // A row PHPStan stopped at stands in for every finding it dropped, which may
+                // have been anything. Critical makes it fail the build at every fail_on, as
+                // the error does when its category is disabled; a reflection error would
+                // otherwise grade as Other's Medium and exit 0 at the default threshold.
+                static fn (?string $identifier): Severity => PHPStanRunner::isRunStopping($identifier)
+                    ? Severity::Critical
+                    : $categoryConfig['severity']
             );
 
             $allIssueObjects = array_merge($allIssueObjects, $issueObjects);
@@ -699,14 +707,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $message = $this->appendAnalysisErrorNotice($message, $analysisErrors);
 
         $metadata += $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
-
-        // A run PHPStan cut short cannot grade below one that finished. A parse error
-        // fails on its own as Critical, but a reflection error lands in Medium Other,
-        // and the findings it displaced may have been anything. Failed rather than
-        // error, so the rows naming what PHPStan could not reflect are kept.
-        if ($stoppedAt !== []) {
-            return $this->failed($message, $allIssueObjects, $metadata);
-        }
 
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
     }
@@ -958,19 +958,32 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Sentence telling a row PHPStan stopped at why it outranks its category, or ''.
+     *
+     * Such a row is graded Critical whatever its category, so every recommendation path
+     * appends it: a reflection error usually lands in Other, but its message can match
+     * another category's patterns, and either way the grade would otherwise go unexplained.
+     */
+    private function runStoppedNotice(?string $identifier): string
+    {
+        if (! PHPStanRunner::isRunStopping($identifier)) {
+            return '';
+        }
+
+        return ' PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once '
+            .($identifier === PHPStanRunner::PARSE_ERROR_IDENTIFIER ? 'it parses.' : 'PHPStan can load it.');
+    }
+
+    /**
      * Get recommendation message based on category and PHPStan message.
      */
     private function getRecommendation(string $category, string $message, ?string $identifier = null): string
     {
         if ($category === 'compile-errors') {
-            $recommendation = 'PHP will refuse to load this file, so any request, job or command that loads it ends in a fatal error. '
-                .'Fix the declaration or syntax PHPStan names before anything else.';
-
-            if ($identifier === PHPStanRunner::PARSE_ERROR_IDENTIFIER) {
-                $recommendation .= ' PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once it parses.';
-            }
-
-            return $recommendation.' PHPStan message: '.$message;
+            return 'PHP will refuse to load this file, so any request, job or command that loads it ends in a fatal error. '
+                .'Fix the declaration or syntax PHPStan names before anything else.'
+                .$this->runStoppedNotice($identifier)
+                .' PHPStan message: '.$message;
         }
 
         // The fallback bucket has no keyword table by definition - these are the
@@ -978,8 +991,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // PHPStan's own message and tip carry the detail.
         if ($category === self::OTHER_CATEGORY) {
             return 'Review this PHPStan error directly. ShieldCI has no specific guidance for it, '
-                .'so consult the PHPStan documentation for the rule that reported it. '
-                .'PHPStan message: '.$message;
+                .'so consult the PHPStan documentation for the rule that reported it.'
+                .$this->runStoppedNotice($identifier)
+                .' PHPStan message: '.$message;
         }
 
         $recommendations = [
@@ -1051,7 +1065,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         if (isset($recommendations[$category])) {
             foreach ($recommendations[$category] as $keyword => $recommendation) {
                 if (str_contains($message, $keyword)) {
-                    return $recommendation.' PHPStan message: '.$message;
+                    return $recommendation.$this->runStoppedNotice($identifier).' PHPStan message: '.$message;
                 }
             }
         }
@@ -1059,6 +1073,6 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         // Fallback to generic recommendation
         $categoryName = self::ISSUE_CATEGORIES[$category]['name'] ?? 'issue';
 
-        return 'Fix the '.$categoryName.' detected by PHPStan. PHPStan message: '.$message;
+        return 'Fix the '.$categoryName.' detected by PHPStan.'.$this->runStoppedNotice($identifier).' PHPStan message: '.$message;
     }
 }

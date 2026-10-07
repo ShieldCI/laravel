@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use Illuminate\Config\Repository;
+use Illuminate\Support\Facades\Artisan;
+use Mockery;
+use Mockery\MockInterface;
+use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -1231,21 +1235,118 @@ PHP;
     {
         // A circular class hierarchy or an undiscoverable symbol stops PHPStan the same
         // way a parse error does, but says nothing about whether PHP can compile the file,
-        // so it keeps its Other category. PHPStan gives it no line. Other is Medium, but
-        // the run still fails: disabling Other turns the same run into an error, and
-        // enabling a category must not grade a run more leniently than disabling it.
+        // so it keeps its Other category. PHPStan gives it no line. The row is graded
+        // Critical rather than Other's Medium: it stands in for every finding PHPStan
+        // dropped, and disabling Other turns the same run into an error.
         $result = $this->analyzeIssues([
             ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: Circular reference to class "App\Services\ExampleService"', 'line' => 0],
         ]);
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('Other PHPStan Issues', $result);
+        $this->assertSame('Other PHPStan Issues detected', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+        $this->assertStringContainsString(
+            'PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once PHPStan can load it.',
+            $result->getIssues()[0]->recommendation
+        );
+        $this->assertStringNotContainsString('once it parses', $result->getIssues()[0]->recommendation);
         $this->assertStringContainsString(
             'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php',
             $result->getMessage()
         );
         $this->assertStringNotContainsString('ExampleService.php:', $result->getMessage());
         $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_a_reflection_error_routed_by_its_message_still_explains_its_grade(): void
+    {
+        // A reflection row has no identifier mapping, so its message decides the category.
+        // When the message matches another category's patterns, the row is still graded
+        // Critical, and both the keyword and the generic recommendation have to say why.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: class App\Legacy\Widget is deprecated.', 'line' => 0],
+            ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Legacy\Gadget is deprecated.', 'line' => 0],
+        ]);
+
+        $this->assertIssueCount(2, $result);
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertSame('Deprecated Code detected', $issue->message);
+            $this->assertSame(Severity::Critical, $issue->severity);
+            $this->assertStringContainsString(
+                'PHPStan stopped analysing at this file, so the rest of the project was not checked; run ShieldCI again once PHPStan can load it. PHPStan message: ',
+                $issue->recommendation
+            );
+        }
+
+        $this->assertStringStartsWith('Replace deprecated class/interface', $result->getIssues()[0]->recommendation);
+        $this->assertStringStartsWith('Fix the Deprecated Code detected by PHPStan.', $result->getIssues()[1]->recommendation);
+    }
+
+    public function test_an_ordinary_keyword_row_gets_no_run_stopped_notice(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'method.deprecated', 'message' => 'Call to deprecated method run() of class App\Legacy\Widget.'],
+        ]);
+
+        $this->assertStringNotContainsString('PHPStan stopped analysing', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_an_ordinary_other_row_keeps_its_medium_grade(): void
+    {
+        // The floor follows the identifier, not the category: an error ShieldCI cannot
+        // classify did not stop the run.
+        $result = $this->analyzeIssues([
+            ['identifier' => 'custom.rule', 'message' => 'Something only a custom rule reports.'],
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertSame('Other PHPStan Issues detected', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+        $this->assertStringNotContainsString('PHPStan stopped analysing', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_a_run_stopped_by_a_reflection_error_fails_the_build_at_the_default_fail_on(): void
+    {
+        $this->assertSame(1, $this->exitCodeFor(
+            [['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Missing not found.', 'line' => 0]],
+            [],
+            ['shieldci.fail_on' => 'high']
+        ));
+    }
+
+    public function test_a_run_stopped_by_a_reflection_error_fails_the_build_at_fail_on_critical(): void
+    {
+        // Disabling Other makes the same run an error, which fails at every threshold.
+        // Enabling it must not grade the run more leniently than that.
+        $this->assertSame(1, $this->exitCodeFor(
+            [['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Missing not found.', 'line' => 0]],
+            [],
+            ['shieldci.fail_on' => 'critical']
+        ));
+
+        $this->assertSame(1, $this->exitCodeFor(
+            [['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Missing not found.', 'line' => 0]],
+            ['disabled_categories' => ['other']],
+            ['shieldci.fail_on' => 'critical']
+        ));
+    }
+
+    public function test_ignoring_one_reflection_row_still_fails_the_build(): void
+    {
+        // Suppression downgrades a failed result to a warning once no High or Critical
+        // row remains, so the row left behind has to carry the grade itself.
+        $this->assertSame(1, $this->exitCodeFor(
+            [
+                ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Missing not found.', 'line' => 0],
+                ['identifier' => 'phpstan.reflection', 'message' => 'Reflection error: App\Absent not found.', 'line' => 0],
+            ],
+            [],
+            [
+                'shieldci.fail_on' => 'high',
+                'shieldci.ignore_errors' => ['phpstan' => [['message_pattern' => '*App\Missing not found*']]],
+            ]
+        ));
     }
 
     public function test_a_disabled_other_category_does_not_pass_a_run_stopped_by_a_reflection_error(): void
@@ -1415,13 +1516,13 @@ PHP;
     }
 
     /**
-     * Run the analyzer over a set of mock PHPStan errors.
+     * The analyzer, pointed at a project whose PHPStan reports the given errors.
      *
      * @param  array<array{message: string, line?: int, identifier?: string, tip?: string}>  $issues
      * @param  array<string, mixed>  $config
      * @param  array<string>  $analysisErrors  Errors PHPStan could not attach to a file
      */
-    private function analyzeIssues(array $issues, array $config = [], array $analysisErrors = []): ResultInterface
+    private function stubbedAnalyzer(array $issues, array $config = [], array $analysisErrors = []): AnalyzerInterface
     {
         $code = <<<'PHP'
 <?php
@@ -1451,7 +1552,54 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
 
-        return $analyzer->analyze();
+        return $analyzer;
+    }
+
+    /**
+     * Run the analyzer over a set of mock PHPStan errors.
+     *
+     * @param  array<array{message: string, line?: int, identifier?: string, tip?: string}>  $issues
+     * @param  array<string, mixed>  $config
+     * @param  array<string>  $analysisErrors  Errors PHPStan could not attach to a file
+     */
+    private function analyzeIssues(array $issues, array $config = [], array $analysisErrors = []): ResultInterface
+    {
+        return $this->stubbedAnalyzer($issues, $config, $analysisErrors)->analyze();
+    }
+
+    /**
+     * Exit code of shield:analyze when the analyzer is the only one registered.
+     *
+     * The exit code grades issue severity rather than result status, so a failed result
+     * can still exit 0. Only a run through the command can see that (#476).
+     *
+     * @param  array<array{message: string, line?: int, identifier?: string, tip?: string}>  $issues
+     * @param  array<string, mixed>  $analyzerConfig
+     * @param  array<string, mixed>  $appConfig
+     */
+    private function exitCodeFor(array $issues, array $analyzerConfig, array $appConfig): int
+    {
+        config($appConfig);
+
+        $analyzer = $this->stubbedAnalyzer($issues, $analyzerConfig);
+        $result = $analyzer->analyze();
+
+        /** @var MockInterface&AnalyzerManager $manager */
+        $manager = Mockery::mock(AnalyzerManager::class);
+        $manager->shouldReceive('getAnalyzers')->andReturn(collect([$analyzer]));
+        $manager->shouldReceive('getByCategory')->andReturn(collect());
+        $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+        $manager->shouldReceive('run')->with('phpstan')->andReturn($result);
+        $manager->shouldReceive('run')->andReturn(null);
+        $manager->shouldReceive('runAll')->andReturn(collect([$result]));
+        $manager->shouldReceive('clearParserCache')->andReturn(null);
+        $manager->shouldReceive('resetParseFailures')->andReturn(null);
+
+        $app = $this->app;
+        $this->assertNotNull($app);
+        $app->instance(AnalyzerManager::class, $manager);
+
+        return Artisan::call('shield:analyze', ['--format' => 'json']);
     }
 
     /**

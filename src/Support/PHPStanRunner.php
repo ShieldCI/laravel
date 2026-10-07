@@ -485,10 +485,18 @@ class PHPStanRunner
     {
         /** @var Collection<int, PHPStanIssue> $errors */
         $errors = $this->getIssues()
-            ->filter(static fn (array $issue): bool => in_array($issue['identifier'] ?? null, self::RUN_STOPPING_IDENTIFIERS, true))
+            ->filter(static fn (array $issue): bool => self::isRunStopping($issue['identifier'] ?? null))
             ->values();
 
         return $errors;
+    }
+
+    /**
+     * Whether an error with this identifier made PHPStan stop before it covered the project.
+     */
+    public static function isRunStopping(?string $identifier): bool
+    {
+        return in_array($identifier, self::RUN_STOPPING_IDENTIFIERS, true);
     }
 
     /**

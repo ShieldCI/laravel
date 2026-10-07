@@ -10,7 +10,7 @@
 
 ![ShieldCI terminal demo](https://raw.githubusercontent.com/ShieldCI/laravel/master/.github/assets/analyzer-terminal.gif)
 
-Automated code analysis for Laravel applications — 73 open-source analyzers covering security, performance, reliability, code quality, and best practices.
+Automated code analysis for Laravel applications - 73 open-source analyzers covering security, performance, reliability, code quality, and best practices.
 
 Built on top of [`shieldci/analyzers-core`](https://github.com/ShieldCI/analyzers-core) - a shared, framework-agnostic foundation for static analysis tools.
 
@@ -85,12 +85,16 @@ Send results to ShieldCI platform:
 php artisan shield:analyze --report
 ```
 
+Attach Git metadata to the report with `--git-branch`, `--git-commit`, `--git-pr-number`, `--git-repository` and `--git-base-branch`.
+
 Schedule analysis with trigger tracking:
 ```php
-// Laravel 11+ (routes/console.php)
+// Laravel 11+, either in routes/console.php
+use Illuminate\Support\Facades\Schedule;
+
 Schedule::command('shield:analyze --triggered-by=scheduled --report')->daily();
 
-// Laravel 11+ (bootstrap/app.php)
+// Laravel 11+, or in bootstrap/app.php
 ->withSchedule(function (Schedule $schedule) {
     $schedule->command('shield:analyze --triggered-by=scheduled --report')->daily();
 })
@@ -150,7 +154,7 @@ SHIELDCI_MAX_ISSUES=3 php artisan shield:analyze
 ```
 
 #### Environment-Aware Analyzers
-Some analyzers are only relevant in specific environments. ShieldCI automatically handles multi-environment setups through environment mapping.
+Some analyzers are only relevant in specific environments. Custom environment names are mapped to the standard ones through `environment_mapping`.
 
 **Standard environments** (no configuration needed):
 - `local` - Local development
@@ -172,7 +176,7 @@ Some analyzers are only relevant in specific environments. ShieldCI automaticall
 
 How it works:
 - Analyzers declare which environments they're relevant for (e.g., `['production', 'staging']`)
-- Custom environment names are automatically mapped to standard types
+- Custom environment names you list in `environment_mapping` are mapped to their standard type; an unmapped name is used as-is
 - Analyzers run only in their relevant environments
 
 Example: AutoloaderOptimizationAnalyzer only runs in production/staging environments.
@@ -189,7 +193,7 @@ ShieldCI includes **73 comprehensive analyzers** across five categories:
 | Code Quality | 5 | Improve maintainability |
 | Best Practices | 15 | Laravel-specific patterns |
 
-→ [Full Analyzer Reference](https://docs.shieldci.com/analyzers/) — all 73 analyzers with examples and fix guidance
+→ [Full Analyzer Reference](https://docs.shieldci.com/analyzers/): all 73 analyzers with examples and fix guidance
 
 ### ShieldCI Pro
 
@@ -204,9 +208,9 @@ ShieldCI includes **73 comprehensive analyzers** across five categories:
 | Code Quality | 3 | Test coverage and quality analysis |
 
 Highlights:
-- **Security** — command injection, SSRF, XXE, object injection, GDPR compliance, hard-coded credentials, cryptographic weaknesses; framework-specific checks for Sanctum, Horizon, Telescope, Nova, Livewire, Inertia, and FilamentPHP
-- **Performance** — Redis rate limiting, CDN/HTTP2/compression header analysis, lazy collection opportunities, FilamentPHP table optimization
-- **Reliability** — health check and alerting config, job queue config, Horizon status and provisioning, Redis eviction policy, Laravel Vapor config
+- **Security:** command injection, SSRF, XXE, object injection, GDPR compliance, hard-coded credentials, cryptographic weaknesses; framework-specific checks for Sanctum, Horizon, Telescope, Nova, Livewire, Inertia, and FilamentPHP
+- **Performance:** Redis rate limiting, CDN/HTTP2/compression header analysis, lazy collection opportunities, FilamentPHP table optimization
+- **Reliability:** health check and alerting config, job queue config, Horizon status and provisioning, Redis eviction policy, Laravel Vapor config
 
 → [Upgrade to Pro](https://shieldci.com)
 
@@ -219,7 +223,7 @@ See `config/shieldci.php` for all available configuration options.
 Configure when the analysis should fail:
 
 ```php
-'fail_on' => 'critical', // never, critical, high, medium, low
+'fail_on' => 'high',     // default; never, critical, high, medium, low
 'fail_threshold' => 80,  // Minimum score to pass (0-100)
 ```
 
@@ -229,63 +233,50 @@ Configure which paths to analyze:
 
 ```php
 'paths' => [
-    'analyze' => ['app', 'config', 'database', 'routes'],
+    'analyze' => ['app', 'config', 'database', 'routes', 'resources/views'],
 ],
 
 'excluded_paths' => [
     'vendor/*',
     'node_modules/*',
     'storage/*',
+    'bootstrap/cache/*',
+    'tests/*',
 ],
 ```
 
-## Creating Custom Analyzers
+### Disabling Analyzers
 
-Quick example:
+Turn off specific analyzers by ID:
 
 ```php
-<?php
-
-namespace ShieldCI\Analyzers\Security;
-
-use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
-use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
-use ShieldCI\AnalyzersCore\ValueObjects\{AnalyzerMetadata, Location};
-use ShieldCI\AnalyzersCore\Enums\{Category, Severity};
-
-class MyAnalyzer extends AbstractFileAnalyzer
-{
-    protected function metadata(): AnalyzerMetadata
-    {
-        return new AnalyzerMetadata(
-            id: 'my-analyzer',
-            name: 'My Custom Analyzer',
-            description: 'Checks for custom security issues',
-            category: Category::Security,
-            severity: Severity::High,
-        );
-    }
-
-    protected function runAnalysis(): ResultInterface
-    {
-        // Your analysis logic
-        $issues = [];
-
-        foreach ($this->getPhpFiles() as $file) {
-            // Analyze files
-        }
-
-        return empty($issues)
-            ? $this->passed('No issues found')
-            : $this->failed('Issues detected', $issues);
-    }
-}
+'disabled_analyzers' => [
+    'missing-docblock',
+],
 ```
+
+### Ignoring Errors
+
+Remove specific issues from the report by analyzer ID, path and message. Unlike `dont_report`, matching issues do not appear in console or JSON output.
+
+```php
+'ignore_errors' => [
+    'xss-vulnerabilities' => [
+        ['path' => 'app/Http/Controllers/Legacy.php', 'message' => 'Unescaped blade output'],
+        ['path_pattern' => 'app/Legacy/*.php'],
+    ],
+    'debug-mode' => [
+        ['message_pattern' => 'Ray debugging*'],
+    ],
+],
+```
+
+Each rule takes a `path` (exact) or `path_pattern` (glob), and/or a `message` (exact) or `message_pattern` (wildcards). Given both a path and a message, both must match.
 
 ## Testing
 
 ```bash
-composer test           # 4,000+ tests
+composer test
 composer test-coverage  # 98%+ code coverage
 composer analyse        # PHPStan Level 9
 ```

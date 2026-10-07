@@ -6,6 +6,7 @@
 - The report lists files the parser could not read under `parse_failures`, and the console warns that a pass does not cover them (#457)
 - The report includes `parser_compatibility`, and the console warns when the installed php-parser is older than the running PHP (#457)
 - `phpstan` reports declarations PHP refuses to compile, such as a colliding import, under a new Critical `compile-errors` category (#474)
+- `phpstan` reports every used void result under a new High `used-void-result` category, rather than as Critical or High by call type (#479)
 
 ### Changed
 - Requires `shieldci/analyzers-core ^2.8` (was `^2.6`), for parse-failure reporting (#457)
@@ -13,6 +14,7 @@
 - `service-container-resolution` names an enum it reports, such as `App\Enums\Status::label`, rather than `Unknown::label` (#454)
 - `service-container-resolution` names an anonymous class such as `LabelService@anonymous::label`, rather than a non-existent `App\Services\Anonymous::label` (#454)
 - `missing-database-transactions` names an anonymous class after its resolved parent, such as `App\Support\Handler@anonymous` (#470)
+- `phpstan` reports a used void result as `Used Void Results detected`, so a baselined void row is reported once more (#479)
 
 ### Fixed
 - `chunk-missing` no longer flags a fetch bounded by a key list, such as `whereIn('id', $ids)`, unless the list is a subquery (#458, #471)
@@ -29,7 +31,7 @@
 - `eloquent-n-plus-one` recognises a model referenced in a different case, such as `product::get()` (#465)
 - `eloquent-n-plus-one` flags a relationship registered through `parent::resolveRelationUsing()` (#468)
 - `fillable-foreign-key` and `mass-assignment-vulnerabilities` recognise a model whose parent is a relative name, such as `Catalog\Record` (#467)
-- `phpstan` fails and lists the files under `stopped_at` when PHPStan stops at a file it cannot parse or reflect, instead of warning (#474)
+- `phpstan` fails the build and lists the files under `stopped_at` when PHPStan stops at a file it cannot parse or reflect, instead of warning (#474, #478)
 - `collection-call-optimization` returns an error instead of a pass when PHPStan stops at a file (#474)
 
 ## v1.16.1

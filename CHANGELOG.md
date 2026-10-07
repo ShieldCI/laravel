@@ -3,7 +3,7 @@
 ## v1.17.0
 
 ### Added
-- The report lists files the parser could not read under `parse_failures`, so an unparsable file no longer passes silently (#457)
+- The report lists files the parser could not read under `parse_failures`, and the console warns that a pass does not cover them (#457)
 - The report includes `parser_compatibility`, and the console warns when the installed php-parser is older than the running PHP (#457)
 - `phpstan` reports declarations PHP refuses to compile, such as a colliding import, under a new Critical `compile-errors` category (#474)
 

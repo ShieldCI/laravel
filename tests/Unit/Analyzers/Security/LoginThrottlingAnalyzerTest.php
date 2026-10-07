@@ -2283,6 +2283,148 @@ PHP;
         $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
     }
 
+    // ==================== Route throttling clears the controller check ====================
+
+    public function test_route_level_throttle_clears_controller_check(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [LoginController::class, 'login'])->middleware('throttle:6,1');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_level_throttle_clears_controller_check(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:6,1')->group(function () {
+    Route::post('/session/login', [LoginController::class, 'login']);
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_web_group_throttle_clears_controller_check(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->web(append: ['throttle:60,1']);"),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttle_registered_route_file_clears_controller_check(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware(['web', 'throttle:6,1'])
+                ->group(base_path('routes/session.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => '<?php',
+            'routes/session.php' => "<?php\n\nRoute::post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_and_qualified_route_references_clear_controller_check(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/session/login', [
+    \App\Http\Controllers\Auth\LoginController::class,
+    'login',
+])->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_string_action_reference_clears_controller_check(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', 'Auth\\LoginController@login')->middleware('throttle:6,1');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_unthrottled_route_still_reports_route_and_controller(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'Login route "/session/login" lacks rate limiting protection',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
+    }
+
+    public function test_throttled_route_to_another_controller_does_not_clear_login_controller(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store'])->middleware('throttle:6,1');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    private function unthrottledLoginController(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login(Request $request)
+    {
+        return Auth::attempt($request->only('email', 'password'));
+    }
+}
+PHP;
+    }
+
     /**
      * @param  array<string, string>  $files
      */

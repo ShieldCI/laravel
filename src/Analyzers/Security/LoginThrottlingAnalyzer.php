@@ -85,14 +85,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $hasLoginThrottlingTrait = $this->hasLoginThrottlingTraitUsage();
 
         // Check route files for login routes without throttling
-        $this->checkRouteFiles(
+        $coveredControllers = $this->checkRouteFiles(
             $issues,
             webCovered: $hasLoginRateLimiting || $hasWebGroupThrottle || $hasLoginThrottlingTrait,
             apiCovered: $hasLoginRateLimiting || $hasApiGroupThrottle,
         );
 
-        // Check authentication controllers
-        $this->checkAuthControllers($issues);
+        // Check authentication controllers not already reached through a throttled route
+        $this->checkAuthControllers($issues, $coveredControllers);
 
         // Check Fortify/Breeze/Jetstream configuration. Their login routes run in
         // the 'web' group, so only a web-group throttle covers them.
@@ -769,22 +769,29 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * API route patterns and covered by $apiCovered, every other file is matched
      * with the web patterns and covered by $webCovered.
      *
+     * Returns the short class names of the controllers that covered login routes
+     * point at, so the controller check does not report a controller whose
+     * route is already throttled.
+     *
      * @param  array<int, Issue>  &$issues
+     * @return array<string, true>
      */
-    private function checkRouteFiles(array &$issues, bool $webCovered, bool $apiCovered): void
+    private function checkRouteFiles(array &$issues, bool $webCovered, bool $apiCovered): array
     {
+        $coveredControllers = [];
         $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
 
         if (! is_dir($routePath)) {
-            return;
+            return $coveredControllers;
         }
 
         // Files registered with throttle middleware on their own group are covered
-        // outright. Files registered in the 'web' group are NOT skipped: that
-        // includes routes/web.php itself on every real install, and being in the
-        // web group says nothing about whether the web group is throttled.
+        // outright; they are still scanned, for the controllers their routes name.
+        // Files registered in the 'web' group are judged against the web-group
+        // throttle: that includes routes/web.php itself on every real install,
+        // and being in the web group says nothing about whether it is throttled.
         $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
-        $skipFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
+        $throttledFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
         $apiGroupFiles = $bootstrapParser->getApiRegisteredRouteFiles();
 
         try {
@@ -797,13 +804,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $real = realpath($filePath);
                 $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $filePath);
 
-                // Skip files registered with throttle middleware on their group
-                if (in_array($normalizedPath, $skipFiles, true)) {
-                    continue;
-                }
-
                 $isApiRoute = $file->getFilename() === 'api.php' || in_array($normalizedPath, $apiGroupFiles, true);
-                $groupCovered = $isApiRoute ? $apiCovered : $webCovered;
+                $groupCovered = in_array($normalizedPath, $throttledFiles, true)
+                    || ($isApiRoute ? $apiCovered : $webCovered);
                 $content = FileParser::readFile($filePath);
                 if ($content === null) {
                     continue;
@@ -881,7 +884,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         // Check if this route or surrounding lines have throttle middleware
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inThrottledGroup;
 
-                        if (! $hasThrottle && ! $groupCovered) {
+                        if ($hasThrottle || $groupCovered) {
+                            foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
+                                $coveredControllers[$controller] = true;
+                            }
+                        } else {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -902,6 +909,43 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         } catch (\Throwable $e) {
             // Silently fail if directory iterator fails
         }
+
+        return $coveredControllers;
+    }
+
+    /**
+     * Short class names of the controllers a route definition points at, read
+     * from the route's line up to the end of its statement (the same five-line
+     * window checkRouteHasThrottling() looks ahead). Matches both the
+     * [X::class, 'method'] and the 'X@method' action forms.
+     *
+     * @param  array<int, string>  $lines
+     * @return array<int, string>
+     */
+    private function controllersReferencedByRoute(array $lines, int $lineNumber): array
+    {
+        $statement = '';
+        $end = min($lineNumber + 5, count($lines));
+        for ($i = $lineNumber; $i < $end; $i++) {
+            $statement .= $lines[$i] ?? '';
+
+            if (str_contains($lines[$i] ?? '', ';')) {
+                break;
+            }
+        }
+
+        preg_match_all('/([A-Za-z_\\\\][A-Za-z0-9_\\\\]*)::class|["\']([A-Za-z0-9_\\\\]+)@\w+["\']/', $statement, $matches, PREG_SET_ORDER);
+
+        $controllers = [];
+        foreach ($matches as $match) {
+            // Exactly one of the two alternatives matched
+            $name = ($match[2] ?? '') !== '' ? $match[2] : ($match[1] ?? '');
+
+            $segments = explode('\\', $name);
+            $controllers[] = end($segments);
+        }
+
+        return $controllers;
     }
 
     /**
@@ -992,8 +1036,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * Check authentication controllers for throttling logic.
      *
      * @param  array<int, Issue>  &$issues
+     * @param  array<string, true>  $coveredControllers  Controllers a throttled login route points at
      */
-    private function checkAuthControllers(array &$issues): void
+    private function checkAuthControllers(array &$issues, array $coveredControllers): void
     {
         $basePath = $this->getBasePath();
         $authControllers = [
@@ -1023,6 +1068,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         }
 
                         $className = $class->name->toString();
+
+                        if (isset($coveredControllers[$className])) {
+                            continue;
+                        }
 
                         // Look for login methods
                         if (! isset($class->stmts) || ! is_array($class->stmts)) {

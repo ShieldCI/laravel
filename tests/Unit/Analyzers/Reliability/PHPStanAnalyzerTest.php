@@ -1260,6 +1260,99 @@ PHP;
         $this->assertSame(['app/Services/ExampleService.php'], $result->getMetadata()['stopped_at']);
     }
 
+    public function test_routes_every_used_void_result_to_one_high_category(): void
+    {
+        // One condition, however it is written: the value read is always null. Worth
+        // fixing, but never fatal at runtime, so none of these may grade Critical.
+        $rows = [
+            'function.void' => 'Result of function App\Services\reset_state (void) is used.',
+            'method.void' => 'Result of method App\Services\ExampleService::run() (void) is used.',
+            'staticMethod.void' => 'Result of static method App\Services\ExampleService::boot() (void) is used.',
+            'callable.void' => 'Result of closure (void) is used.',
+            'match.void' => 'Result of match expression (void) is used.',
+            'generator.void' => 'Result of yield from (void) is used.',
+        ];
+
+        foreach ($rows as $identifier => $message) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $issue = $result->getIssues()[0];
+
+            $this->assertSame('Used Void Results detected', $issue->message, $identifier);
+            $this->assertSame(Severity::High, $issue->severity, $identifier);
+            $this->assertStringContainsString('is always null', $issue->recommendation, $identifier);
+            $this->assertFailed($result);
+        }
+    }
+
+    public function test_a_used_void_result_grades_the_same_for_a_function_and_a_method(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'function.void', 'message' => 'Result of function App\Services\reset_state (void) is used.'],
+            ['identifier' => 'method.void', 'message' => 'Result of method App\Services\ExampleService::run() (void) is used.'],
+        ]);
+
+        $severities = array_map(fn ($issue) => $issue->severity, $result->getIssues());
+
+        $this->assertSame([Severity::High, Severity::High], $severities);
+    }
+
+    public function test_the_identifier_alone_routes_used_void_results(): void
+    {
+        // A message no category pattern matches, so each identifier entry is the only
+        // thing that can place its error.
+        foreach (['function.void', 'method.void', 'staticMethod.void', 'callable.void', 'match.void', 'generator.void'] as $identifier) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => 'Value discarded.'],
+            ]);
+
+            $this->assertSame('Used Void Results detected', $result->getIssues()[0]->message ?? null, $identifier);
+        }
+    }
+
+    public function test_other_void_identifiers_are_not_used_void_results(): void
+    {
+        // Same ".void" suffix, different conditions: returning a value from a void
+        // method, a (void) cast inside an expression, and a contradicted @throws void.
+        $rows = [
+            'return.void' => 'Method App\Services\ExampleService::run() with return type void returns int but should not return anything.',
+            'cast.void' => 'The (void) cast cannot be used within an expression.',
+            'throws.void' => 'Method App\Services\ExampleService::run() throws exception RuntimeException but the PHPDoc contains @throws void.',
+        ];
+
+        foreach ($rows as $identifier => $message) {
+            $result = $this->analyzeIssues([
+                ['identifier' => $identifier, 'message' => $message],
+            ]);
+
+            $this->assertNotSame('Used Void Results detected', $result->getIssues()[0]->message ?? null, $identifier);
+        }
+    }
+
+    public function test_used_void_results_stay_active_when_categories_are_pinned(): void
+    {
+        // A list pinned before the category existed held these rows under Invalid
+        // Method Calls; pinning must not make them disappear.
+        $result = $this->analyzeIssues(
+            [['identifier' => 'method.void', 'message' => 'Result of method App\Services\ExampleService::run() (void) is used.']],
+            ['categories' => ['invalid-method-calls']]
+        );
+
+        $this->assertSame('Used Void Results detected', $result->getIssues()[0]->message ?? null);
+    }
+
+    public function test_used_void_results_can_be_disabled(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'method.void', 'message' => 'Result of method App\Services\ExampleService::run() (void) is used.']],
+            ['disabled_categories' => ['used-void-result']]
+        );
+
+        $this->assertPassed($result);
+    }
+
     public function test_identifier_and_pattern_paths_agree(): void
     {
         $rows = [
@@ -1275,6 +1368,12 @@ PHP;
             ['class.duplicateMethod', 'Cannot redeclare method App\Services\ExampleService::run().', 'Compile Errors'],
             ['parameter.duplicate', 'Redefinition of parameter $name.', 'Compile Errors'],
             ['closure.useDuplicate', 'Cannot use lexical variable $name since a parameter with the same name already exists.', 'Compile Errors'],
+            ['function.void', 'Result of function App\Services\reset_state (void) is used.', 'Used Void Results'],
+            ['method.void', 'Result of method App\Services\ExampleService::run() (void) is used.', 'Used Void Results'],
+            ['staticMethod.void', 'Result of static method App\Services\ExampleService::boot() (void) is used.', 'Used Void Results'],
+            ['callable.void', 'Result of closure (void) is used.', 'Used Void Results'],
+            ['match.void', 'Result of match expression (void) is used.', 'Used Void Results'],
+            ['generator.void', 'Result of yield (void) is used.', 'Used Void Results'],
         ];
 
         foreach ($rows as [$identifier, $message, $expectedCategory]) {

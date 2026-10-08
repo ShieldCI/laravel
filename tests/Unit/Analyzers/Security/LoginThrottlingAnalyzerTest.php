@@ -2578,6 +2578,9 @@ PHP;
         $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
     }
 
+    /**
+     * @dataProvider requestResolutionHookProvider
+     */
     #[DataProvider('requestResolutionHookProvider')]
     public function test_form_request_throttling_in_a_resolution_hook_is_not_reported(string $hook): void
     {

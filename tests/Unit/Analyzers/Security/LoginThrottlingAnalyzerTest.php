@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\LoginThrottlingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LoginThrottlingAnalyzerTest extends AnalyzerTestCase
@@ -215,8 +217,9 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_get_login_routes(): void
+    public function test_does_not_flag_get_login_form_route(): void
     {
+        // A GET login route renders the form; credentials arrive on the POST.
         $routeCode = <<<'PHP'
 <?php
 
@@ -233,8 +236,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('/login', $result);
+        $this->assertPassed($result);
     }
 
     public function test_detects_auth_route_variant(): void
@@ -1610,39 +1612,33 @@ PHP;
         $this->assertFailed($result);
     }
 
-    // ==================== withRouting(then: ...) False Positive Tests ====================
+    // ==================== Externally registered web route files ====================
 
-    public function test_skips_login_route_in_web_required_file(): void
+    public function test_flags_login_route_in_web_required_file_when_web_group_is_not_throttled(): void
     {
-        // auth.php has a login route, but it's require'd from web.php.
-        // Throttle may be applied globally via withMiddleware(); no false positive expected.
-        $webPhp = <<<'PHP'
-<?php
-require __DIR__.'/auth.php';
-PHP;
-
-        $authPhp = <<<'PHP'
-<?php
-Route::post('/login', [LoginController::class, 'authenticate']);
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'routes/web.php' => $webPhp,
-            'routes/auth.php' => $authPhp,
+        // auth.php inherits the web group by being require'd from web.php. That
+        // makes it a web route, not a throttled one.
+        $result = $this->analyzeApp([
+            'routes/web.php' => "<?php\nrequire __DIR__.'/auth.php';\n",
+            'routes/auth.php' => "<?php\nRoute::post('/login', [LoginController::class, 'authenticate']);\n",
         ]);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['routes']);
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
 
-        $result = $analyzer->analyze();
+    public function test_passes_login_route_in_web_required_file_when_web_group_is_throttled(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->web(append: ['throttle:60,1']);"),
+            'routes/web.php' => "<?php\nrequire __DIR__.'/auth.php';\n",
+            'routes/auth.php' => "<?php\nRoute::post('/login', [LoginController::class, 'authenticate']);\n",
+        ]);
 
-        // Should pass — auth.php is web-protected via require from web.php;
-        // the global throttle check applies to all web routes
         $this->assertPassed($result);
     }
 
-    public function test_skips_login_route_in_bootstrap_registered_file(): void
+    public function test_flags_login_route_in_file_registered_with_web_middleware_in_bootstrap(): void
     {
         // auth.php registered via Route::middleware('web')->group() in bootstrap/app.php
         $bootstrapApp = <<<'PHP'
@@ -1661,26 +1657,14 @@ return Application::configure(basePath: dirname(__DIR__))
     ->create();
 PHP;
 
-        $authPhp = <<<'PHP'
-<?php
-Route::post('/login', [LoginController::class, 'authenticate']);
-PHP;
-
-        $tempDir = $this->createTempDirectory([
+        $result = $this->analyzeApp([
             'bootstrap/app.php' => $bootstrapApp,
             'routes/web.php' => '<?php // main routes',
-            'routes/auth.php' => $authPhp,
+            'routes/auth.php' => "<?php\nRoute::post('/login', [LoginController::class, 'authenticate']);\n",
         ]);
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['routes']);
-
-        $result = $analyzer->analyze();
-
-        // Should pass — auth.php is web-protected via external registration;
-        // throttle is applied to the whole 'web' group globally
-        $this->assertPassed($result);
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
     public function test_skips_route_file_registered_with_throttle_in_bootstrap(): void
@@ -1939,5 +1923,465 @@ PHP;
         $analyzer->setPaths(['app', 'routes']);
 
         $this->assertFailed($analyzer->analyze());
+    }
+
+    // ==================== Group-aware suppression ====================
+
+    public function test_stock_laravel_9_kernel_api_throttle_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $this->stockKernel("'throttle:api'"),
+            'app/Providers/RouteServiceProvider.php' => $this->stockRouteServiceProvider(),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+            'routes/api.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_stock_laravel_10_kernel_api_throttle_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $this->stockKernel("\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':api'"),
+            'app/Providers/RouteServiceProvider.php' => $this->stockRouteServiceProvider(),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+            'routes/api.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_stock_laravel_10_kernel_api_throttle_still_clears_api_login(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $this->stockKernel("\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':api'"),
+            'app/Providers/RouteServiceProvider.php' => $this->stockRouteServiceProvider(),
+            'routes/web.php' => '<?php',
+            'routes/api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_api_group_throttle_clears_a_file_required_from_api_php(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('$middleware->throttleApi();'),
+            'routes/web.php' => '<?php',
+            'routes/api.php' => "<?php\n\nrequire __DIR__.'/api-session.php';\n",
+            'routes/api-session.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_stock_laravel_11_app_flags_unthrottled_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttle_api_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('$middleware->throttleApi();'),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+            'routes/api.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_web_group_throttle_clears_web_login_registered_through_with_routing(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->web(append: ['throttle:60,1']);"),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_web_group_throttle_does_not_clear_api_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->web(append: ['throttle:60,1']);"),
+            'routes/web.php' => '<?php',
+            'routes/api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_stock_laravel_10_kernel_api_throttle_does_not_hide_disabled_fortify_limiter(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\ServiceProvider;
+
+class FortifyServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        RateLimiter::for('login', fn () => Limit::none());
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Http/Kernel.php' => $this->stockKernel("\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':api'"),
+            'app/Providers/FortifyServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify login throttling is explicitly disabled'], $this->issueMessages($result));
+        $this->assertSame('critical', $result->getIssues()[0]->severity->value);
+    }
+
+    public function test_laravel_ui_auth_routes_pass_when_login_controller_uses_authenticates_users(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+class LoginController extends Controller
+{
+    use AuthenticatesUsers;
+
+    protected $redirectTo = '/dashboard';
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'routes/web.php' => "<?php\n\nAuth::routes();\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_authenticates_users_named_only_in_an_import_and_a_comment_is_not_throttling(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+class LoginController extends Controller
+{
+    // Replaced AuthenticatesUsers with a hand-written login().
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'routes/web.php' => "<?php\n\nAuth::routes();\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'Auth::routes() includes login endpoint without explicit rate limiting',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
+    }
+
+    public function test_get_login_form_is_not_flagged_when_post_is_throttled(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::get('/session/login', [SessionController::class, 'create'])->name('login');
+Route::get('/', HomeController::class);
+Route::post('/session/login', [SessionController::class, 'store'])->middleware('throttle:5,1');
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_authenticates_users_does_not_clear_an_api_token_route(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+class LoginController extends Controller
+{
+    use AuthenticatesUsers;
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'routes/web.php' => "<?php\n\nAuth::routes();\n",
+            'routes/api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    /**
+     * @dataProvider webThrottleMiddlewareProvider
+     */
+    #[DataProvider('webThrottleMiddlewareProvider')]
+    public function test_web_throttle_configured_in_bootstrap_clears_web_login(string $middlewareBody): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap($middlewareBody),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function webThrottleMiddlewareProvider(): array
+    {
+        return [
+            'appendToGroup' => ["\$middleware->appendToGroup('web', 'throttle:60,1');"],
+            'prependToGroup' => ["\$middleware->prependToGroup('web', ['throttle:60,1']);"],
+            'appendToGroup named arguments' => ["\$middleware->appendToGroup(group: 'web', middleware: 'throttle:60,1');"],
+            'group' => ["\$middleware->group('web', [\\Illuminate\\Session\\Middleware\\StartSession::class, 'throttle:60,1']);"],
+            'web prepend' => ["\$middleware->web(prepend: [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':60,1']);"],
+            'global append' => ['$middleware->append(\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class);'],
+            'global prepend' => ["\$middleware->prepend('throttle:60,1');"],
+            'global use' => ["\$middleware->use([\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':60,1']);"],
+        ];
+    }
+
+    public function test_api_group_throttle_appended_in_bootstrap_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->appendToGroup('api', 'throttle:60,1');"),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttle_removed_from_web_group_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('$middleware->web(remove: [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class]);'),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_global_throttle_in_bootstrap_clears_api_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->append('throttle:60,1');"),
+            'routes/web.php' => '<?php',
+            'routes/api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttle_in_kernel_global_middleware_clears_web_and_api_login(): void
+    {
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middleware = [
+        \Illuminate\Routing\Middleware\ThrottleRequests::class.':60,1',
+    ];
+
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Providers/RouteServiceProvider.php' => $this->stockRouteServiceProvider(),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+            'routes/api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_file_registered_in_the_api_group_is_matched_as_api_routes(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: [__DIR__.'/../routes/api.php', __DIR__.'/../routes/partner_api.php'],
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/api.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/token" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function analyzeApp(array $files): ResultInterface
+    {
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($this->createTempDirectory($files));
+        $analyzer->setPaths(['app', 'bootstrap', 'config', 'routes']);
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function issueMessages(ResultInterface $result): array
+    {
+        return array_values(array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    private function unthrottledWebLogin(): string
+    {
+        return "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n";
+    }
+
+    private function stockKernel(string $apiThrottleEntry): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected \$middlewareGroups = [
+        'web' => [
+            \App\Http\Middleware\EncryptCookies::class,
+            \Illuminate\Session\Middleware\StartSession::class,
+            \App\Http\Middleware\VerifyCsrfToken::class,
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+        ],
+
+        'api' => [
+            {$apiThrottleEntry},
+            \Illuminate\Routing\Middleware\SubstituteBindings::class,
+        ],
+    ];
+}
+PHP;
+    }
+
+    private function stockRouteServiceProvider(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('api')
+                ->prefix('api')
+                ->group(base_path('routes/api.php'));
+
+            Route::middleware('web')
+                ->group(base_path('routes/web.php'));
+        });
+    }
+}
+PHP;
+    }
+
+    private function laravel11Bootstrap(string $middlewareBody): string
+    {
+        return <<<PHP
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware \$middleware): void {
+        {$middlewareBody}
+    })
+    ->create();
+PHP;
     }
 }

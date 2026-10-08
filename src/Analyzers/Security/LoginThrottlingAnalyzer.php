@@ -65,36 +65,38 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Check for RateLimiter usage in code (global check)
         $hasLoginRateLimiting = $this->hasRateLimiterUsage();
 
-        // Check if throttle is in the 'web' middleware group (Laravel 10 and earlier)
-        $hasWebMiddlewareThrottle = $this->hasThrottleInWebMiddlewareGroup();
+        // Throttle on the 'web' and 'api' middleware groups: app/Http/Kernel.php
+        // (Laravel 10 and earlier) or bootstrap/app.php (Laravel 11+). The two are
+        // kept apart because each only covers the routes registered in its group:
+        // the stock Laravel 9/10 Kernel throttles 'api' out of the box, and that
+        // says nothing about a login route in routes/web.php. A throttle on the
+        // Kernel's global $middleware runs on every route, so it covers both.
+        $hasGlobalKernelThrottle = $this->hasThrottleInKernelGlobalMiddleware();
+        $hasWebGroupThrottle = $hasGlobalKernelThrottle
+            || $this->hasThrottleInWebMiddlewareGroup()
+            || $this->hasThrottleInLaravel11Middleware('web');
+        $hasApiGroupThrottle = $hasGlobalKernelThrottle
+            || $this->hasThrottleInApiMiddlewareGroup()
+            || $this->hasThrottleInLaravel11Middleware('api');
 
-        // Check if throttle is in the 'api' middleware group (Laravel 10 and earlier)
-        $hasApiMiddlewareThrottle = $this->hasThrottleInApiMiddlewareGroup();
-
-        // Check if throttle is in the 'web' middleware (Laravel 11+)
-        if (! $hasWebMiddlewareThrottle) {
-            $hasWebMiddlewareThrottle = $this->hasThrottleInLaravel11Middleware('web');
-        }
-
-        // Check if throttle is in the 'api' middleware (Laravel 11+)
-        if (! $hasApiMiddlewareThrottle) {
-            $hasApiMiddlewareThrottle = $this->hasThrottleInLaravel11Middleware('api');
-        }
-
-        // NOTE: web and api throttle signals are collapsed into one flag, so an
-        // api-only throttle (e.g. throttleApi()) also suppresses unthrottled web
-        // /login findings. Pre-existing behaviour; splitting web vs api suppression
-        // would be a separate change.
-        $hasGlobalThrottling = $hasLoginRateLimiting || $hasWebMiddlewareThrottle || $hasApiMiddlewareThrottle;
+        // laravel/ui's AuthenticatesUsers (or ThrottlesLogins on its own) throttles
+        // the web login form only, so it covers web-group files and never an API
+        // token endpoint.
+        $hasLoginThrottlingTrait = $this->hasLoginThrottlingTraitUsage();
 
         // Check route files for login routes without throttling
-        $this->checkRouteFiles($issues, $hasGlobalThrottling);
+        $this->checkRouteFiles(
+            $issues,
+            webCovered: $hasLoginRateLimiting || $hasWebGroupThrottle || $hasLoginThrottlingTrait,
+            apiCovered: $hasLoginRateLimiting || $hasApiGroupThrottle,
+        );
 
         // Check authentication controllers
         $this->checkAuthControllers($issues);
 
-        // Check Fortify/Breeze/Jetstream configuration
-        if (! $hasGlobalThrottling) {
+        // Check Fortify/Breeze/Jetstream configuration. Their login routes run in
+        // the 'web' group, so only a web-group throttle covers them.
+        if (! $hasLoginRateLimiting && ! $hasWebGroupThrottle) {
             $this->checkAuthenticationPackages($issues);
         }
 
@@ -219,6 +221,46 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Pattern 3: AST-based detection - RateLimiter in auth methods
         if ($this->hasRateLimiterInAuthMethodAST($file)) {
             return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether an auth-related class uses the ThrottlesLogins trait, directly or
+     * through laravel/ui's AuthenticatesUsers, whose login() checks the lockout first.
+     */
+    private function hasLoginThrottlingTraitUsage(): bool
+    {
+        foreach ($this->getAuthenticationFiles() as $file) {
+            if ($this->usesLoginThrottlingTrait($file)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a class in the file uses AuthenticatesUsers or ThrottlesLogins.
+     *
+     * Read from the AST, so the trait named only in an import or a comment
+     * does not count.
+     */
+    private function usesLoginThrottlingTrait(string $file): bool
+    {
+        foreach ($this->parser->findClasses($this->parser->parseFile($file)) as $class) {
+            foreach ($class->stmts as $stmt) {
+                if (! $stmt instanceof Node\Stmt\TraitUse) {
+                    continue;
+                }
+
+                foreach ($stmt->traits as $trait) {
+                    if (in_array($trait->getLast(), ['AuthenticatesUsers', 'ThrottlesLogins'], true)) {
+                        return true;
+                    }
+                }
+            }
         }
 
         return false;
@@ -417,31 +459,64 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function arrayContainsThrottle(Node\Expr\Array_ $array): bool
     {
         foreach ($array->items as $item) {
-            if (! $item instanceof Node\Expr\ArrayItem) {
-                continue;
+            if ($item instanceof Node\Expr\ArrayItem && $this->expressionIsThrottle($item->value)) {
+                return true;
             }
+        }
 
-            // Check for string 'throttle' or 'throttle:60,1'
-            if ($item->value instanceof Node\Scalar\String_) {
-                if (str_contains($item->value->value, 'throttle')) {
-                    return true;
+        return false;
+    }
+
+    /**
+     * Whether a middleware expression is, or (as an array) lists, a throttle:
+     * 'throttle:60,1', ThrottleRequests::class or ThrottleRequests::class.':60,1'.
+     */
+    private function expressionIsThrottle(Node\Expr $expr): bool
+    {
+        if ($expr instanceof Node\Scalar\String_) {
+            return str_contains($expr->value, 'throttle');
+        }
+
+        if ($expr instanceof Node\Expr\ClassConstFetch) {
+            return $expr->class instanceof Node\Name
+                && str_contains($expr->class->toString(), 'ThrottleRequests');
+        }
+
+        if ($expr instanceof Node\Expr\BinaryOp\Concat) {
+            return $this->concatContainsThrottle($expr);
+        }
+
+        if ($expr instanceof Node\Expr\Array_) {
+            return $this->arrayContainsThrottle($expr);
+        }
+
+        return false;
+    }
+
+    /**
+     * Check if throttle middleware is in the Kernel's global $middleware stack
+     * (Laravel 10 and earlier), which runs on every route in every group.
+     */
+    private function hasThrottleInKernelGlobalMiddleware(): bool
+    {
+        $kernelPath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+
+        if (! file_exists($kernelPath)) {
+            return false;
+        }
+
+        foreach ($this->parser->findClasses($this->parser->parseFile($kernelPath)) as $class) {
+            foreach ($class->stmts as $stmt) {
+                if (! $stmt instanceof Node\Stmt\Property) {
+                    continue;
                 }
-            }
 
-            // Check for ThrottleRequests::class
-            if ($item->value instanceof Node\Expr\ClassConstFetch) {
-                if ($item->value->class instanceof Node\Name) {
-                    $className = $item->value->class->toString();
-                    if (str_contains($className, 'ThrottleRequests')) {
+                foreach ($stmt->props as $prop) {
+                    if ($prop->name->toString() === 'middleware'
+                        && $prop->default instanceof Node\Expr\Array_
+                        && $this->arrayContainsThrottle($prop->default)) {
                         return true;
                     }
-                }
-            }
-
-            // Check for concatenation like ThrottleRequests::class.':60,1'
-            if ($item->value instanceof Node\Expr\BinaryOp\Concat) {
-                if ($this->concatContainsThrottle($item->value)) {
-                    return true;
                 }
             }
         }
@@ -582,46 +657,34 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if throttle middleware is configured in Laravel 11+ bootstrap/app.php.
+     * Check if throttle middleware covers a group in Laravel 11+ bootstrap/app.php.
      *
-     * Checks for:
-     * ->withMiddleware(function (Middleware $middleware) {
-     *     $middleware->web(append: [ThrottleRequests::class]);
-     *     // or
-     *     $middleware->api(append: [ThrottleRequests::class]);
-     * })
+     * Reads the Middleware configurator calls inside withMiddleware():
+     * - $middleware->web(append: [...]) / ->api(prepend: [...], replace: [...])
+     * - $middleware->appendToGroup('web', ...) / ->prependToGroup('web', ...)
+     * - $middleware->group('web', [...])
+     * - $middleware->append(...) / ->prepend(...) / ->use([...]), the global
+     *   stack, which runs on every route in every group
+     * - $middleware->throttleApi(), for the api group only
      *
      * @param  string  $group  The middleware group to check ('web' or 'api')
      */
     private function hasThrottleInLaravel11Middleware(string $group = 'web'): bool
     {
-        $basePath = $this->getBasePath();
-        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        $bootstrapPath = $this->getBasePath().DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
 
         if (! file_exists($bootstrapPath)) {
             return false;
         }
 
-        $content = FileParser::readFile($bootstrapPath);
-        if ($content === null) {
-            return false;
-        }
+        foreach ($this->parser->findNodes($this->parser->parseFile($bootstrapPath), Node\Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Node\Expr\MethodCall
+                || ! $call->var instanceof Node\Expr\Variable
+                || ! $call->name instanceof Node\Identifier) {
+                continue;
+            }
 
-        // Canonical Laravel 11+ helper: $middleware->throttleApi() injects
-        // throttle:api into the api group at runtime (with or without arguments).
-        // It only affects the api group — there is no throttleWeb() equivalent —
-        // and throttleWithRedis() merely swaps the driver, so it must not count.
-        if ($group === 'api' && preg_match('/\$middleware\s*->\s*throttleApi\s*\(/s', $content) === 1) {
-            return true;
-        }
-
-        // Look for $middleware->{group}() containing ThrottleRequests or 'throttle'
-        // Pattern: $middleware->web(...) or $middleware->api(...)
-        $pattern = '/\$middleware\s*->\s*'.preg_quote($group, '/').'\s*\(/s';
-        if (preg_match($pattern, $content)) {
-            // Check if the group() call contains throttle references
-            $throttlePattern = '/\$middleware\s*->\s*'.preg_quote($group, '/').'\s*\([^)]*?(ThrottleRequests|throttle)[^)]*?\)/s';
-            if (preg_match($throttlePattern, $content)) {
+            if ($this->middlewareCallThrottlesGroup($call, $call->name->toLowerString(), $group)) {
                 return true;
             }
         }
@@ -630,11 +693,85 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Whether one Middleware configurator call adds a throttle that covers $group.
+     */
+    private function middlewareCallThrottlesGroup(Node\Expr\MethodCall $call, string $method, string $group): bool
+    {
+        switch ($method) {
+            // throttleApi() injects throttle:api into the api group at runtime (with
+            // or without arguments). There is no throttleWeb() equivalent, and
+            // throttleWithRedis() merely swaps the driver, so it must not count.
+            case 'throttleapi':
+                return $group === 'api';
+
+            case 'append':
+            case 'prepend':
+            case 'use':
+                $middleware = $this->callArgument($call, 0, 'middleware');
+
+                return $middleware !== null && $this->expressionIsThrottle($middleware);
+
+            case 'appendtogroup':
+            case 'prependtogroup':
+            case 'group':
+                $groupName = $this->callArgument($call, 0, 'group');
+                $middleware = $this->callArgument($call, 1, 'middleware');
+
+                return $groupName instanceof Node\Scalar\String_
+                    && $groupName->value === $group
+                    && $middleware !== null
+                    && $this->expressionIsThrottle($middleware);
+
+            case 'web':
+            case 'api':
+                if ($method !== $group) {
+                    return false;
+                }
+
+                // web(append, prepend, remove, replace): a throttle under remove:
+                // takes it out of the group, so only the other three count.
+                foreach (['append' => 0, 'prepend' => 1, 'replace' => 3] as $name => $position) {
+                    $middleware = $this->callArgument($call, $position, $name);
+                    if ($middleware !== null && $this->expressionIsThrottle($middleware)) {
+                        return true;
+                    }
+                }
+
+                return false;
+        }
+
+        return false;
+    }
+
+    /**
+     * The value of a call argument, given by name or by position.
+     */
+    private function callArgument(Node\Expr\MethodCall $call, int $position, string $name): ?Node\Expr
+    {
+        foreach ($call->args as $index => $arg) {
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
+            if ($arg->name !== null ? $arg->name->toString() === $name : $index === $position) {
+                return $arg->value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * Check route files for login routes without throttling.
+     *
+     * Each file is judged as part of the middleware group it is registered under:
+     * routes/api.php and files registered in the 'api' group are matched with the
+     * API route patterns and covered by $apiCovered, every other file is matched
+     * with the web patterns and covered by $webCovered.
      *
      * @param  array<int, Issue>  &$issues
      */
-    private function checkRouteFiles(array &$issues, bool $hasGlobalThrottling): void
+    private function checkRouteFiles(array &$issues, bool $webCovered, bool $apiCovered): void
     {
         $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
 
@@ -642,12 +779,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Compute route files covered by 'web' or throttle middleware via external registration
+        // Files registered with throttle middleware on their own group are covered
+        // outright. Files registered in the 'web' group are NOT skipped: that
+        // includes routes/web.php itself on every real install, and being in the
+        // web group says nothing about whether the web group is throttled.
         $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
-        $skipFiles = array_merge(
-            $bootstrapParser->getWebProtectedRouteFiles(),
-            $bootstrapParser->getThrottleProtectedRouteFiles(),
-        );
+        $skipFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
+        $apiGroupFiles = $bootstrapParser->getApiRegisteredRouteFiles();
 
         try {
             foreach (new \DirectoryIterator($routePath) as $file) {
@@ -659,12 +797,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $real = realpath($filePath);
                 $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $filePath);
 
-                // Skip files covered by 'web' or throttle middleware via external registration
+                // Skip files registered with throttle middleware on their group
                 if (in_array($normalizedPath, $skipFiles, true)) {
                     continue;
                 }
 
-                $isApiRoute = $file->getFilename() === 'api.php';
+                $isApiRoute = $file->getFilename() === 'api.php' || in_array($normalizedPath, $apiGroupFiles, true);
+                $groupCovered = $isApiRoute ? $apiCovered : $webCovered;
                 $content = FileParser::readFile($filePath);
                 if ($content === null) {
                     continue;
@@ -692,7 +831,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         // Auth::routes() includes login routes - check if throttled
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
 
-                        if (! $hasThrottle && ! $hasGlobalThrottling && ! $inThrottledGroup) {
+                        if (! $hasThrottle && ! $groupCovered && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: 'Auth::routes() includes login endpoint without explicit rate limiting',
                                 filePath: $filePath,
@@ -714,6 +853,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // API routes: /api/login, /api/auth, /api/token, /oauth/token, /sanctum/token
                     // For API files: token/oauth only match on POST/any/match (not GET — those
                     // are management endpoints like /token/verify, not credential submission).
+                    // For web files GET never matches: a GET login route renders the form,
+                    // and the credentials arrive on the POST.
                     $routeUri = null;
                     if ($isApiRoute) {
                         if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m)) {
@@ -721,7 +862,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
                             $routeUri = $m[2];
                         }
-                    } elseif (preg_match('/Route::(post|get|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
+                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
                         $routeUri = $m[2];
                     }
 
@@ -740,7 +881,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         // Check if this route or surrounding lines have throttle middleware
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inThrottledGroup;
 
-                        if (! $hasThrottle && ! $hasGlobalThrottling) {
+                        if (! $hasThrottle && ! $groupCovered) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -872,17 +1013,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $content = FileParser::readFile($controllerPath);
-                if ($content === null) {
-                    continue;
-                }
-
                 // Check if controller uses login-specific throttling
-                $hasThrottling = str_contains($content, 'ThrottlesLogins') ||
-                               str_contains($content, 'AuthenticatesUsers') || // Laravel UI trait includes throttling
-                               $this->hasLoginThrottlingInFile($controllerPath);
-
-                if (! $hasThrottling) {
+                if (! $this->hasLoginThrottlingInFile($controllerPath) && ! $this->usesLoginThrottlingTrait($controllerPath)) {
                     $classes = $this->parser->findClasses($ast);
 
                     foreach ($classes as $class) {

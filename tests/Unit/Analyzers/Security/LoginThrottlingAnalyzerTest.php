@@ -2465,6 +2465,244 @@ PHP;
         $this->assertSame(['app/Http/Controllers/LoginController.php'], $this->issueFiles($result));
     }
 
+    // ==================== Throttling delegated to a FormRequest (#485) ====================
+
+    public function test_controller_calling_a_throttling_form_request_is_not_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->signInRequest(),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_controller_calling_the_throttle_guard_directly_is_not_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->ensureIsNotRateLimited();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->signInRequest(),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttling_reached_through_a_this_call_in_the_request_is_not_reported(): void
+    {
+        // authenticate() has no RateLimiter call of its own; its guard does.
+        $request = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
+
+class SignInRequest extends FormRequest
+{
+    public function authenticate(): void
+    {
+        $this->guardAttempts();
+
+        Auth::attempt($this->only('email', 'password'));
+    }
+
+    private function guardAttempts(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$this->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $request,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_controller_that_never_calls_the_throttling_method_is_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('Auth::attempt($request->validated());'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->signInRequest(),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_throttling_method_called_on_another_variable_does_not_count(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$other = new \stdClass; $other->authenticate(); Auth::attempt($request->validated());'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->signInRequest(),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+    }
+
+    public function test_form_request_that_does_not_throttle_is_reported(): void
+    {
+        $request = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Auth;
+
+class SignInRequest extends FormRequest
+{
+    public function authenticate(): void
+    {
+        Auth::attempt($this->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $request,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_form_request_throttling_in_a_validation_hook_is_not_reported(): void
+    {
+        // Laravel runs passedValidation() itself when it resolves the request.
+        $request = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\RateLimiter;
+
+class SignInRequest extends FormRequest
+{
+    protected function passedValidation(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$this->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('Auth::attempt($request->validated());'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $request,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_form_request_throttling_in_prepare_for_validation_is_not_reported(): void
+    {
+        $request = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\RateLimiter;
+
+class SignInRequest extends FormRequest
+{
+    protected function prepareForValidation(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$this->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('Auth::attempt($request->validated());'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $request,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_unresolvable_form_request_class_is_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    private function formRequestLoginController(string $body): string
+    {
+        return str_replace('BODY', $body, <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Requests\Auth\SignInRequest as LoginForm;
+use Illuminate\Support\Facades\Auth;
+
+class LoginController
+{
+    public function login(LoginForm $request)
+    {
+        BODY
+
+        return redirect()->intended('/dashboard');
+    }
+}
+PHP);
+    }
+
+    private function signInRequest(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Auth;
+
+use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\RateLimiter;
+
+class SignInRequest extends FormRequest
+{
+    public function authenticate(): void
+    {
+        $this->ensureIsNotRateLimited();
+
+        if (! Auth::attempt($this->only('email', 'password'))) {
+            RateLimiter::hit($this->throttleKey());
+        }
+    }
+
+    public function ensureIsNotRateLimited(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts($this->throttleKey(), 5), 429);
+    }
+
+    private function throttleKey(): string
+    {
+        return 'sign-in|'.$this->ip();
+    }
+}
+PHP;
+    }
+
     private function unthrottledLoginController(string $namespace = 'App\\Http\\Controllers\\Auth'): string
     {
         $controller = <<<'PHP'

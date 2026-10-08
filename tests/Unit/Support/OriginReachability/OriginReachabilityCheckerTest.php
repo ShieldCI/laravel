@@ -21,6 +21,7 @@ use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\OriginReachability\ProbeRequest;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 /**
@@ -1255,5 +1256,254 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
 
         $this->assertCount(1, $recorded);
         $this->assertSame('https://example.com//:80', (string) $recorded[0]->getUri());
+    }
+
+    /**
+     * A caller that inspects Content-Encoding needs to say which encodings it accepts. The
+     * headers it names reach the request, and its Accept replaces the default one rather than
+     * being sent alongside it.
+     */
+    /** @test */
+    #[Test]
+    public function it_sends_the_headers_a_caller_names(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe(
+            [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])],
+            request: new ProbeRequest(['accept-encoding' => 'gzip, br', 'Accept' => 'text/css']),
+        );
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('gzip, br', $recorded[0]->getHeaderLine('Accept-Encoding'));
+        $this->assertSame(['text/css'], $recorded[0]->getHeader('Accept'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_sends_the_default_accept_header_when_no_request_is_named(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->probe([new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])]);
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame(['*/*'], $recorded[0]->getHeader('Accept'));
+        $this->assertFalse($recorded[0]->hasHeader('Accept-Encoding'));
+    }
+
+    /**
+     * Turning decoding off has to reach the client as decode_content. The mock cannot show
+     * what that does to a compressed response; OriginReachabilityStreamDecodingTest does.
+     */
+    /** @test */
+    #[Test]
+    public function it_forwards_decode_content_to_the_client(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientRecordingOptions([new Response(200, [], 'ok'), new Response(200, [], 'ok')], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $checker->probe($origins);
+        $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip'], decodeContent: false));
+
+        $this->assertCount(2, $recorded);
+        $this->assertTrue($recorded[0]['decode_content'], 'decoding stays on by default.');
+        $this->assertFalse($recorded[1]['decode_content']);
+        $this->assertTrue($recorded[1]['verify'], 'TLS verification must stay on whatever the request asks.');
+    }
+
+    /** @test */
+    #[Test]
+    public function it_carries_the_request_through_the_application_entry_point(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $config = $this->configWith([
+            'app.url' => 'https://example.com',
+            'app.asset_url' => null,
+            'app.env' => 'production',
+        ]);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->checkApplication($basePath, $config, '/build/app.js', new ProbeRequest(['Accept-Encoding' => 'gzip']));
+
+        $this->assertCount(1, $recorded);
+        $this->assertSame('https://example.com/build/app.js', (string) $recorded[0]->getUri());
+        $this->assertSame('gzip', $recorded[0]->getHeaderLine('Accept-Encoding'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_carries_the_request_through_the_resolving_entry_point(): void
+    {
+        $basePath = $this->createTempDirectory(['composer.json' => '{}']);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientRecordingOptions([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $checker->check($basePath, 'https://example.com', null, 'production', '/build/app.js', new ProbeRequest(decodeContent: false));
+
+        $this->assertCount(1, $recorded);
+        $this->assertFalse($recorded[0]['decode_content']);
+    }
+
+    /**
+     * The probe is unauthenticated, so only headers that shape what the origin sends back
+     * may be named. A credential handed over by mistake is refused rather than dropped:
+     * dropping it would leave the caller believing it had been sent.
+     */
+    /** @test */
+    #[Test]
+    public function it_refuses_a_header_outside_the_allowlist(): void
+    {
+        foreach (['Authorization', 'Cookie', 'Proxy-Authorization', 'Host', 'x-api-key'] as $name) {
+            try {
+                new ProbeRequest([$name => 'value']);
+                $this->fail("{$name} must be refused.");
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString($name, $exception->getMessage());
+            }
+        }
+    }
+
+    /**
+     * Two spellings of one name would leave which value is sent to array order, so the
+     * request is refused rather than one of them being picked.
+     */
+    /** @test */
+    #[Test]
+    public function it_refuses_a_header_named_twice_in_different_case(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+
+        new ProbeRequest(['Accept-Encoding' => 'gzip', 'accept-encoding' => 'br']);
+    }
+
+    /**
+     * The client would refuse such a value before sending, and the probe would record that
+     * as a transport failure of an origin that was never asked. Refusing it here keeps a
+     * caller's mistake from reading as evidence about the origin.
+     */
+    /** @test */
+    #[Test]
+    public function it_refuses_a_header_value_carrying_a_control_character(): void
+    {
+        foreach (["gzip\r\nX-Extra: 1", "gzip\nX-Extra: 1", "gzip\0"] as $value) {
+            try {
+                new ProbeRequest(['Accept-Encoding' => $value]);
+                $this->fail('A value with '.json_encode($value).' must be refused.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString('Accept-Encoding', $exception->getMessage());
+            }
+        }
+    }
+
+    /**
+     * The same bug class as keying on the origin alone: keyed on the URL, a plain probe of an
+     * asset and a no-decode probe of the same asset would answer each other, and the caller
+     * that turned decoding off would read a decoded response.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_each_request_variant_of_one_url_separately(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([
+                new Response(200, [], 'plain'),
+                new Response(200, ['Content-Encoding' => 'gzip'], 'compressed'),
+            ], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $plain = $checker->probe($origins, path: '/build/app.js');
+        $compressed = $checker->probe($origins, path: '/build/app.js', request: new ProbeRequest(
+            ['Accept-Encoding' => 'gzip', 'Accept' => '*/*'],
+            decodeContent: false,
+        ));
+
+        // The same variant, with header names in another case and order, is the same question.
+        $again = $checker->probe($origins, path: '/build/app.js', request: new ProbeRequest(
+            ['accept' => '*/*', 'ACCEPT-ENCODING' => 'gzip'],
+            decodeContent: false,
+        ));
+
+        $this->assertCount(2, $recorded);
+        $this->assertSame('plain', $plain->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('compressed', $compressed->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('compressed', $again->probeFor('https://example.com')?->bodyPrefix);
+    }
+
+    /**
+     * Each half of the key on its own: requests that differ only in decoding, and requests
+     * that differ only in a header, are separate questions.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_separately_when_only_decoding_or_only_a_header_differs(): void
+    {
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'decoded'), new Response(200, [], 'raw')], $recorded)
+        );
+
+        $decoded = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip']));
+        $raw = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip'], decodeContent: false));
+
+        $this->assertCount(2, $recorded, 'only decoding differs, so the second request must not be answered from the cache.');
+        $this->assertSame('decoded', $decoded->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('raw', $raw->probeFor('https://example.com')?->bodyPrefix);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'gzip'), new Response(200, [], 'br')], $recorded)
+        );
+
+        $gzip = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip'], decodeContent: false));
+        $br = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'br'], decodeContent: false));
+
+        $this->assertCount(2, $recorded, 'only a header differs, so the second request must not be answered from the cache.');
+        $this->assertSame('gzip', $gzip->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('br', $br->probeFor('https://example.com')?->bodyPrefix);
+    }
+
+    /**
+     * The key is built from what is sent, so naming the default Accept outright asks the
+     * question a plain probe already asked.
+     */
+    /** @test */
+    #[Test]
+    public function it_treats_naming_the_default_request_as_the_default_request(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'ok')], $recorded)
+        );
+
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $checker->probe($origins);
+        $checker->probe($origins, request: new ProbeRequest(['Accept' => '*/*'], decodeContent: true));
+
+        $this->assertCount(1, $recorded);
     }
 }

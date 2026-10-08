@@ -1168,8 +1168,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * The starter kits throttle login inside the FormRequest (authenticate() calling
      * ensureIsNotRateLimited()), and a controller that adopts the pattern only calls
      * into it. A parameter counts when its class lives under app/ and either a method
-     * the controller calls on it, or a validation hook Laravel runs on its own,
-     * reaches a RateLimiter call, directly or through $this->method() calls.
+     * the controller calls on it, or a hook Laravel's validateResolved() runs on every
+     * request, reaches a RateLimiter call, directly or through $this->method() calls.
+     * Methods inherited from App\ parents and traits count as the class's own.
      * Type-hinting the request is not enough: the throttling method has to run.
      *
      * Reads the import table, so trackFileImports() must have seen the controller file.
@@ -1187,7 +1188,16 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $entryPoints = ['prepareforvalidation' => true, 'passedvalidation' => true];
+            // failedAuthorization() and failedValidation() are left out: they run only
+            // on a request that is already being rejected.
+            $entryPoints = [
+                'prepareforvalidation' => true,
+                'authorize' => true,
+                'validator' => true,
+                'withvalidator' => true,
+                'after' => true,
+                'passedvalidation' => true,
+            ];
             foreach ($this->parser->findNodes($method->stmts ?? [], Node\Expr\MethodCall::class) as $call) {
                 if ($call instanceof Node\Expr\MethodCall
                     && $call->var instanceof Node\Expr\Variable
@@ -1241,17 +1251,22 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The methods of an App\ class, keyed by lowercased name, read from the file
-     * Laravel's default autoload mapping (App\ to app/) puts it in. Empty when the
-     * class is outside App\ or its file is missing.
+     * The methods of an App\ class or trait, keyed by lowercased name, read from the
+     * file Laravel's default autoload mapping (App\ to app/) puts it in. Methods from
+     * the traits it uses and the class it extends are merged in, in the order PHP
+     * resolves them: its own first, then its traits', then its parent's. The walk stops
+     * at the first name outside App\ or whose file is missing, which is where
+     * FormRequest itself sits.
      *
+     * @param  array<string, true>  $seen  Lowercased names already read, so a cycle ends
      * @return array<string, Node\Stmt\ClassMethod>
      */
-    private function appClassMethods(string $fqn): array
+    private function appClassMethods(string $fqn, array &$seen = []): array
     {
-        if (! str_starts_with($fqn, 'App\\')) {
+        if (! str_starts_with($fqn, 'App\\') || isset($seen[strtolower($fqn)])) {
             return [];
         }
+        $seen[strtolower($fqn)] = true;
 
         $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
             .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
@@ -1259,15 +1274,39 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
+        $ast = $this->parser->parseFile($path);
         $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
-        foreach ($this->parser->findClasses($this->parser->parseFile($path)) as $class) {
-            if ($class->name?->toString() !== $shortName) {
+        foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
+            if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
+                || $class->name?->toString() !== $shortName) {
                 continue;
             }
 
             $methods = [];
             foreach ($class->getMethods() as $classMethod) {
                 $methods[$classMethod->name->toLowerString()] = $classMethod;
+            }
+
+            $inherited = [];
+            foreach ($class->stmts as $stmt) {
+                if ($stmt instanceof Node\Stmt\TraitUse) {
+                    array_push($inherited, ...$stmt->traits);
+                }
+            }
+            if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
+                $inherited[] = $class->extends;
+            }
+
+            // These names are written in this file, so they resolve against its imports.
+            // The controller's table is put back afterwards: the caller is still reading
+            // the controller's parameters with it.
+            $controllerImports = $this->importedNames;
+            $this->trackFileImports($ast);
+            $inheritedFqns = array_map(fn (Node\Name $name): string => $this->resolvedClassFqn($name), $inherited);
+            $this->importedNames = $controllerImports;
+
+            foreach ($inheritedFqns as $inheritedFqn) {
+                $methods += $this->appClassMethods($inheritedFqn, $seen);
             }
 
             return $methods;

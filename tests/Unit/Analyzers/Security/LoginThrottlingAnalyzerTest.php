@@ -2578,10 +2578,11 @@ PHP;
         $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
     }
 
-    public function test_form_request_throttling_in_a_validation_hook_is_not_reported(): void
+    #[DataProvider('requestResolutionHookProvider')]
+    public function test_form_request_throttling_in_a_resolution_hook_is_not_reported(string $hook): void
     {
-        // Laravel runs passedValidation() itself when it resolves the request.
-        $request = <<<'PHP'
+        // Laravel's validateResolved() runs these itself when it resolves the request.
+        $request = str_replace('HOOK', $hook, <<<'PHP'
 <?php
 
 namespace App\Http\Requests\Auth;
@@ -2591,12 +2592,14 @@ use Illuminate\Support\Facades\RateLimiter;
 
 class SignInRequest extends FormRequest
 {
-    protected function passedValidation(): void
+    public function HOOK()
     {
         abort_if(RateLimiter::tooManyAttempts('sign-in|'.$this->ip(), 5), 429);
+
+        return true;
     }
 }
-PHP;
+PHP);
 
         $result = $this->analyzeApp([
             'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('Auth::attempt($request->validated());'),
@@ -2607,21 +2610,41 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_form_request_throttling_in_prepare_for_validation_is_not_reported(): void
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function requestResolutionHookProvider(): array
     {
+        return [
+            'prepareForValidation' => ['prepareForValidation'],
+            'authorize' => ['authorize'],
+            'validator' => ['validator'],
+            'withValidator' => ['withValidator'],
+            'after' => ['after'],
+            'passedValidation' => ['passedValidation'],
+        ];
+    }
+
+    public function test_form_request_throttling_only_on_failed_validation_is_reported(): void
+    {
+        // failedValidation() runs on a request already being rejected, so a valid
+        // credential guess never reaches it.
         $request = <<<'PHP'
 <?php
 
 namespace App\Http\Requests\Auth;
 
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Facades\RateLimiter;
 
 class SignInRequest extends FormRequest
 {
-    protected function prepareForValidation(): void
+    protected function failedValidation(Validator $validator): void
     {
-        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$this->ip(), 5), 429);
+        RateLimiter::hit('sign-in|'.$this->ip());
+
+        parent::failedValidation($validator);
     }
 }
 PHP;
@@ -2632,7 +2655,122 @@ PHP;
             'routes/web.php' => '<?php',
         ]);
 
+        $this->assertFailed($result);
+    }
+
+    public function test_throttling_inherited_from_an_app_parent_request_is_not_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->childSignInRequest('use App\Http\Requests\GuardedRequest;', 'extends GuardedRequest'),
+            'app/Http/Requests/GuardedRequest.php' => $this->throttleGuardDeclaration('abstract class GuardedRequest extends FormRequest'),
+            'routes/web.php' => '<?php',
+        ]);
+
         $this->assertPassed($result);
+    }
+
+    public function test_throttling_from_a_trait_the_request_uses_is_not_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->childSignInRequest('use App\Http\Requests\GuardsAttempts;', 'extends \Illuminate\Foundation\Http\FormRequest', 'use GuardsAttempts;'),
+            'app/Http/Requests/GuardsAttempts.php' => $this->throttleGuardDeclaration('trait GuardsAttempts'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttling_from_a_trait_on_the_parent_request_is_not_reported(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Requests;
+
+use Illuminate\Foundation\Http\FormRequest;
+
+abstract class GuardedRequest extends FormRequest
+{
+    use GuardsAttempts;
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->childSignInRequest('use App\Http\Requests\GuardedRequest;', 'extends GuardedRequest'),
+            'app/Http/Requests/GuardedRequest.php' => $parent,
+            'app/Http/Requests/GuardsAttempts.php' => $this->throttleGuardDeclaration('trait GuardsAttempts'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_parent_request_resolves_against_the_request_files_own_imports(): void
+    {
+        // Spelled with an alias only the request file declares. Resolved against the
+        // controller's table instead, GuardBase would land in App\Http\Controllers\Auth.
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->childSignInRequest('use App\Http\Requests\GuardedRequest as GuardBase;', 'extends GuardBase'),
+            'app/Http/Requests/GuardedRequest.php' => $this->throttleGuardDeclaration('abstract class GuardedRequest extends FormRequest'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reading_a_parent_request_leaves_the_controllers_imports_in_place(): void
+    {
+        // The request file imports its parent under the alias the controller uses for
+        // the request itself. If reading the request left its table behind, the second
+        // method's LoginForm would resolve to the parent, which has no authenticate().
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Requests\Auth\SignInRequest as LoginForm;
+
+class LoginController
+{
+    public function login(LoginForm $request)
+    {
+        $request->authenticate();
+    }
+
+    public function authenticate(LoginForm $request)
+    {
+        $request->authenticate();
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'app/Http/Requests/Auth/SignInRequest.php' => $this->childSignInRequest('use App\Http\Requests\GuardedRequest as LoginForm;', 'extends LoginForm'),
+            'app/Http/Requests/GuardedRequest.php' => $this->throttleGuardDeclaration('abstract class GuardedRequest extends FormRequest'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_request_inheritance_cycle_ends_and_is_reported(): void
+    {
+        $cycle = fn (string $class, string $parent): string => "<?php\n\nnamespace App\\Http\\Requests\\Auth;\n\nclass {$class} extends {$parent}\n{\n}\n";
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->formRequestLoginController('$request->authenticate();'),
+            'app/Http/Requests/Auth/SignInRequest.php' => $cycle('SignInRequest', 'LoopRequest'),
+            'app/Http/Requests/Auth/LoopRequest.php' => $cycle('LoopRequest', 'SignInRequest'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
     }
 
     public function test_unresolvable_form_request_class_is_reported(): void
@@ -2644,6 +2782,53 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    /**
+     * A SignInRequest whose authenticate() only calls a guard it inherits.
+     */
+    private function childSignInRequest(string $import, string $extends, string $traitUse = ''): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Http\\Requests\\Auth;
+
+{$import}
+
+class SignInRequest {$extends}
+{
+    {$traitUse}
+
+    public function authenticate(): void
+    {
+        \$this->ensureIsNotRateLimited();
+    }
+}
+PHP;
+    }
+
+    /**
+     * A class or trait in App\Http\Requests declaring the throttle guard.
+     */
+    private function throttleGuardDeclaration(string $declaration): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+use Illuminate\\Support\\Facades\\RateLimiter;
+
+{$declaration}
+{
+    public function ensureIsNotRateLimited(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.\$this->ip(), 5), 429);
+    }
+}
+PHP;
     }
 
     private function formRequestLoginController(string $body): string

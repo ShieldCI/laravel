@@ -3022,4 +3022,183 @@ return Application::configure(basePath: dirname(__DIR__))
     ->create();
 PHP;
     }
+
+    // ==================== Commented-out code ====================
+
+    public function test_commented_out_login_route_is_not_flagged(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+// Route::post('/session/login', [SessionController::class, 'store']);
+/*
+Route::post('/session/signin', [SessionController::class, 'store']);
+Auth::routes();
+*/
+
+Route::get('/', HomeController::class);
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_commented_out_throttle_does_not_clear_live_login_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/session/login', [SessionController::class, 'store']);
+    // ->middleware('throttle:5,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('Login route "/session/login" lacks rate limiting protection', $result->getIssues()[0]->message);
+        $this->assertSame(5, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_commented_out_disabled_fortify_limiter_is_not_reported(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\ServiceProvider;
+
+class FortifyServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        // While load testing: RateLimiter::for('login', fn () => Limit::none());
+        RateLimiter::for('login', fn () => Limit::perMinute(5));
+    }
+}
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_commented_out_fortify_limiters_key_is_not_configuration(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+return [
+    'guard' => 'web',
+    // 'limiters' => ['login' => 'login'],
+];
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => $config,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame('Fortify authentication lacks custom rate limiter configuration', $result->getIssues()[0]->message);
+    }
+
+    public function test_commented_out_login_rate_limiter_in_auth_controller_is_not_throttling(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class SessionController
+{
+    public function store()
+    {
+        // TODO: RateLimiter::attempt('login:'.request()->ip(), 5, fn () => true);
+        // if ($this->hasTooManyLoginAttempts(request())) { abort(429); }
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'app/Http/Controllers/Auth/SessionController.php' => $controller,
+            'routes/api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame('API authentication route "/session/login" lacks rate limiting protection', $result->getIssues()[0]->message);
+    }
+
+    public function test_commented_out_throttle_api_is_not_api_group_throttle(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        // $middleware->throttleApi();
+    })
+    ->create();
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame('API authentication route "/session/login" lacks rate limiting protection', $result->getIssues()[0]->message);
+    }
+
+    public function test_commented_out_throttle_in_breeze_auth_routes_does_not_count(): void
+    {
+        $authRoutes = <<<'PHP'
+<?php
+
+// Route::middleware('throttle:5,1')->group(function () {
+Route::post('login', [SessionController::class, 'store']);
+// });
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'composer.lock' => '{"packages": [{"name": "laravel/breeze", "version": "2.0.0"}]}',
+            'routes/auth.php' => $authRoutes,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertContains(
+            'Breeze uses custom authentication routes without rate limiting',
+            array_map(fn ($issue) => $issue->message, $result->getIssues()),
+        );
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function analyzeRoutesOnly(array $files): ResultInterface
+    {
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($this->createTempDirectory($files));
+        $analyzer->setPaths(['app', 'bootstrap', 'config', 'routes']);
+
+        return $analyzer->analyze();
+    }
 }

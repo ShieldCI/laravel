@@ -2405,12 +2405,72 @@ PHP;
         $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
     }
 
-    private function unthrottledLoginController(): string
+    public function test_login_rate_limiter_elsewhere_does_not_clear_controller_check(): void
     {
-        return <<<'PHP'
+        $apiController = <<<'PHP'
 <?php
 
-namespace App\Http\Controllers\Auth;
+namespace App\Http\Controllers\Api;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class TokenAuthController
+{
+    public function issue()
+    {
+        return RateLimiter::attempt('login:'.request()->ip(), 5, fn () => true);
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'app/Http/Controllers/Api/TokenAuthController.php' => $apiController,
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_qualified_route_reference_clears_only_that_controller(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'app/Http/Controllers/LoginController.php' => $this->unthrottledLoginController('App\\Http\\Controllers'),
+            'routes/api.php' => "<?php\n\nRoute::post('/login', [\\App\\Http\\Controllers\\LoginController::class, 'login'])->middleware('throttle:5,1');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['app/Http/Controllers/Auth/LoginController.php'], $this->issueFiles($result));
+    }
+
+    public function test_imported_route_reference_clears_only_that_controller(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\LoginController as WebLoginController;
+
+Route::post('/session/login', [WebLoginController::class, 'login'])->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'app/Http/Controllers/LoginController.php' => $this->unthrottledLoginController('App\\Http\\Controllers'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['app/Http/Controllers/LoginController.php'], $this->issueFiles($result));
+    }
+
+    private function unthrottledLoginController(string $namespace = 'App\\Http\\Controllers\\Auth'): string
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace NAMESPACE;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
@@ -2423,6 +2483,8 @@ class LoginController
     }
 }
 PHP;
+
+        return str_replace('NAMESPACE', $namespace, $controller);
     }
 
     /**
@@ -2443,6 +2505,14 @@ PHP;
     private function issueMessages(ResultInterface $result): array
     {
         return array_values(array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function issueFiles(ResultInterface $result): array
+    {
+        return array_values(array_map(fn ($issue) => (string) $issue->location?->file, $result->getIssues()));
     }
 
     private function unthrottledWebLogin(): string

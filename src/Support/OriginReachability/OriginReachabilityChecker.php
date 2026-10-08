@@ -25,6 +25,12 @@ use Throwable;
  * turning it off would silently convert a broken certificate into a clean 200, which is
  * exactly the kind of false evidence this helper exists to prevent.
  *
+ * How the question is asked is the caller's to name too, within limits ProbeRequest sets:
+ * which encodings to accept, and whether the body is decoded on the way back. A caller that
+ * inspects Content-Encoding needs both, because a streamed gzip response is otherwise
+ * inflated by Guzzle and its Content-Encoding removed before the helper sees it. Nothing
+ * that identifies the caller can be sent, so the probe stays unauthenticated.
+ *
  * The response is streamed rather than buffered. Only BODY_PREFIX_BYTES of the body is ever
  * kept, and an origin serving a large document at its root should not be downloaded in full
  * for the sake of the first two kilobytes.
@@ -33,7 +39,7 @@ use Throwable;
  * have to name the keys they may carry. Guzzle 7 declares the same parameter as a plain
  * array and accepts this unchanged.
  *
- * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, headers?: array<string, string>, http_errors?: bool, stream?: bool, timeout?: int|float, verify?: bool|string}
+ * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, decode_content?: bool, headers?: array<string, string>, http_errors?: bool, stream?: bool, timeout?: int|float, verify?: bool|string}
  */
 final class OriginReachabilityChecker
 {
@@ -86,14 +92,18 @@ final class OriginReachabilityChecker
     private ClientInterface $client;
 
     /**
-     * Probes already made, keyed by the URL that was probed, so one question costs one
-     * request for the life of this instance however many rules ask it.
+     * Probes already made, keyed by the URL that was probed and how it was asked, so one
+     * question costs one request for the life of this instance however many rules ask it.
      *
      * The key is origin plus path rather than origin alone. Keyed on the origin, a caller
      * asking about /.env would be handed the response captured for the home page and would
      * read a 200 as the file being exposed — the cache silently answering a question it
      * was never asked. The probed URL is unique per (origin, path) by construction, since
      * an origin never ends in a slash and a normalised path always begins with one.
+     *
+     * The request variant is part of the key for the same reason. Keyed on the URL alone, a
+     * caller that turned decoding off would be handed a response captured with it on, and
+     * would read a compressed asset as uncompressed.
      *
      * @var array<string, OriginProbeResult>
      */
@@ -118,8 +128,9 @@ final class OriginReachabilityChecker
      * report that cannot say Passed unless something actually answered.
      *
      * @param  string  $path  the path to request on each origin; the root by default
+     * @param  ProbeRequest|null  $request  the headers to send and whether to decode; a plain GET by default
      */
-    public function checkApplication(string $basePath, Repository $config, string $path = '/'): OriginReachabilityReport
+    public function checkApplication(string $basePath, Repository $config, string $path = '/', ?ProbeRequest $request = null): OriginReachabilityReport
     {
         return $this->check(
             $basePath,
@@ -127,6 +138,7 @@ final class OriginReachabilityChecker
             $this->stringConfig($config, 'app.asset_url'),
             $this->stringConfig($config, 'app.env'),
             $path,
+            $request,
         );
     }
 
@@ -134,12 +146,13 @@ final class OriginReachabilityChecker
      * Resolve the declared origins under a base path and probe them.
      *
      * @param  string  $path  the path to request on each origin; the root by default
+     * @param  ProbeRequest|null  $request  the headers to send and whether to decode; a plain GET by default
      */
-    public function check(string $basePath, ?string $appUrl, ?string $assetUrl, ?string $environment = null, string $path = '/'): OriginReachabilityReport
+    public function check(string $basePath, ?string $appUrl, ?string $assetUrl, ?string $environment = null, string $path = '/', ?ProbeRequest $request = null): OriginReachabilityReport
     {
         $resolved = $this->resolver->resolve($basePath, $appUrl, $assetUrl);
 
-        return $this->probe($resolved['origins'], $environment, $resolved['unusable'], $path);
+        return $this->probe($resolved['origins'], $environment, $resolved['unusable'], $path, $request);
     }
 
     private function stringConfig(Repository $config, string $key): ?string
@@ -166,15 +179,17 @@ final class OriginReachabilityChecker
      * @param  string|null  $environment  the application environment (APP_ENV), when known
      * @param  array<int, string>  $unusable  declarations that named no usable origin
      * @param  string  $path  the path to request on each origin; the root by default
+     * @param  ProbeRequest|null  $request  the headers to send and whether to decode; a plain GET by default
      */
-    public function probe(array $origins, ?string $environment = null, array $unusable = [], string $path = '/'): OriginReachabilityReport
+    public function probe(array $origins, ?string $environment = null, array $unusable = [], string $path = '/', ?ProbeRequest $request = null): OriginReachabilityReport
     {
         $path = $this->normalizePath($path);
+        $request ??= new ProbeRequest;
 
         $probes = [];
 
         foreach ($this->distinct($origins) as $origin) {
-            $probes[] = $this->probeOrigin($origin, $origin->origin.$path);
+            $probes[] = $this->probeOrigin($origin, $origin->origin.$path, $request);
         }
 
         return new OriginReachabilityReport($probes, $environment, $unusable);
@@ -246,9 +261,10 @@ final class OriginReachabilityChecker
         return array_values($distinct);
     }
 
-    private function probeOrigin(DeclaredOrigin $origin, string $url): OriginProbeResult
+    private function probeOrigin(DeclaredOrigin $origin, string $url, ProbeRequest $request): OriginProbeResult
     {
-        $cached = $this->probed[$url] ?? null;
+        $key = $url."\n".$request->cacheKey();
+        $cached = $this->probed[$key] ?? null;
 
         if ($cached !== null) {
             // Union, not replacement: an origin named by app.url and later by app.asset_url
@@ -261,10 +277,10 @@ final class OriginReachabilityChecker
                 : $cached->withDeclaredOrigin($merged);
         }
 
-        return $this->probed[$url] = $this->sendProbe($origin, $url);
+        return $this->probed[$key] = $this->sendProbe($origin, $url, $request);
     }
 
-    private function sendProbe(DeclaredOrigin $origin, string $url): OriginProbeResult
+    private function sendProbe(DeclaredOrigin $origin, string $url, ProbeRequest $request): OriginProbeResult
     {
         /** @var GuzzleRequestOptions $options */
         $options = [
@@ -274,7 +290,8 @@ final class OriginReachabilityChecker
             'connect_timeout' => $this->connectTimeout,
             'verify' => true,
             'stream' => true,
-            'headers' => ['Accept' => '*/*'],
+            'headers' => $request->headers(),
+            'decode_content' => $request->decodeContent,
         ];
 
         try {

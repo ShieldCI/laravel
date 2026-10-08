@@ -830,15 +830,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // A route reference string carries no position, so controller names
                 // resolve against the imports the file declares by its end.
-                $this->startTrackingImports();
-                foreach ($this->parser->parseFile($filePath) as $stmt) {
-                    $this->trackImports($stmt);
-                    if ($stmt instanceof Node\Stmt\Namespace_) {
-                        foreach ($stmt->stmts as $inner) {
-                            $this->trackImports($inner);
-                        }
-                    }
-                }
+                $this->trackFileImports($this->parser->parseFile($filePath));
 
                 // AST-derived line ranges of throttled route groups (fluent and
                 // array forms, nesting-safe) — replaces the former brace-depth
@@ -1098,6 +1090,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
+                // Parameter types resolve against the controller's own imports
+                $this->trackFileImports($ast);
+
                 // Check if controller uses login-specific throttling
                 if (! $this->hasLoginThrottlingInFile($controllerPath) && ! $this->usesLoginThrottlingTrait($controllerPath)) {
                     $classes = $this->parser->findClasses($ast);
@@ -1123,7 +1118,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                                 $methodName = $stmt->name->toString();
 
                                 // Check for auth methods including __invoke (single-action controllers)
-                                if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt', '__invoke'], true)) {
+                                if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt', '__invoke'], true)
+                                    && ! $this->delegatesToThrottlingRequest($stmt)) {
                                     $issues[] = $this->createIssueWithSnippet(
                                         message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
                                         filePath: $controllerPath,
@@ -1146,6 +1142,177 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
         }
+    }
+
+    /**
+     * Record the namespace and imports a file declares, replacing any earlier table.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function trackFileImports(array $ast): void
+    {
+        $this->startTrackingImports();
+        foreach ($ast as $stmt) {
+            $this->trackImports($stmt);
+            if ($stmt instanceof Node\Stmt\Namespace_) {
+                foreach ($stmt->stmts as $inner) {
+                    $this->trackImports($inner);
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether an authentication method throttles through a request class it type-hints.
+     *
+     * The starter kits throttle login inside the FormRequest (authenticate() calling
+     * ensureIsNotRateLimited()), and a controller that adopts the pattern only calls
+     * into it. A parameter counts when its class lives under app/ and either a method
+     * the controller calls on it, or a hook Laravel's validateResolved() runs on every
+     * request, reaches a RateLimiter call, directly or through $this->method() calls.
+     * Methods inherited from App\ parents and traits count as the class's own.
+     * Type-hinting the request is not enough: the throttling method has to run.
+     *
+     * Reads the import table, so trackFileImports() must have seen the controller file.
+     */
+    private function delegatesToThrottlingRequest(Node\Stmt\ClassMethod $method): bool
+    {
+        foreach ($method->params as $param) {
+            $type = $param->type instanceof Node\NullableType ? $param->type->type : $param->type;
+            if (! $type instanceof Node\Name || ! $param->var instanceof Node\Expr\Variable || ! is_string($param->var->name)) {
+                continue;
+            }
+
+            $requestMethods = $this->appClassMethods($this->resolvedClassFqn($type));
+            if ($requestMethods === []) {
+                continue;
+            }
+
+            // failedAuthorization() and failedValidation() are left out: they run only
+            // on a request that is already being rejected.
+            $entryPoints = [
+                'prepareforvalidation' => true,
+                'authorize' => true,
+                'validator' => true,
+                'withvalidator' => true,
+                'after' => true,
+                'passedvalidation' => true,
+            ];
+            foreach ($this->parser->findNodes($method->stmts ?? [], Node\Expr\MethodCall::class) as $call) {
+                if ($call instanceof Node\Expr\MethodCall
+                    && $call->var instanceof Node\Expr\Variable
+                    && $call->var->name === $param->var->name
+                    && $call->name instanceof Node\Identifier) {
+                    $entryPoints[$call->name->toLowerString()] = true;
+                }
+            }
+
+            $visited = [];
+            foreach (array_keys($entryPoints) as $name) {
+                if ($this->requestMethodThrottles($name, $requestMethods, $visited)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a request-class method reaches a RateLimiter call, directly or through
+     * $this->method() calls within the same class.
+     *
+     * @param  array<string, Node\Stmt\ClassMethod>  $methods  Keyed by lowercased name
+     * @param  array<string, true>  $visited
+     */
+    private function requestMethodThrottles(string $name, array $methods, array &$visited): bool
+    {
+        if (! isset($methods[$name]) || isset($visited[$name])) {
+            return false;
+        }
+        $visited[$name] = true;
+
+        $stmts = $methods[$name]->stmts ?? [];
+        if ($this->nodeContainsRateLimiter($stmts)) {
+            return true;
+        }
+
+        foreach ($this->parser->findNodes($stmts, Node\Expr\MethodCall::class) as $call) {
+            if ($call instanceof Node\Expr\MethodCall
+                && $call->var instanceof Node\Expr\Variable
+                && $call->var->name === 'this'
+                && $call->name instanceof Node\Identifier
+                && $this->requestMethodThrottles($call->name->toLowerString(), $methods, $visited)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The methods of an App\ class or trait, keyed by lowercased name, read from the
+     * file Laravel's default autoload mapping (App\ to app/) puts it in. Methods from
+     * the traits it uses and the class it extends are merged in, in the order PHP
+     * resolves them: its own first, then its traits', then its parent's. The walk stops
+     * at the first name outside App\ or whose file is missing, which is where
+     * FormRequest itself sits.
+     *
+     * @param  array<string, true>  $seen  Lowercased names already read, so a cycle ends
+     * @return array<string, Node\Stmt\ClassMethod>
+     */
+    private function appClassMethods(string $fqn, array &$seen = []): array
+    {
+        if (! str_starts_with($fqn, 'App\\') || isset($seen[strtolower($fqn)])) {
+            return [];
+        }
+        $seen[strtolower($fqn)] = true;
+
+        $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
+            .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
+        if (! file_exists($path)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($path);
+        $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
+        foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
+            if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
+                || $class->name?->toString() !== $shortName) {
+                continue;
+            }
+
+            $methods = [];
+            foreach ($class->getMethods() as $classMethod) {
+                $methods[$classMethod->name->toLowerString()] = $classMethod;
+            }
+
+            $inherited = [];
+            foreach ($class->stmts as $stmt) {
+                if ($stmt instanceof Node\Stmt\TraitUse) {
+                    array_push($inherited, ...$stmt->traits);
+                }
+            }
+            if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
+                $inherited[] = $class->extends;
+            }
+
+            // These names are written in this file, so they resolve against its imports.
+            // The controller's table is put back afterwards: the caller is still reading
+            // the controller's parameters with it.
+            $controllerImports = $this->importedNames;
+            $this->trackFileImports($ast);
+            $inheritedFqns = array_map(fn (Node\Name $name): string => $this->resolvedClassFqn($name), $inherited);
+            $this->importedNames = $controllerImports;
+
+            foreach ($inheritedFqns as $inheritedFqn) {
+                $methods += $this->appClassMethods($inheritedFqn, $seen);
+            }
+
+            return $methods;
+        }
+
+        return [];
     }
 
     /**

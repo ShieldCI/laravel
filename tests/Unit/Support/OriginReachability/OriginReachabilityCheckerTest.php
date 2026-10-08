@@ -1396,6 +1396,25 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
     }
 
     /**
+     * The client would refuse such a value before sending, and the probe would record that
+     * as a transport failure of an origin that was never asked. Refusing it here keeps a
+     * caller's mistake from reading as evidence about the origin.
+     */
+    /** @test */
+    #[Test]
+    public function it_refuses_a_header_value_carrying_a_control_character(): void
+    {
+        foreach (["gzip\r\nX-Extra: 1", "gzip\nX-Extra: 1", "gzip\0"] as $value) {
+            try {
+                new ProbeRequest(['Accept-Encoding' => $value]);
+                $this->fail('A value with '.json_encode($value).' must be refused.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString('Accept-Encoding', $exception->getMessage());
+            }
+        }
+    }
+
+    /**
      * The same bug class as keying on the origin alone: keyed on the URL, a plain probe of an
      * asset and a no-decode probe of the same asset would answer each other, and the caller
      * that turned decoding off would read a decoded response.
@@ -1430,6 +1449,41 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $this->assertSame('plain', $plain->probeFor('https://example.com')?->bodyPrefix);
         $this->assertSame('compressed', $compressed->probeFor('https://example.com')?->bodyPrefix);
         $this->assertSame('compressed', $again->probeFor('https://example.com')?->bodyPrefix);
+    }
+
+    /**
+     * Each half of the key on its own: requests that differ only in decoding, and requests
+     * that differ only in a header, are separate questions.
+     */
+    /** @test */
+    #[Test]
+    public function it_probes_separately_when_only_decoding_or_only_a_header_differs(): void
+    {
+        $origins = [new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL])];
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'decoded'), new Response(200, [], 'raw')], $recorded)
+        );
+
+        $decoded = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip']));
+        $raw = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip'], decodeContent: false));
+
+        $this->assertCount(2, $recorded, 'only decoding differs, so the second request must not be answered from the cache.');
+        $this->assertSame('decoded', $decoded->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('raw', $raw->probeFor('https://example.com')?->bodyPrefix);
+
+        $recorded = [];
+        $checker = new OriginReachabilityChecker(
+            $this->clientReplaying([new Response(200, [], 'gzip'), new Response(200, [], 'br')], $recorded)
+        );
+
+        $gzip = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'gzip'], decodeContent: false));
+        $br = $checker->probe($origins, request: new ProbeRequest(['Accept-Encoding' => 'br'], decodeContent: false));
+
+        $this->assertCount(2, $recorded, 'only a header differs, so the second request must not be answered from the cache.');
+        $this->assertSame('gzip', $gzip->probeFor('https://example.com')?->bodyPrefix);
+        $this->assertSame('br', $br->probeFor('https://example.com')?->bodyPrefix);
     }
 
     /**

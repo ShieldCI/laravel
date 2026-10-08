@@ -19,7 +19,7 @@ use InvalidArgumentException;
  * Decoding can be turned off for a caller that inspects Content-Encoding. The probe streams
  * its response, and Guzzle's stream handler inflates a gzip or deflate body and removes the
  * Content-Encoding header as it does so, which makes a compressed origin read as an
- * uncompressed one.
+ * uncompressed one. Any other encoding, such as br, arrives as sent whatever this says.
  */
 final class ProbeRequest
 {
@@ -41,9 +41,9 @@ final class ProbeRequest
 
     /**
      * @param  array<string, string>  $headers  request headers, named case-insensitively
-     * @param  bool  $decodeContent  whether a compressed response body is inflated and its Content-Encoding removed
+     * @param  bool  $decodeContent  whether a gzip or deflate response body is inflated and its Content-Encoding removed
      *
-     * @throws InvalidArgumentException when a header is outside the allowlist or named twice
+     * @throws InvalidArgumentException when a header is outside the allowlist, named twice, or has a CR, LF or NUL in its value
      */
     public function __construct(array $headers = [], public readonly bool $decodeContent = true)
     {
@@ -62,6 +62,12 @@ final class ProbeRequest
 
             if (isset($named[$canonical])) {
                 throw new InvalidArgumentException(sprintf('The header "%s" is named more than once.', $canonical));
+            }
+
+            // Refused here rather than left to the client, which would throw before sending
+            // and have the probe record a transport failure against an origin never asked.
+            if (strpbrk($value, "\r\n\0") !== false) {
+                throw new InvalidArgumentException(sprintf('The header "%s" must not contain CR, LF or NUL characters.', $canonical));
             }
 
             $named[$canonical] = $value;

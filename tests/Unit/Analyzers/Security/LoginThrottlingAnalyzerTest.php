@@ -2351,6 +2351,75 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_multi_line_closure_route_reads_the_throttle_after_its_body(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    $status = 'checked; then signed in';
+    logger("Sign-in for {$request->email} from ${ip}");
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    return redirect('/home');
+})
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_closure_route_does_not_read_the_next_routes_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    return redirect('/home');
+});
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_in_arrow_function_group_ends_at_the_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('web')->group(fn () =>
+    Route::post('/account/signin', [AccountController::class, 'signin'])
+);
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_unterminated_route_reads_its_chain_to_the_end_of_the_file(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', [AccountController::class, 'signin'])
+    ->middleware('throttle:6,1')
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
     // ==================== Route throttling clears the controller check ====================
 
     public function test_route_level_throttle_clears_controller_check(): void

@@ -944,9 +944,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Class names of the controllers a route definition points at, read from the
-     * route's line up to the end of its statement (the same five-line window
-     * checkRouteHasThrottling() looks ahead). Matches both the
-     * [X::class, 'method'] and the 'X@method' action forms.
+     * route's line up to the first line holding a ';', at most five lines.
+     * Matches both the [X::class, 'method'] and the 'X@method' action forms.
      *
      * An X::class name is resolved against the file's imports. An 'X@method'
      * string is kept as written, without a leading backslash: Laravel resolves
@@ -1025,32 +1024,48 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // A route whose own line ends its statement has no continuation to read;
-        // the next line is another statement, whatever middleware it carries.
-        // The end of the line, not any ';' on it: a one-line closure body holds
-        // one while its chain continues below.
-        if (str_ends_with(rtrim($lines[$lineNumber] ?? ''), ';')) {
-            return false;
-        }
-
-        // Check next 5 lines (for routes defined across multiple lines)
-        $searchRange = min($lineNumber + 5, count($lines));
-        for ($i = $lineNumber + 1; $i < $searchRange; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            if ($this->lineHasThrottle($lines[$i])) {
+        // The lines after the route carry its chain only up to the end of its
+        // statement; past that, a throttle belongs to another statement.
+        $endLine = $this->statementEndLine($lines, $lineNumber);
+        for ($i = $lineNumber + 1; $i <= $endLine; $i++) {
+            if (isset($lines[$i]) && $this->lineHasThrottle($lines[$i])) {
                 return true;
-            }
-
-            // Stop at semicolon (end of route definition)
-            if (str_contains($lines[$i], ';')) {
-                break;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Index of the line where the statement starting on $lineNumber ends: its
+     * ';', or the bracket of an enclosing group it sits in without one, as in an
+     * arrow-function group. The source is tokenized so that a ';' inside
+     * brackets, as in a closure body, or inside a string does not count. A
+     * statement that is never closed runs to the last line.
+     *
+     * @param  array<int, string>  $lines
+     */
+    private function statementEndLine(array $lines, int $lineNumber): int
+    {
+        $source = implode("\n", array_slice($lines, $lineNumber));
+        $depth = 0;
+
+        // The '<?php ' prefix shares the route's line, so token line 1 is $lineNumber.
+        foreach (\PhpToken::tokenize('<?php '.$source) as $token) {
+            if ($token->is(['(', '[', '{', T_DOLLAR_OPEN_CURLY_BRACES])) {
+                $depth++;
+            } elseif ($token->is([')', ']', '}'])) {
+                $depth--;
+            }
+
+            // A closer that takes the depth below zero belongs to an enclosing
+            // group, so the statement ended before it.
+            if ($depth < 0 || ($depth === 0 && $token->is(';'))) {
+                return $lineNumber + $token->line - 1;
+            }
+        }
+
+        return count($lines) - 1;
     }
 
     /**

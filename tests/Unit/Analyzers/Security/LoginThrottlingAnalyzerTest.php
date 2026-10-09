@@ -4174,6 +4174,130 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_limit_none_on_another_limiter_is_not_disabled_login_throttling(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\RateLimiter;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        RateLimiter::for('login', fn () => Limit::perMinute(5));
+
+        RateLimiter::for('reports', function ($request) {
+            return $request->user()?->is_staff ? Limit::none() : Limit::perMinute(30);
+        });
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/AppServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_limit_none_inside_the_login_limiter_is_disabled_throttling_after_another_limiter(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\RateLimiter;
+
+class AppServiceProvider
+{
+    public function boot(): void
+    {
+        RateLimiter::for('reports', fn () => Limit::perMinute(30));
+
+        RateLimiter::for('login', function () {
+            return Limit::none();
+        });
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/AppServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify login throttling is explicitly disabled'], $this->issueMessages($result));
+    }
+
+    public function test_fortify_check_is_skipped_when_fortify_routes_are_ignored(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Laravel\Fortify\Fortify;
+
+class FortifyServiceProvider
+{
+    public function register(): void
+    {
+        Fortify::ignoreRoutes();
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $provider,
+            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        // Fortify registers no login route, so only the app's own route is judged
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_commented_out_ignore_routes_does_not_skip_the_fortify_check(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Laravel\Fortify\Fortify;
+
+class FortifyServiceProvider
+{
+    public function register(): void
+    {
+        // Fortify::ignoreRoutes();
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $provider,
+            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+    }
+
     private function loginControllerWith(string $registration): string
     {
         return str_replace('REGISTRATION', $registration, <<<'PHP'

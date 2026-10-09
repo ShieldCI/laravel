@@ -1911,6 +1911,36 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Whether a RateLimiter::for() call defines the 'login' limiter.
+     */
+    private function isLoginLimiterName(Node\Expr\StaticCall $call): bool
+    {
+        $name = $call->args[0] ?? null;
+
+        return $name instanceof Node\Arg
+            && $name->value instanceof Node\Scalar\String_
+            && $name->value->value === 'login';
+    }
+
+    /**
+     * Whether an expression calls Limit::none() anywhere inside it.
+     */
+    private function containsLimitNone(Node\Expr $expr): bool
+    {
+        foreach ($this->parser->findNodes([$expr], Node\Expr\StaticCall::class) as $call) {
+            if ($call instanceof Node\Expr\StaticCall
+                && $call->class instanceof Node\Name
+                && $call->class->getLast() === 'Limit'
+                && $call->name instanceof Node\Identifier
+                && $call->name->toLowerString() === 'none') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Whether laravel/fortify is installed, read from composer.lock.
      */
     private function hasFortify(): bool
@@ -1946,21 +1976,38 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if ($file->isFile() && $file->getExtension() === 'php') {
-                        $content = $this->readCode($file->getPathname());
-                        if ($content === null) {
+                    if (! $file->isFile() || $file->getExtension() !== 'php') {
+                        continue;
+                    }
+
+                    foreach ($this->parser->findNodes($this->parser->parseFile($file->getPathname()), Node\Expr\StaticCall::class) as $call) {
+                        if (! $call instanceof Node\Expr\StaticCall
+                            || ! $call->class instanceof Node\Name
+                            || ! $call->name instanceof Node\Identifier) {
                             continue;
                         }
 
-                        // Check if Fortify throttling is explicitly disabled
-                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,\s*.*Limit::none\(\)/is', $content)) {
-                            $hasDisabledThrottling = true;
-                            $throttleDisabledFile = $file->getPathname();
+                        $class = $call->class->getLast();
+                        $method = $call->name->toLowerString();
+
+                        // Fortify::ignoreRoutes() registers no Fortify routes: the app's own
+                        // login routes are in routes/, which checkRouteFiles() judges.
+                        if ($class === 'Fortify' && $method === 'ignoreroutes') {
+                            return;
                         }
 
-                        // Check if custom login rate limiter is defined
-                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,/i', $content)) {
-                            $hasLoginRateLimiter = true;
+                        if ($class !== 'RateLimiter' || $method !== 'for' || ! $this->isLoginLimiterName($call)) {
+                            continue;
+                        }
+
+                        $hasLoginRateLimiter = true;
+
+                        // Limit::none() disables the login limiter only when the limiter's own
+                        // callback returns it, not when another limiter in the file does.
+                        $callback = $call->args[1] ?? null;
+                        if ($callback instanceof Node\Arg && $this->containsLimitNone($callback->value)) {
+                            $hasDisabledThrottling = true;
+                            $throttleDisabledFile = $file->getPathname();
                         }
                     }
                 }

@@ -1051,27 +1051,37 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private function statementEndLine(array $lines, int $lineNumber, int $column): int
     {
-        $tail = array_slice($lines, $lineNumber);
-        $tail[0] = substr($tail[0] ?? '', $column);
-        $source = implode("\n", $tail);
-        $depth = 0;
+        $lastLine = count($lines) - 1;
 
-        // The '<?php ' prefix shares the route's line, so token line 1 is $lineNumber.
-        foreach (\PhpToken::tokenize('<?php '.$source) as $token) {
-            if ($token->is(['(', '[', '{', T_DOLLAR_OPEN_CURLY_BRACES])) {
-                $depth++;
-            } elseif ($token->is([')', ']', '}'])) {
-                $depth--;
+        // Tokenize a window that doubles until it holds the statement's end, so a
+        // route costs the length of its statement rather than the rest of the
+        // file. Cutting at a line break is safe: the tokens before the cut are the
+        // ones the whole file yields, and a string the cut leaves open stays a
+        // single token, so no ';' or bracket inside it counts.
+        for ($size = 8; ; $size *= 2) {
+            $window = array_slice($lines, $lineNumber, $size);
+            $window[0] = substr($window[0] ?? '', $column);
+            $depth = 0;
+
+            // The '<?php ' prefix shares the route's line, so token line 1 is $lineNumber.
+            foreach (\PhpToken::tokenize('<?php '.implode("\n", $window)) as $token) {
+                if ($token->is(['(', '[', '{', T_DOLLAR_OPEN_CURLY_BRACES])) {
+                    $depth++;
+                } elseif ($token->is([')', ']', '}'])) {
+                    $depth--;
+                }
+
+                // A closer that takes the depth below zero belongs to an enclosing
+                // group, so the statement ended before it.
+                if ($depth < 0 || ($depth === 0 && $token->is(';'))) {
+                    return $lineNumber + $token->line - 1;
+                }
             }
 
-            // A closer that takes the depth below zero belongs to an enclosing
-            // group, so the statement ended before it.
-            if ($depth < 0 || ($depth === 0 && $token->is(';'))) {
-                return $lineNumber + $token->line - 1;
+            if ($lineNumber + $size > $lastLine) {
+                return $lastLine;
             }
         }
-
-        return count($lines) - 1;
     }
 
     /**

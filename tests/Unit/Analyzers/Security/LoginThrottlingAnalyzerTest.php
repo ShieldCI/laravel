@@ -2454,6 +2454,57 @@ PHP;
         $this->assertSame(['Auth::routes() includes login endpoint without explicit rate limiting'], $this->issueMessages($result));
     }
 
+    public function test_long_closure_route_reads_the_throttle_after_its_body(): void
+    {
+        // The body runs past the first eight-line window, which ends inside the
+        // multi-line string, so the statement's end is found by widening it.
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    $request->session()->put('signed_in_at', now());
+    event(new SignedIn($request->user()));
+    logger()->info('signed in', ['id' => $request->user()->id]);
+    $notice = 'Signed in; welcome back.
+Close this notice with ) or }; it will not return.';
+    return redirect('/home')->with('notice', $notice);
+})
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_long_closure_route_does_not_read_the_next_routes_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    $request->session()->put('signed_in_at', now());
+    event(new SignedIn($request->user()));
+    logger()->info('signed in', ['id' => $request->user()->id]);
+    $notice = 'Signed in; welcome back.
+Close this notice with ) or }; it will not return.';
+    return redirect('/home')->with('notice', $notice);
+});
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
     public function test_unterminated_route_reads_its_chain_to_the_end_of_the_file(): void
     {
         $routes = <<<'PHP'

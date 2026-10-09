@@ -1240,7 +1240,7 @@ JSON;
         $this->assertPassed($result);
     }
 
-    public function test_breeze_with_custom_unthrottled_routes_fails(): void
+    public function test_breeze_custom_unthrottled_login_route_is_reported_once_by_the_route_check(): void
     {
         $composerLock = <<<'JSON'
 {
@@ -1273,9 +1273,10 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should fail - custom routes without throttling
+        // routes/auth.php is a route file like any other: the route check reports the
+        // login route, and no Breeze-specific finding repeats it for the whole file
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('custom authentication routes', $result);
+        $this->assertSame(['Login route "/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
     public function test_passes_with_laravel_11_throttle_in_bootstrap(): void
@@ -1840,11 +1841,9 @@ PHP;
 
     public function test_passes_when_form_request_uses_rate_limiter_only_in_ensure_method(): void
     {
-        // Isolates the AST gate: the only throttling signal is RateLimiter::hit/clear
-        // inside ensureIsNotRateLimited() — no tooManyAttempts text, no 'login' literal.
-        // The route is covered through the controller's call into the request; the
-        // Breeze check on routes/auth.php (no 'throttle' in it) is skipped only when
-        // ensureIsNotRateLimited is a recognized auth method.
+        // The only throttling signal is RateLimiter::hit/clear inside
+        // ensureIsNotRateLimited(), with no tooManyAttempts text and no 'login' literal.
+        // The route is covered through the controller's call into the request.
         $route = <<<'PHP'
 <?php
 
@@ -3429,10 +3428,7 @@ PHP;
         ]);
 
         $this->assertFailed($result);
-        $this->assertContains(
-            'Breeze uses custom authentication routes without rate limiting',
-            array_map(fn ($issue) => $issue->message, $result->getIssues()),
-        );
+        $this->assertSame(['Login route "login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
     // ==================== Code-level rate limiting covers only the routes that reach it (#487) ====================
@@ -3961,6 +3957,186 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    /**
+     * @dataProvider controllerMiddlewareCoveringLogin
+     */
+    #[DataProvider('controllerMiddlewareCoveringLogin')]
+    public function test_controller_check_credits_registered_middleware_that_reaches_login(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith($registration),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function controllerMiddlewareCoveringLogin(): array
+    {
+        return [
+            'constructor, every method' => ['public function __construct() { $this->middleware(CapSignIns::class); }'],
+            'constructor, only login' => ['public function __construct() { $this->middleware(CapSignIns::class)->only(\'login\'); }'],
+            'constructor, only as varargs' => ['public function __construct() { $this->middleware(CapSignIns::class)->only(\'logout\', \'login\'); }'],
+            'constructor, except another method' => ['public function __construct() { $this->middleware(CapSignIns::class)->except([\'logout\']); }'],
+            'HasMiddleware, named only' => ['public static function middleware(): array { return [new Middleware(CapSignIns::class, only: [\'login\'])]; }'],
+            'HasMiddleware, positional only' => ['public static function middleware(): array { return [new Middleware(CapSignIns::class, [\'login\'])]; }'],
+            'HasMiddleware, bare class' => ['public static function middleware(): array { return [CapSignIns::class]; }'],
+        ];
+    }
+
+    /**
+     * @dataProvider controllerMiddlewareMissingLogin
+     */
+    #[DataProvider('controllerMiddlewareMissingLogin')]
+    public function test_controller_check_reports_login_that_registered_middleware_skips(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith($registration),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function controllerMiddlewareMissingLogin(): array
+    {
+        return [
+            'constructor, only another method' => ['public function __construct() { $this->middleware(CapSignIns::class)->only(\'logout\'); }'],
+            'constructor, except login' => ['public function __construct() { $this->middleware(CapSignIns::class)->except(\'login\'); }'],
+            'HasMiddleware, named except' => ['public static function middleware(): array { return [new Middleware(CapSignIns::class, except: [\'login\'])]; }'],
+            'HasMiddleware, positional except' => ['public static function middleware(): array { return [new Middleware(CapSignIns::class, null, [\'login\'])]; }'],
+            'constructor, a middleware that does not throttle' => ['public function __construct() { $this->middleware(\'guest\'); }'],
+        ];
+    }
+
+    public function test_controller_check_does_not_credit_a_parent_for_a_login_method_the_controller_declares(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+abstract class GuardSignIn
+{
+    use AuthenticatesUsers;
+}
+PHP;
+
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class LoginController extends GuardSignIn
+{
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/GuardSignIn.php' => $parent,
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+    }
+
+    // ==================== Fortify is judged on its own route (#487) ====================
+
+    public function test_throttling_auth_controller_does_not_excuse_fortify_without_limiters(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'app/Http/Controllers/Auth/SessionController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionController'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+    }
+
+    public function test_throttling_auth_controller_does_not_excuse_disabled_fortify_throttling(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Support\Facades\RateLimiter;
+
+class FortifyServiceProvider
+{
+    public function boot(): void
+    {
+        RateLimiter::for('login', fn () => Limit::none());
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $provider,
+            'app/Http/Controllers/Auth/SessionController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionController'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify login throttling is explicitly disabled'], $this->issueMessages($result));
+    }
+
+    public function test_web_group_throttle_still_covers_fortify(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->web(append: \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':60,1');"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    private function loginControllerWith(string $registration): string
+    {
+        return str_replace('REGISTRATION', $registration, <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
+
+class LoginController implements HasMiddleware
+{
+    REGISTRATION
+
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP);
     }
 
     private function throttlingMiddleware(string $class): string

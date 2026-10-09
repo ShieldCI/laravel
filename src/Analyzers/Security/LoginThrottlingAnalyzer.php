@@ -857,9 +857,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     $inThrottledGroup = $this->lineInRanges($lineNumber + 1, $throttledRanges);
 
                     // Check for Auth::routes() helper
-                    if (preg_match('/Auth::routes\s*\(/i', $line)) {
+                    if (preg_match('/Auth::routes\s*\(/i', $line, $authCall, PREG_OFFSET_CAPTURE)) {
                         // Auth::routes() includes login routes - check if throttled
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber);
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1]);
 
                         if (! $hasThrottle && ! $groupCovered && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
@@ -886,14 +886,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // For web files GET never matches: a GET login route renders the form,
                     // and the credentials arrive on the POST.
                     $routeUri = null;
+                    $routeColumn = 0;
                     if ($isApiRoute) {
-                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m)) {
-                            $routeUri = $m[2];
-                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
-                            $routeUri = $m[2];
+                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
+                            [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
+                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
+                            [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
                         }
-                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
-                        $routeUri = $m[2];
+                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
+                        [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
                     }
 
                     if ($routeUri !== null) {
@@ -909,7 +910,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         }
 
                         // Check if this route or surrounding lines have throttle middleware
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber) || $inThrottledGroup;
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $routeColumn) || $inThrottledGroup;
 
                         if ($hasThrottle || $fileThrottled) {
                             foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
@@ -990,10 +991,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Check if a route has throttling in nearby lines or on the same line (before/after).
+     * $column is the offset on the route's line where the route call starts.
      *
      * @param  array<int, string>  $lines
      */
-    private function checkRouteHasThrottling(array $lines, int $lineNumber): bool
+    private function checkRouteHasThrottling(array $lines, int $lineNumber, int $column): bool
     {
         // Check current line first (for patterns like: Route::middleware('throttle')->post(...))
         if (isset($lines[$lineNumber]) && is_string($lines[$lineNumber])) {
@@ -1026,7 +1028,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         // The lines after the route carry its chain only up to the end of its
         // statement; past that, a throttle belongs to another statement.
-        $endLine = $this->statementEndLine($lines, $lineNumber);
+        $endLine = $this->statementEndLine($lines, $lineNumber, $column);
         for ($i = $lineNumber + 1; $i <= $endLine; $i++) {
             if (isset($lines[$i]) && $this->lineHasThrottle($lines[$i])) {
                 return true;
@@ -1037,17 +1039,21 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Index of the line where the statement starting on $lineNumber ends: its
-     * ';', or the bracket of an enclosing group it sits in without one, as in an
-     * arrow-function group. The source is tokenized so that a ';' inside
-     * brackets, as in a closure body, or inside a string does not count. A
-     * statement that is never closed runs to the last line.
+     * Index of the line where the statement starting at $column on $lineNumber
+     * ends: its ';', or the bracket of an enclosing group it sits in without
+     * one, as in an arrow-function group. The source is tokenized so that a ';'
+     * inside brackets, as in a closure body, or inside a string does not count.
+     * Reading from $column rather than the start of the line keeps a statement
+     * or group opener written before the route on that line out of the count.
+     * A statement that is never closed runs to the last line.
      *
      * @param  array<int, string>  $lines
      */
-    private function statementEndLine(array $lines, int $lineNumber): int
+    private function statementEndLine(array $lines, int $lineNumber, int $column): int
     {
-        $source = implode("\n", array_slice($lines, $lineNumber));
+        $tail = array_slice($lines, $lineNumber);
+        $tail[0] = substr($tail[0] ?? '', $column);
+        $source = implode("\n", $tail);
         $depth = 0;
 
         // The '<?php ' prefix shares the route's line, so token line 1 is $lineNumber.

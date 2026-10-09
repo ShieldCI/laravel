@@ -2406,6 +2406,54 @@ PHP;
         $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    public function test_statement_before_the_route_on_its_line_does_not_end_the_routes_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('home')->group(function () {
+    Route::get('/', [HomeController::class, 'index']);
+}); Route::post('/account/signin', [AccountController::class, 'signin'])
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_opened_on_the_routes_line_does_not_extend_the_routes_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('account')->group(function () { Route::post('/signin', [AccountController::class, 'signin']);
+    Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+});
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_group_opened_on_the_auth_routes_line_does_not_extend_its_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('account')->group(function () { Auth::routes();
+    Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+});
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Auth::routes() includes login endpoint without explicit rate limiting'], $this->issueMessages($result));
+    }
+
     public function test_unterminated_route_reads_its_chain_to_the_end_of_the_file(): void
     {
         $routes = <<<'PHP'

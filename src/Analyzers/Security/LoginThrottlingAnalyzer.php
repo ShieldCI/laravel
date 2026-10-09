@@ -38,6 +38,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private array $throttlingClasses = [];
 
+    /**
+     * Route middleware aliases the app registers, mapped to their classes, for this run.
+     *
+     * @var array<string, string>
+     */
+    private array $middlewareAliases = [];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -71,6 +78,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
         $this->throttlingClasses = [];
+        $this->middlewareAliases = $this->readMiddlewareAliases();
 
         // Login rate limiting found anywhere in the auth code. It only gates the
         // package checks below: a route is covered by the code it reaches, not by
@@ -832,7 +840,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // A route reference string carries no position, so controller names
                 // resolve against the imports the file declares by its end.
-                $this->trackFileImports($this->parser->parseFile($filePath));
+                $ast = $this->parser->parseFile($filePath);
+                $this->trackFileImports($ast);
+
+                // Middleware classes each route statement and each route group names,
+                // so a throttling middleware covers the routes it is applied to.
+                [$statementMiddleware, $groupMiddleware] = $this->routeMiddleware($ast);
 
                 // AST-derived line ranges of throttled route groups (fluent and
                 // array forms, nesting-safe) — replaces the former brace-depth
@@ -850,7 +863,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         // Auth::routes() includes login routes - check if throttled
                         // laravel/ui registers these against App\Http\Controllers\Auth\LoginController
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
-                            || $this->routeClassesThrottle(['App\\Http\\Controllers\\Auth\\LoginController']);
+                            || $this->routeClassesThrottle(['App\\Http\\Controllers\\Auth\\LoginController'])
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware);
 
                         if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
@@ -910,7 +924,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             }
                         }
 
-                        if (! $hasThrottle && ! $fileThrottled && ! $this->routeClassesThrottle($routeClasses)) {
+                        if (! $hasThrottle
+                            && ! $fileThrottled
+                            && ! $this->routeClassesThrottle($routeClasses)
+                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -933,6 +950,145 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return $coveredControllers;
+    }
+
+    /**
+     * The middleware classes a route file applies: per route statement, keyed by
+     * the line its Route:: call starts on (Route::post(...)->middleware(...)), and
+     * per route group, with the line range of the group's closure
+     * (Route::middleware(...)->group(...), Route::group(['middleware' => ...], ...)).
+     *
+     * Reads the import table, so trackFileImports() must have seen the route file.
+     *
+     * @param  array<Node>  $ast
+     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>}>}
+     */
+    private function routeMiddleware(array $ast): array
+    {
+        $statements = [];
+        $groups = [];
+
+        foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $method = $call->name->toLowerString();
+
+            if ($method === 'middleware' && ($call->args[0] ?? null) instanceof Node\Arg) {
+                $root = $call->var;
+                while ($root instanceof Node\Expr\MethodCall) {
+                    $root = $root->var;
+                }
+
+                if ($root instanceof Node\Expr\StaticCall
+                    && $root->name instanceof Node\Identifier
+                    && in_array($root->name->toLowerString(), ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match'], true)) {
+                    $line = $root->getStartLine();
+                    $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareClassesIn($call->args[0]->value)];
+                }
+            }
+
+            if ($method === 'group') {
+                $this->collectGroupMiddleware($call->args, $this->chainMiddleware($call->var), $groups);
+            }
+        }
+
+        foreach ($this->parser->findNodes($ast, Node\Expr\StaticCall::class) as $call) {
+            if ($call instanceof Node\Expr\StaticCall
+                && $call->name instanceof Node\Identifier
+                && $call->name->toLowerString() === 'group') {
+                $this->collectGroupMiddleware($call->args, [], $groups);
+            }
+        }
+
+        return [$statements, $groups];
+    }
+
+    /**
+     * Records a group's closure range with the middleware its chain and its
+     * ['middleware' => ...] attribute array name, when there is a closure and any.
+     *
+     * @param  array<Node>  $args
+     * @param  array<int, string>  $classes  Middleware the group's method chain applies
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groups
+     */
+    private function collectGroupMiddleware(array $args, array $classes, array &$groups): void
+    {
+        $closure = null;
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+
+            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+                $closure ??= $arg->value;
+            }
+
+            if ($arg->value instanceof Node\Expr\Array_) {
+                foreach ($arg->value->items as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem
+                        && $item->key instanceof Node\Scalar\String_
+                        && $item->key->value === 'middleware') {
+                        array_push($classes, ...$this->middlewareClassesIn($item->value));
+                    }
+                }
+            }
+        }
+
+        if ($closure !== null && $classes !== []) {
+            $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes];
+        }
+    }
+
+    /**
+     * The middleware classes the ->middleware(...) / Route::middleware(...) calls in
+     * a method chain name.
+     *
+     * @return array<int, string>
+     */
+    private function chainMiddleware(Node\Expr $node): array
+    {
+        $classes = [];
+        while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier
+                && $node->name->toLowerString() === 'middleware'
+                && ($node->args[0] ?? null) instanceof Node\Arg) {
+                array_push($classes, ...$this->middlewareClassesIn($node->args[0]->value));
+            }
+
+            if (! $node instanceof Node\Expr\MethodCall) {
+                break;
+            }
+            $node = $node->var;
+        }
+
+        return $classes;
+    }
+
+    /**
+     * Whether a middleware class applied to the route on this 1-based line, by its
+     * own statement or by a group around it, throttles login.
+     *
+     * @param  array<int, array<int, string>>  $statementMiddleware
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groupMiddleware
+     */
+    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware): bool
+    {
+        $classes = $statementMiddleware[$line] ?? [];
+        foreach ($groupMiddleware as $group) {
+            if ($line >= $group['start'] && $line <= $group['end']) {
+                array_push($classes, ...$group['classes']);
+            }
+        }
+
+        foreach ($classes as $class) {
+            if ($this->classThrottlesLogin($class)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1326,15 +1482,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $methods[$classMethod->name->toLowerString()] = $classMethod;
             }
 
-            $inherited = [];
-            foreach ($class->stmts as $stmt) {
-                if ($stmt instanceof Node\Stmt\TraitUse) {
-                    array_push($inherited, ...$stmt->traits);
-                }
-            }
-            if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
-                $inherited[] = $class->extends;
-            }
+            $inherited = $this->inheritedNames($class);
 
             // These names are written in this file, so they resolve against its imports.
             // The controller's table is put back afterwards: the caller is still reading
@@ -1395,8 +1543,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether an App\ class throttles login: its file has login throttling, it uses
-     * AuthenticatesUsers or ThrottlesLogins, or one of its methods delegates to a
-     * throttling FormRequest. Memoised for the run.
+     * AuthenticatesUsers or ThrottlesLogins, one of its methods delegates to a
+     * throttling FormRequest, or a class it reaches does (see reachedClasses()).
+     * Memoised for the run.
      */
     private function classThrottlesLogin(string $fqn): bool
     {
@@ -1404,43 +1553,268 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return $this->throttlingClasses[$fqn];
         }
 
+        // Seeded so an inheritance or middleware cycle ends instead of recursing
+        $this->throttlingClasses[$fqn] = false;
+
         $path = $this->appClassPath($fqn);
-        $throttles = $path !== null && $this->fileClassThrottlesLogin($path, $fqn);
-
-        return $this->throttlingClasses[$fqn] = $throttles;
-    }
-
-    private function fileClassThrottlesLogin(string $path, string $fqn): bool
-    {
-        if ($this->hasLoginThrottlingInFile($path) || $this->usesLoginThrottlingTrait($path)) {
-            return true;
+        if ($path === null) {
+            return false;
         }
 
+        if ($this->hasLoginThrottlingInFile($path) || $this->usesLoginThrottlingTrait($path)) {
+            return $this->throttlingClasses[$fqn] = true;
+        }
+
+        $delegates = false;
+        $reached = $this->reachedClasses($path, $fqn, $delegates);
+        if ($delegates) {
+            return $this->throttlingClasses[$fqn] = true;
+        }
+
+        foreach ($reached as $class) {
+            if ($this->classThrottlesLogin($class)) {
+                return $this->throttlingClasses[$fqn] = true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The classes whose throttling an App\ class takes on: the traits it uses, the
+     * class it extends, and the middleware it registers on itself, in a constructor
+     * ($this->middleware(...)) or through HasMiddleware's static middleware().
+     * Also sets $delegates when one of its own methods delegates to a throttling
+     * FormRequest.
+     *
+     * Constructor middleware is credited whatever only()/except() it is limited
+     * to: the route names the controller, not the method.
+     *
+     * @return array<int, string>
+     */
+    private function reachedClasses(string $path, string $fqn, bool &$delegates): array
+    {
         $ast = $this->parser->parseFile($path);
         $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
 
-        // Parameter types resolve against the class's own imports. The route file's
-        // table is put back afterwards: its remaining routes are still read with it.
-        $routeImports = $this->importedNames;
+        // Names in the class resolve against its own imports. The caller's table is
+        // put back afterwards: a route file's remaining routes are still read with it.
+        $callerImports = $this->importedNames;
         $this->trackFileImports($ast);
 
-        $throttles = false;
-        foreach ($this->parser->findClasses($ast) as $class) {
-            if ($class->name?->toString() !== $shortName) {
+        $reached = [];
+        foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
+            if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
+                || $class->name?->toString() !== $shortName) {
                 continue;
             }
 
             foreach ($class->getMethods() as $method) {
                 if ($this->delegatesToThrottlingRequest($method)) {
-                    $throttles = true;
-                    break 2;
+                    $delegates = true;
+                }
+
+                array_push($reached, ...$this->middlewareRegisteredBy($method));
+            }
+
+            foreach ($this->inheritedNames($class) as $name) {
+                $reached[] = $this->resolvedClassFqn($name);
+            }
+
+            break;
+        }
+
+        $this->importedNames = $callerImports;
+
+        return $reached;
+    }
+
+    /**
+     * Middleware classes a controller method registers on its own controller:
+     * $this->middleware(...) in the constructor, or the list HasMiddleware's
+     * static middleware() returns.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareRegisteredBy(Node\Stmt\ClassMethod $method): array
+    {
+        $name = $method->name->toLowerString();
+        $classes = [];
+
+        if ($name === '__construct') {
+            foreach ($this->parser->findNodes($method->stmts ?? [], Node\Expr\MethodCall::class) as $call) {
+                if ($call instanceof Node\Expr\MethodCall
+                    && $call->var instanceof Node\Expr\Variable
+                    && $call->var->name === 'this'
+                    && $call->name instanceof Node\Identifier
+                    && $call->name->toLowerString() === 'middleware'
+                    && ($call->args[0] ?? null) instanceof Node\Arg) {
+                    array_push($classes, ...$this->middlewareClassesIn($call->args[0]->value));
                 }
             }
         }
 
-        $this->importedNames = $routeImports;
+        if ($name === 'middleware' && $method->isStatic()) {
+            foreach ($this->parser->findNodes($method->stmts ?? [], Node\Stmt\Return_::class) as $return) {
+                if ($return instanceof Node\Stmt\Return_ && $return->expr !== null) {
+                    array_push($classes, ...$this->middlewareClassesIn($return->expr));
+                }
+            }
+        }
 
-        return $throttles;
+        return $classes;
+    }
+
+    /**
+     * The traits a class or trait uses and the class it extends, as written.
+     *
+     * @return array<int, Node\Name>
+     */
+    private function inheritedNames(Node\Stmt\ClassLike $class): array
+    {
+        $names = [];
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\TraitUse) {
+                array_push($names, ...$stmt->traits);
+            }
+        }
+        if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
+            $names[] = $class->extends;
+        }
+
+        return $names;
+    }
+
+    /**
+     * The middleware classes a middleware value names, resolved against the current
+     * import table: X::class, X::class.':5,1', a class-name string, an alias
+     * string ('signin.cap:5,1'), a list of any of these, or new Middleware(...).
+     * A name that resolves to no class (a built-in alias like 'auth' that the
+     * app does not register) is dropped.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareClassesIn(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $classes = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    array_push($classes, ...$this->middlewareClassesIn($item->value));
+                }
+            }
+
+            return $classes;
+        }
+
+        if ($expr instanceof Node\Expr\New_) {
+            $first = $expr->args[0] ?? null;
+
+            return $first instanceof Node\Arg ? $this->middlewareClassesIn($first->value) : [];
+        }
+
+        if ($expr instanceof Node\Scalar\String_) {
+            $name = strtok($expr->value, ':');
+            if ($name === false) {
+                return [];
+            }
+
+            if (str_contains($name, '\\')) {
+                return [ltrim($name, '\\')];
+            }
+
+            return isset($this->middlewareAliases[$name]) ? [$this->middlewareAliases[$name]] : [];
+        }
+
+        $class = $this->middlewareClassName($expr);
+
+        return $class === null ? [] : [$class];
+    }
+
+    /**
+     * The class an X::class or X::class.':params' expression names, resolved
+     * against the current import table.
+     */
+    private function middlewareClassName(Node\Expr $expr): ?string
+    {
+        if ($expr instanceof Node\Expr\BinaryOp\Concat) {
+            return $this->middlewareClassName($expr->left);
+        }
+
+        if ($expr instanceof Node\Expr\ClassConstFetch
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && $expr->name->toLowerString() === 'class') {
+            return $this->resolvedClassFqn($expr->class);
+        }
+
+        if ($expr instanceof Node\Scalar\String_ && str_contains($expr->value, '\\')) {
+            return ltrim((string) strtok($expr->value, ':'), '\\');
+        }
+
+        return null;
+    }
+
+    /**
+     * Route middleware aliases the app registers, mapped to their classes: the
+     * Kernel's $middlewareAliases / $routeMiddleware (Laravel 10 and earlier) and
+     * $middleware->alias([...]) in bootstrap/app.php (Laravel 11+).
+     *
+     * Runs before any other file's imports are tracked, so it leaves no table to
+     * put back.
+     *
+     * @return array<string, string>
+     */
+    private function readMiddlewareAliases(): array
+    {
+        $basePath = $this->getBasePath();
+        $aliases = [];
+
+        $kernelPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        if (file_exists($kernelPath)) {
+            $ast = $this->parser->parseFile($kernelPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Stmt\Property::class) as $property) {
+                foreach ($property instanceof Node\Stmt\Property ? $property->props : [] as $prop) {
+                    if (in_array($prop->name->toString(), ['middlewareAliases', 'routeMiddleware'], true)
+                        && $prop->default instanceof Node\Expr\Array_) {
+                        $aliases += $this->aliasesIn($prop->default);
+                    }
+                }
+            }
+        }
+
+        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        if (file_exists($bootstrapPath)) {
+            $ast = $this->parser->parseFile($bootstrapPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findMethodCalls($ast, 'alias') as $call) {
+                $first = $call instanceof Node\Expr\MethodCall ? ($call->args[0] ?? null) : null;
+                if ($first instanceof Node\Arg && $first->value instanceof Node\Expr\Array_) {
+                    $aliases += $this->aliasesIn($first->value);
+                }
+            }
+        }
+
+        return $aliases;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function aliasesIn(Node\Expr\Array_ $array): array
+    {
+        $aliases = [];
+        foreach ($array->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                $class = $this->middlewareClassName($item->value);
+                if ($class !== null) {
+                    $aliases[$item->key->value] = $class;
+                }
+            }
+        }
+
+        return $aliases;
     }
 
     /**

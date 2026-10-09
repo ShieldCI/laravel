@@ -3595,6 +3595,395 @@ PHP;
         $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    public function test_group_middleware_class_covers_the_routes_inside_the_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+use App\Http\Middleware\CapSignIns;
+
+Route::middleware(CapSignIns::class)->group(function () {
+    Route::post('/signin', [SignInController::class, 'store']);
+});
+
+Route::post('/admin/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_array_form_group_middleware_class_covers_the_routes_inside_the_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+use App\Http\Middleware\CapSignIns;
+
+Route::group(['middleware' => ['web', CapSignIns::class]], function () {
+    Route::post('/signin', [SignInController::class, 'store']);
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_middleware_that_does_not_throttle_covers_nothing(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+class TrimSignIns
+{
+    public function handle($request, $next)
+    {
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+use App\Http\Middleware\TrimSignIns;
+
+Route::middleware(TrimSignIns::class)->group(function () {
+    Route::post('/signin', [SignInController::class, 'store']);
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/TrimSignIns.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_kernel_middleware_alias_resolves_to_its_throttling_class(): void
+    {
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareAliases = [
+        'auth' => \App\Http\Middleware\Authenticate::class,
+        'signin.cap' => CapSignIns::class,
+    ];
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::post('/signin', [SignInController::class, 'store'])->middleware('signin.cap:5,1');
+Route::post('/admin/signin', [SignInController::class, 'store'])->middleware('auth');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $kernel,
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_bootstrap_middleware_alias_covers_a_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::middleware(['guest', 'signin.cap'])->group(function () {
+    Route::post('/signin', [SignInController::class, 'store']);
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->alias(['signin.cap' => \\App\\Http\\Middleware\\CapSignIns::class]);"),
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_to_a_controller_whose_parent_throttles_passes(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+abstract class GuardedSignIn
+{
+    public function store()
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.request()->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Admin\StaffSignInController;
+
+Route::post('/staff/signin', [StaffSignInController::class, 'store']);
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Auth\GuardedSignIn;
+
+class StaffSignInController extends GuardedSignIn
+{
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/GuardedSignIn.php' => $parent,
+            'app/Http/Controllers/Admin/StaffSignInController.php' => $child,
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_to_a_controller_whose_parent_uses_authenticates_users_passes(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+abstract class GuardSignIn
+{
+    use AuthenticatesUsers;
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class StaffSignInController extends GuardSignIn
+{
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/GuardSignIn.php' => $parent,
+            'app/Http/Controllers/Auth/StaffSignInController.php' => $child,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\StaffSignInController;\n\nRoute::post('/staff/login', [StaffSignInController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_to_a_controller_whose_parent_does_not_throttle_is_flagged(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+abstract class Controller
+{
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class SignInController extends Controller
+{
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Controller.php' => $parent,
+            'app/Http/Controllers/SignInController.php' => $child,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_inheritance_cycle_ends_and_reports_the_route(): void
+    {
+        $first = "<?php\n\nnamespace App\\Http\\Controllers;\n\nclass SignInController extends StaffSignInController\n{\n}\n";
+        $second = "<?php\n\nnamespace App\\Http\\Controllers;\n\nclass StaffSignInController extends SignInController\n{\n}\n";
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/SignInController.php' => $first,
+            'app/Http/Controllers/StaffSignInController.php' => $second,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_constructor_middleware_class_covers_the_controllers_routes(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Middleware\CapSignIns;
+
+class SignInController
+{
+    public function __construct()
+    {
+        $this->middleware(CapSignIns::class);
+    }
+
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/SignInController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_has_middleware_declaration_covers_the_controllers_routes(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
+
+class SignInController implements HasMiddleware
+{
+    public static function middleware(): array
+    {
+        return [new Middleware(CapSignIns::class)];
+    }
+
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/SignInController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_constructor_middleware_that_does_not_throttle_covers_nothing(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class SignInController
+{
+    public function __construct()
+    {
+        $this->middleware('guest');
+    }
+
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/SignInController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    private function throttlingMiddleware(string $class): string
+    {
+        return str_replace('CLASS', $class, <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class CLASS
+{
+    public function handle($request, $next)
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$request->ip(), 5), 429);
+
+        return $next($request);
+    }
+}
+PHP);
+    }
+
     private function sessionControllerCallingEnsureIsNotRateLimited(): string
     {
         return <<<'PHP'

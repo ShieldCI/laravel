@@ -3636,6 +3636,64 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_controller_group_covers_its_routes_with_the_controllers_throttling(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\SessionGate;
+
+Route::controller(SessionGate::class)->group(function () {
+    Route::post('/signin', 'store');
+});
+
+Route::post('/admin/signin', 'store');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_controller_group_whose_controller_does_not_throttle_covers_nothing(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class SignInController
+{
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::prefix('account')->controller(SignInController::class)->group(function () {
+    Route::post('/signin', 'store');
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/SignInController.php' => $controller,
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
     public function test_group_middleware_that_does_not_throttle_covers_nothing(): void
     {
         $middleware = <<<'PHP'

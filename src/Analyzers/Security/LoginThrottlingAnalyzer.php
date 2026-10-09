@@ -863,6 +863,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * the line its Route:: call starts on (Route::post(...)->middleware(...)), and
      * per route group, with the line range of the group's closure
      * (Route::middleware(...)->group(...), Route::group(['middleware' => ...], ...)).
+     * A group's classes also hold the controller a Route::controller(...) group
+     * names, since its routes reach that controller.
      *
      * Reads the import table, so trackFileImports() must have seen the route file.
      *
@@ -896,7 +898,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($method === 'group') {
-                $this->collectGroupMiddleware($call->args, $this->chainMiddleware($call->var), $groups);
+                $this->collectGroupMiddleware($call->args, $this->chainClasses($call->var), $groups);
             }
         }
 
@@ -916,7 +918,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * ['middleware' => ...] attribute array name, when there is a closure and any.
      *
      * @param  array<Node>  $args
-     * @param  array<int, string>  $classes  Middleware the group's method chain applies
+     * @param  array<int, string>  $classes  Classes the group's method chain applies (see chainClasses())
      * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groups
      */
     private function collectGroupMiddleware(array $args, array $classes, array &$groups): void
@@ -948,19 +950,25 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The middleware classes the ->middleware(...) / Route::middleware(...) calls in
-     * a method chain name.
+     * The classes a group's method chain sends its routes through: the middleware
+     * its ->middleware(...) / Route::middleware(...) calls name, and the controller
+     * a ->controller(X::class) / Route::controller(X::class) call names, whose
+     * routes give only a method.
      *
      * @return array<int, string>
      */
-    private function chainMiddleware(Node\Expr $node): array
+    private function chainClasses(Node\Expr $node): array
     {
         $classes = [];
         while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
-            if ($node->name instanceof Node\Identifier
-                && $node->name->toLowerString() === 'middleware'
-                && ($node->args[0] ?? null) instanceof Node\Arg) {
-                array_push($classes, ...$this->middlewareClassesIn($node->args[0]->value));
+            $first = $node->args[0] ?? null;
+            if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
+                $method = $node->name->toLowerString();
+                if ($method === 'middleware') {
+                    array_push($classes, ...$this->middlewareClassesIn($first->value));
+                } elseif ($method === 'controller' && ($controller = $this->middlewareClassName($first->value)) !== null) {
+                    $classes[] = $controller;
+                }
             }
 
             if (! $node instanceof Node\Expr\MethodCall) {
@@ -973,8 +981,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a middleware class applied to the route on this 1-based line, by its
-     * own statement or by a group around it, throttles login.
+     * Whether a class applied to the route on this 1-based line, a middleware on
+     * its own statement or a middleware or controller a group around it names,
+     * throttles login.
      *
      * @param  array<int, array<int, string>>  $statementMiddleware
      * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groupMiddleware

@@ -31,6 +31,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     use DetectsLaravelVersion;
     use TracksImportedNames;
 
+    /**
+     * Whether a class throttles login, keyed by fully qualified name, for this run.
+     *
+     * @var array<string, bool>
+     */
+    private array $throttlingClasses = [];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -63,8 +70,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $this->throttlingClasses = [];
 
-        // Check for RateLimiter usage in code (global check)
+        // Login rate limiting found anywhere in the auth code. It only gates the
+        // package checks below: a route is covered by the code it reaches, not by
+        // throttling some other class does.
         $hasLoginRateLimiting = $this->hasRateLimiterUsage();
 
         // Throttle on the 'web' and 'api' middleware groups: app/Http/Kernel.php
@@ -81,18 +91,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             || $this->hasThrottleInApiMiddlewareGroup()
             || $this->hasThrottleInLaravel11Middleware('api');
 
-        // laravel/ui's AuthenticatesUsers (or ThrottlesLogins on its own) throttles
-        // the web login form only, so it covers web-group files and never an API
-        // token endpoint.
-        $hasLoginThrottlingTrait = $this->hasLoginThrottlingTraitUsage();
-
         // Check route files for login routes without throttling
         $coveredControllers = $this->checkRouteFiles(
             $issues,
             webThrottled: $hasWebGroupThrottle,
             apiThrottled: $hasApiGroupThrottle,
-            webLimited: $hasLoginRateLimiting || $hasLoginThrottlingTrait,
-            apiLimited: $hasLoginRateLimiting,
         );
 
         // Check authentication controllers not already reached through a throttled route
@@ -119,6 +122,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * - RateLimiter::for('login', ...)
      * - tooManyAttempts() / hasTooManyLoginAttempts()
      * - RateLimiter::hit() / clear() near auth methods
+     *
+     * Only gates the package checks. It does not cover routes: a route is covered
+     * by the classes it names, which classThrottlesLogin() reads one at a time.
      */
     private function hasRateLimiterUsage(): bool
     {
@@ -236,21 +242,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Pattern 3: AST-based detection - RateLimiter in auth methods
         if ($this->hasRateLimiterInAuthMethodAST($file)) {
             return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Whether an auth-related class uses the ThrottlesLogins trait, directly or
-     * through laravel/ui's AuthenticatesUsers, whose login() checks the lockout first.
-     */
-    private function hasLoginThrottlingTraitUsage(): bool
-    {
-        foreach ($this->getAuthenticationFiles() as $file) {
-            if ($this->usesLoginThrottlingTrait($file)) {
-                return true;
-            }
         }
 
         return false;
@@ -783,8 +774,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * routes/api.php and files registered in the 'api' group are matched with the
      * API route patterns and use the api flags, every other file the web patterns
      * and the web flags. A route is covered by a throttle its group applies
-     * ($webThrottled / $apiThrottled) or by login rate limiting found in code
-     * ($webLimited / $apiLimited).
+     * ($webThrottled / $apiThrottled), or by a class its statement names that
+     * throttles login itself (see routeClassesThrottle()). Login rate limiting
+     * elsewhere in the code covers no route.
      *
      * Returns the controllers that throttled login routes point at, so the
      * controller check does not report a controller whose route is already
@@ -799,8 +791,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         array &$issues,
         bool $webThrottled,
         bool $apiThrottled,
-        bool $webLimited,
-        bool $apiLimited,
     ): array {
         $coveredControllers = [];
         $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
@@ -831,7 +821,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $isApiRoute = $file->getFilename() === 'api.php' || in_array($normalizedPath, $apiGroupFiles, true);
                 $fileThrottled = in_array($normalizedPath, $throttledFiles, true)
                     || ($isApiRoute ? $apiThrottled : $webThrottled);
-                $groupCovered = $fileThrottled || ($isApiRoute ? $apiLimited : $webLimited);
                 $content = $this->readCode($filePath);
                 if ($content === null) {
                     continue;
@@ -859,9 +848,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // Check for Auth::routes() helper
                     if (preg_match('/Auth::routes\s*\(/i', $line, $authCall, PREG_OFFSET_CAPTURE)) {
                         // Auth::routes() includes login routes - check if throttled
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1]);
+                        // laravel/ui registers these against App\Http\Controllers\Auth\LoginController
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
+                            || $this->routeClassesThrottle(['App\\Http\\Controllers\\Auth\\LoginController']);
 
-                        if (! $hasThrottle && ! $groupCovered && ! $inThrottledGroup) {
+                        if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: 'Auth::routes() includes login endpoint without explicit rate limiting',
                                 filePath: $filePath,
@@ -911,14 +902,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                         // Check if this route or surrounding lines have throttle middleware
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $routeColumn) || $inThrottledGroup;
+                        $routeClasses = $this->controllersReferencedByRoute($lines, $lineNumber);
 
                         if ($hasThrottle || $fileThrottled) {
-                            foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
+                            foreach ($routeClasses as $controller) {
                                 $coveredControllers[$controller] = true;
                             }
                         }
 
-                        if (! $hasThrottle && ! $groupCovered) {
+                        if (! $hasThrottle && ! $fileThrottled && ! $this->routeClassesThrottle($routeClasses)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -1316,9 +1308,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
         $seen[strtolower($fqn)] = true;
 
-        $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
-            .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
-        if (! file_exists($path)) {
+        $path = $this->appClassPath($fqn);
+        if ($path === null) {
             return [];
         }
 
@@ -1361,6 +1352,95 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return [];
+    }
+
+    /**
+     * The file Laravel's default autoload mapping (App\ to app/) puts an App\ class
+     * in, or null when the name is outside App\ or the file is missing.
+     */
+    private function appClassPath(string $fqn): ?string
+    {
+        if (! str_starts_with($fqn, 'App\\')) {
+            return null;
+        }
+
+        $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
+            .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
+
+        return file_exists($path) ? $path : null;
+    }
+
+    /**
+     * Whether a class a route statement names throttles login itself: its
+     * controller, or a middleware class it passes by ::class.
+     *
+     * Names come from controllersReferencedByRoute(). One outside App\ (a string
+     * action or a name the route file never imported) is read as relative to
+     * App\Http\Controllers, the namespace legacy route groups and laravel/ui fall
+     * back to. Nothing looser: a name that does not resolve to a file covers nothing.
+     *
+     * @param  array<int, string>  $names
+     */
+    private function routeClassesThrottle(array $names): bool
+    {
+        foreach ($names as $name) {
+            $fqn = str_starts_with($name, 'App\\') ? $name : 'App\\Http\\Controllers\\'.$name;
+            if ($this->classThrottlesLogin($fqn)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether an App\ class throttles login: its file has login throttling, it uses
+     * AuthenticatesUsers or ThrottlesLogins, or one of its methods delegates to a
+     * throttling FormRequest. Memoised for the run.
+     */
+    private function classThrottlesLogin(string $fqn): bool
+    {
+        if (isset($this->throttlingClasses[$fqn])) {
+            return $this->throttlingClasses[$fqn];
+        }
+
+        $path = $this->appClassPath($fqn);
+        $throttles = $path !== null && $this->fileClassThrottlesLogin($path, $fqn);
+
+        return $this->throttlingClasses[$fqn] = $throttles;
+    }
+
+    private function fileClassThrottlesLogin(string $path, string $fqn): bool
+    {
+        if ($this->hasLoginThrottlingInFile($path) || $this->usesLoginThrottlingTrait($path)) {
+            return true;
+        }
+
+        $ast = $this->parser->parseFile($path);
+        $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
+
+        // Parameter types resolve against the class's own imports. The route file's
+        // table is put back afterwards: its remaining routes are still read with it.
+        $routeImports = $this->importedNames;
+        $this->trackFileImports($ast);
+
+        $throttles = false;
+        foreach ($this->parser->findClasses($ast) as $class) {
+            if ($class->name?->toString() !== $shortName) {
+                continue;
+            }
+
+            foreach ($class->getMethods() as $method) {
+                if ($this->delegatesToThrottlingRequest($method)) {
+                    $throttles = true;
+                    break 2;
+                }
+            }
+        }
+
+        $this->importedNames = $routeImports;
+
+        return $throttles;
     }
 
     /**

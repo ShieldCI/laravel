@@ -1827,6 +1827,7 @@ PHP;
 
         $tempDir = $this->createTempDirectory([
             'routes/web.php' => $route,
+            'app/Http/Controllers/Auth/AuthenticatedSessionController.php' => $this->sessionControllerCallingEnsureIsNotRateLimited(),
             'app/Http/Requests/Auth/LoginRequest.php' => $loginRequest,
         ]);
 
@@ -1840,8 +1841,10 @@ PHP;
     public function test_passes_when_form_request_uses_rate_limiter_only_in_ensure_method(): void
     {
         // Isolates the AST gate: the only throttling signal is RateLimiter::hit/clear
-        // inside ensureIsNotRateLimited() — no tooManyAttempts text, no 'login' literal —
-        // so detection relies on ensureIsNotRateLimited being a recognized auth method.
+        // inside ensureIsNotRateLimited() — no tooManyAttempts text, no 'login' literal.
+        // The route is covered through the controller's call into the request; the
+        // Breeze check on routes/auth.php (no 'throttle' in it) is skipped only when
+        // ensureIsNotRateLimited is a recognized auth method.
         $route = <<<'PHP'
 <?php
 
@@ -1874,7 +1877,10 @@ class LoginRequest extends FormRequest
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'routes/web.php' => $route,
+            'composer.lock' => '{"packages": [{"name": "laravel/breeze", "version": "2.0.0"}]}',
+            'routes/auth.php' => $route,
+            'routes/web.php' => '<?php',
+            'app/Http/Controllers/Auth/AuthenticatedSessionController.php' => $this->sessionControllerCallingEnsureIsNotRateLimited(),
             'app/Http/Requests/Auth/LoginRequest.php' => $loginRequest,
         ]);
 
@@ -2641,7 +2647,7 @@ PHP;
         $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
     }
 
-    public function test_login_rate_limiter_elsewhere_does_not_clear_controller_check(): void
+    public function test_login_rate_limiter_elsewhere_clears_neither_the_route_nor_the_controller(): void
     {
         $apiController = <<<'PHP'
 <?php
@@ -2666,7 +2672,10 @@ PHP;
         ]);
 
         $this->assertFailed($result);
-        $this->assertSame(['Authentication method LoginController::login() lacks rate limiting'], $this->issueMessages($result));
+        $this->assertSame([
+            'Login route "/session/login" lacks rate limiting protection',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
     }
 
     public function test_qualified_route_reference_clears_only_that_controller(): void
@@ -3424,6 +3433,208 @@ PHP;
             'Breeze uses custom authentication routes without rate limiting',
             array_map(fn ($issue) => $issue->message, $result->getIssues()),
         );
+    }
+
+    // ==================== Code-level rate limiting covers only the routes that reach it (#487) ====================
+
+    public function test_throttled_web_login_controller_does_not_clear_an_api_token_route(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionSignInController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionSignInController'),
+            'routes/api.php' => "<?php\n\nRoute::post('/device/token', [DeviceTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/device/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttled_api_controller_does_not_clear_a_web_login_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::post('/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenLoginController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Api', 'TokenLoginController'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttling_middleware_covers_only_the_routes_that_name_it(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class CapSignIns
+{
+    public function handle($request, $next)
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.$request->ip(), 5), 429);
+
+        return $next($request);
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+use App\Http\Middleware\CapSignIns;
+
+Route::post('/signin', [SignInController::class, 'store'])->middleware(CapSignIns::class);
+Route::post('/admin/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_api_route_to_its_own_throttling_controller_passes(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Api\TokenController;
+
+Route::post('/token', [TokenController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Api', 'TokenController'),
+            'routes/api.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_string_action_resolves_against_the_default_controller_namespace(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SignInController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SignInController'),
+            'routes/web.php' => "<?php\n\nRoute::post('/signin', 'Auth\\SignInController@store');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_auth_routes_is_not_cleared_by_another_controllers_login_trait(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+class AdminLoginController
+{
+    use AuthenticatesUsers;
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap('//'),
+            'app/Http/Controllers/Auth/AdminLoginController.php' => $controller,
+            'routes/web.php' => "<?php\n\nAuth::routes();\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Auth::routes() includes login endpoint without explicit rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_reading_a_routed_controller_leaves_the_route_files_imports_in_place(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Api\TokenController;
+use App\Http\Controllers\Web\SignInController;
+
+Route::post('/signin', [SignInController::class, 'store']);
+Route::post('/token/login', [TokenController::class, 'store']);
+PHP;
+
+        $signIn = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Web;
+
+class SignInController
+{
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Web/SignInController.php' => $signIn,
+            'app/Http/Controllers/Api/TokenController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Api', 'TokenController'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    private function sessionControllerCallingEnsureIsNotRateLimited(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Requests\Auth\LoginRequest;
+
+class AuthenticatedSessionController
+{
+    public function store(LoginRequest $request)
+    {
+        $request->ensureIsNotRateLimited();
+
+        return redirect()->intended('/dashboard');
+    }
+}
+PHP;
+    }
+
+    private function selfThrottlingController(string $namespace, string $class): string
+    {
+        return str_replace(['NAMESPACE', 'CLASS'], [$namespace, $class], <<<'PHP'
+<?php
+
+namespace NAMESPACE;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class CLASS
+{
+    public function store()
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.request()->ip(), 5), 429);
+
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP);
     }
 
     /**

@@ -1025,6 +1025,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // A route whose own line ends its statement has no continuation to read;
+        // the next line is another statement, whatever middleware it carries.
+        // The end of the line, not any ';' on it: a one-line closure body holds
+        // one while its chain continues below.
+        if (str_ends_with(rtrim($lines[$lineNumber] ?? ''), ';')) {
+            return false;
+        }
+
         // Check next 5 lines (for routes defined across multiple lines)
         $searchRange = min($lineNumber + 5, count($lines));
         for ($i = $lineNumber + 1; $i < $searchRange; $i++) {

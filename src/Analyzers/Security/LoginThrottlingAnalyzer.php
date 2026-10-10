@@ -46,6 +46,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private array $middlewareAliases = [];
 
+    /**
+     * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
+     * alias names, and the Redis-backed variant.
+     */
+    private const THROTTLE_MIDDLEWARE = [
+        'Illuminate\\Routing\\Middleware\\ThrottleRequests',
+        'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
+    ];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -106,8 +115,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $this->checkAuthControllers($issues, $coveredControllers);
 
         // Fortify registers its login route itself, in the 'web' group, so a
-        // web-group throttle or Fortify's own limiter covers it. Throttling in the
-        // app's controllers never runs on that route. Breeze and Jetstream need no
+        // web-group throttle, its route limiter or its login pipeline covers it.
+        // Throttling in the app's controllers never runs on that route. Breeze and Jetstream need no
         // check of their own: Breeze's login routes are in routes/auth.php, which
         // checkRouteFiles() reads, and Jetstream logs in through Fortify.
         if (! $hasWebGroupThrottle && $this->hasFortify()) {
@@ -773,7 +782,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         $loginController = 'App\\Http\\Controllers\\Auth\\LoginController';
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
                             || $this->routeClassesThrottle([$loginController], ['class' => $loginController, 'method' => 'login'])
-                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, 'login');
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, ['class' => $loginController, 'method' => 'login']);
 
                         if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
@@ -836,7 +845,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         if (! $hasThrottle
                             && ! $fileThrottled
                             && ! $this->routeClassesThrottle($routeClasses, $routeActions[$lineNumber + 1] ?? null)
-                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, ($routeActions[$lineNumber + 1] ?? null)['method'] ?? null)) {
+                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $routeActions[$lineNumber + 1] ?? null)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -1038,20 +1047,23 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     /**
      * Whether a class applied to the route on this 1-based line, a middleware on
      * its own statement or a middleware or controller a group around it names,
-     * throttles login. A group's controller is judged for the method the route
-     * calls, when it names one.
+     * throttles login. A group's controller is judged, for the method the route
+     * calls, only when the route's action names a method and no class: a route
+     * that names its own controller does not reach the group's.
      *
      * @param  array<int, array<int, string>>  $statementMiddleware
      * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groupMiddleware
+     * @param  array{class: ?string, method: string}|null  $action  See routeAction()
      */
-    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware, ?string $method = null): bool
+    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware, ?array $action = null): bool
     {
         $classes = $statementMiddleware[$line] ?? [];
         foreach ($groupMiddleware as $group) {
             if ($line >= $group['start'] && $line <= $group['end']) {
                 array_push($classes, ...$group['classes']);
 
-                if ($group['controller'] !== null && $this->classThrottlesLogin($group['controller'], $method)) {
+                if ($group['controller'] !== null && $action !== null && $action['class'] === null
+                    && $this->classThrottlesLogin($group['controller'], $action['method'])) {
                     return true;
                 }
             }
@@ -1419,8 +1431,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a request-class method reaches a RateLimiter call, directly or through
-     * $this->method() calls within the same class.
+     * Whether a class method reaches a RateLimiter call, or ThrottlesLogins'
+     * hasTooManyLoginAttempts() or a limiter's tooManyAttempts(), directly or
+     * through $this->method() calls within the same class.
      *
      * @param  array<string, Node\Stmt\ClassMethod>  $methods  Keyed by lowercased name
      * @param  array<string, true>  $visited
@@ -1438,6 +1451,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($this->parser->findNodes($stmts, Node\Expr\MethodCall::class) as $call) {
+            if ($call instanceof Node\Expr\MethodCall
+                && $call->name instanceof Node\Identifier
+                && in_array($call->name->toLowerString(), ['hastoomanyloginattempts', 'toomanyattempts'], true)) {
+                return true;
+            }
+
             if ($call instanceof Node\Expr\MethodCall
                 && $call->var instanceof Node\Expr\Variable
                 && $call->var->name === 'this'
@@ -1568,6 +1587,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
     {
+        // The framework's own throttle middleware, which 'throttle' names
+        if (in_array($fqn, self::THROTTLE_MIDDLEWARE, true)) {
+            return true;
+        }
+
         $method = $method === null ? null : strtolower($method);
         $key = $fqn.'::'.($method ?? '*').($middlewareOnly ? ':middleware' : '');
         if (isset($this->throttlingClasses[$key])) {
@@ -1586,7 +1610,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $declared = $method !== null && isset($facts['methods'][$method]);
 
         if (! $middlewareOnly) {
-            if ($this->hasLoginThrottlingInFile($path)
+            // With a method, only its body and the $this->method() calls it makes
+            // count, so throttling in a sibling method covers nothing.
+            $visited = [];
+            $bodyThrottles = $method === null
+                ? $this->hasLoginThrottlingInFile($path)
+                : $declared && $this->requestMethodThrottles($method, $this->appClassMethods($fqn), $visited);
+
+            if ($bodyThrottles
                 || (! $declared && $this->usesLoginThrottlingTrait($path))
                 || ($method === null ? $facts['delegating'] !== [] : isset($facts['delegating'][$method]))) {
                 return $this->throttlingClasses[$key] = true;
@@ -1833,8 +1864,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * The middleware classes a middleware value names, resolved against the current
      * import table: X::class, X::class.':5,1', a class-name string, an alias
      * string ('signin.cap:5,1'), or a list of any of these.
-     * A name that resolves to no class (a built-in alias like 'auth' that the
-     * app does not register) is dropped.
+     * 'throttle' resolves to the framework's ThrottleRequests unless the app
+     * registers it; any other name that resolves to no class (a built-in alias
+     * like 'auth' that the app does not register) is dropped.
      *
      * @return array<int, string>
      */
@@ -1861,7 +1893,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 return [ltrim($name, '\\')];
             }
 
-            return isset($this->middlewareAliases[$name]) ? [$this->middlewareAliases[$name]] : [];
+            if (isset($this->middlewareAliases[$name])) {
+                return [$this->middlewareAliases[$name]];
+            }
+
+            // Laravel registers 'throttle' itself, so an app need not
+            return $name === 'throttle' ? [self::THROTTLE_MIDDLEWARE[0]] : [];
         }
 
         $class = $this->middlewareClassName($expr);
@@ -1870,13 +1907,21 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The class an X::class or X::class.':params' expression names, resolved
-     * against the current import table.
+     * The class an X::class, X::class.':params' or X::using(...) / X::with(...)
+     * expression names, resolved against the current import table.
      */
     private function middlewareClassName(Node\Expr $expr): ?string
     {
         if ($expr instanceof Node\Expr\BinaryOp\Concat) {
             return $this->middlewareClassName($expr->left);
+        }
+
+        // ThrottleRequests::using('login') and ::with(5, 1) build the 'Class:params' string
+        if ($expr instanceof Node\Expr\StaticCall
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && in_array($expr->name->toLowerString(), ['using', 'with'], true)) {
+            return $this->resolvedClassFqn($expr->class);
         }
 
         if ($expr instanceof Node\Expr\ClassConstFetch
@@ -2010,30 +2055,58 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The limiter Fortify throttles its login route with: the value of
-     * fortify.limiters.login. Fortify's routes add throttle:<limiter> only when
-     * it is set, and the package's own default is null, so a missing config file,
-     * limiters key or login key leaves the route unthrottled.
+     * fortify.limiters.login. Fortify's routes add throttle:<limiter> only when it
+     * is set; when it is not, which is the package default, its login pipeline runs
+     * EnsureLoginIsNotThrottled instead, so login is throttled either way.
      *
-     * Returns false when the route is unthrottled, null when it is throttled by a
-     * limiter whose name is not a literal (env(), a constant), or the name.
+     * Returns false when the value is unset or empty, null when it is set by
+     * something other than a literal (env(), a constant), or the name.
+     *
+     * @param  array<Node>  $config
      */
-    private function fortifyLoginLimiter(string $configPath): string|false|null
+    private function fortifyLoginLimiter(array $config): string|false|null
     {
-        foreach ($this->parser->findNodes($this->parser->parseFile($configPath), Node\Stmt\Return_::class) as $return) {
-            if (! $return instanceof Node\Stmt\Return_ || ! $return->expr instanceof Node\Expr\Array_) {
-                continue;
+        $limiters = $this->fortifyConfigValue($config, 'limiters');
+        $login = $limiters instanceof Node\Expr\Array_ ? $this->arrayValue($limiters, 'login') : null;
+
+        if ($login === null
+            || ($login instanceof Node\Expr\ConstFetch && in_array($login->name->toLowerString(), ['null', 'false'], true))
+            || ($login instanceof Node\Scalar\String_ && $login->value === '')) {
+            return false;
+        }
+
+        return $login instanceof Node\Scalar\String_ ? $login->value : null;
+    }
+
+    /**
+     * The value config/fortify.php returns under a top-level key, or null.
+     *
+     * @param  array<Node>  $config
+     */
+    private function fortifyConfigValue(array $config, string $key): ?Node\Expr
+    {
+        foreach ($this->parser->findNodes($config, Node\Stmt\Return_::class) as $return) {
+            if ($return instanceof Node\Stmt\Return_ && $return->expr instanceof Node\Expr\Array_) {
+                return $this->arrayValue($return->expr, $key);
             }
+        }
 
-            $limiters = $this->arrayValue($return->expr, 'limiters');
-            $login = $limiters instanceof Node\Expr\Array_ ? $this->arrayValue($limiters, 'login') : null;
+        return null;
+    }
 
-            if ($login === null
-                || ($login instanceof Node\Expr\ConstFetch && in_array($login->name->toLowerString(), ['null', 'false'], true))
-                || ($login instanceof Node\Scalar\String_ && $login->value === '')) {
-                return false;
+    /**
+     * Whether a login pipeline the app gives Fortify names EnsureLoginIsNotThrottled,
+     * the step that throttles login when no route limiter does. The conditional
+     * form Fortify's documentation shows counts.
+     */
+    private function pipelineThrottles(Node $pipeline): bool
+    {
+        foreach ($this->parser->findNodes([$pipeline], Node\Expr\ClassConstFetch::class) as $fetch) {
+            if ($fetch instanceof Node\Expr\ClassConstFetch
+                && $fetch->class instanceof Node\Name
+                && $fetch->class->getLast() === 'EnsureLoginIsNotThrottled') {
+                return true;
             }
-
-            return $login instanceof Node\Scalar\String_ ? $login->value : null;
         }
 
         return false;
@@ -2092,14 +2165,16 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     {
         $basePath = $this->getBasePath();
         $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
-        $configLimiter = file_exists($fortifyConfigPath) ? $this->fortifyLoginLimiter($fortifyConfigPath) : false;
+        $config = file_exists($fortifyConfigPath) ? $this->parser->parseFile($fortifyConfigPath) : [];
+        $configLimiter = $this->fortifyLoginLimiter($config);
 
         // A limiter named by something other than a literal is most likely still 'login'
         $limiter = is_string($configLimiter) ? $configLimiter : 'login';
 
-        // Check all provider files for the login limiter's definition
+        // Check all provider files for the login limiter's definition and the login pipeline
         $providerPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Providers';
         $throttleDisabledFile = null;
+        $customPipeline = null;
 
         if (is_dir($providerPath)) {
             try {
@@ -2132,6 +2207,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             return;
                         }
 
+                        // Fortify::authenticateThrough() replaces the login pipeline,
+                        // EnsureLoginIsNotThrottled included unless the callback lists it.
+                        $first = $call->args[0] ?? null;
+                        if ($class === 'Fortify' && $method === 'authenticatethrough' && $first instanceof Node\Arg) {
+                            $customPipeline = ['throttles' => $this->pipelineThrottles($first->value), 'file' => $file->getPathname(), 'line' => $call->getStartLine()];
+                        }
+
                         // Limit::none() disables the login limiter only when the limiter's own
                         // callback returns it, not when another limiter in the file does.
                         $callback = $call->args[1] ?? null;
@@ -2146,20 +2228,29 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Without fortify.limiters.login, Fortify's login route has no throttle
-        // middleware, whatever limiters a provider defines.
+        // Without a route limiter, Fortify's login pipeline throttles, unless the app
+        // replaces it: authenticateThrough() first, then fortify.pipelines.login, as
+        // Fortify's AuthenticatedSessionController reads them.
         if ($configLimiter === false) {
-            $issues[] = $this->createIssueWithSnippet(
-                message: 'Fortify authentication lacks custom rate limiter configuration',
-                filePath: $fortifyConfigPath,
-                lineNumber: file_exists($fortifyConfigPath) ? 1 : null,
-                severity: Severity::High,
-                recommendation: 'Set limiters.login in config/fortify.php to a named rate limiter for the login endpoint, and register that limiter in a service provider.',
-                metadata: [
-                    'framework' => 'fortify',
-                    'issue_type' => 'fortify_no_custom_limiter',
-                ]
-            );
+            $pipelines = $this->fortifyConfigValue($config, 'pipelines');
+            $configPipeline = $pipelines instanceof Node\Expr\Array_ ? $this->arrayValue($pipelines, 'login') : null;
+            if ($customPipeline === null && $configPipeline instanceof Node\Expr\Array_) {
+                $customPipeline = ['throttles' => $this->pipelineThrottles($configPipeline), 'file' => $fortifyConfigPath, 'line' => $configPipeline->getStartLine()];
+            }
+
+            if ($customPipeline !== null && ! $customPipeline['throttles']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Fortify login pipeline does not throttle login attempts',
+                    filePath: $customPipeline['file'],
+                    lineNumber: $customPipeline['line'],
+                    severity: Severity::High,
+                    recommendation: 'Add EnsureLoginIsNotThrottled to the custom login pipeline, or set limiters.login in config/fortify.php to a named rate limiter so Fortify throttles the login route, to prevent brute force attacks.',
+                    metadata: [
+                        'framework' => 'fortify',
+                        'issue_type' => 'fortify_pipeline_unthrottled',
+                    ]
+                );
+            }
 
             return;
         }

@@ -1094,9 +1094,15 @@ JSON;
         $fortifyConfig = <<<'PHP'
 <?php
 
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+use Laravel\Fortify\Actions\PrepareAuthenticatedSession;
+
 return [
     'features' => [
         'registration' => true,
+    ],
+    'pipelines' => [
+        'login' => [AttemptToAuthenticate::class, PrepareAuthenticatedSession::class],
     ],
 ];
 PHP;
@@ -3345,14 +3351,22 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_commented_out_fortify_limiters_key_is_not_configuration(): void
+    public function test_commented_out_throttle_step_is_not_in_the_fortify_login_pipeline(): void
     {
         $config = <<<'PHP'
 <?php
 
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+use Laravel\Fortify\Actions\EnsureLoginIsNotThrottled;
+
 return [
     'guard' => 'web',
-    // 'limiters' => ['login' => 'login'],
+    'pipelines' => [
+        'login' => [
+            // EnsureLoginIsNotThrottled::class,
+            AttemptToAuthenticate::class,
+        ],
+    ],
 ];
 PHP;
 
@@ -3363,7 +3377,7 @@ PHP;
         ]);
 
         $this->assertFailed($result);
-        $this->assertSame('Fortify authentication lacks custom rate limiter configuration', $result->getIssues()[0]->message);
+        $this->assertSame(['Fortify login pipeline does not throttle login attempts'], $this->issueMessages($result));
     }
 
     public function test_commented_out_login_rate_limiter_in_auth_controller_is_not_throttling(): void
@@ -3663,6 +3677,208 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_controller_group_does_not_cover_a_route_that_names_its_own_controller(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Api\TokenController;
+use App\Http\Controllers\Auth\SessionGate;
+
+Route::controller(SessionGate::class)->group(function () {
+    Route::post('/token', [TokenController::class, 'store']);
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(''),
+            'routes/api.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_controller_group_does_not_cover_a_closure_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\SessionGate;
+
+Route::controller(SessionGate::class)->group(function () {
+    Route::post('/signin', fn () => Auth::attempt(request()->only('email', 'password')));
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttling_in_another_method_does_not_cover_the_routed_method(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(
+                "public function refresh()\n    {\n        abort_if(RateLimiter::tooManyAttempts('refresh|'.request()->ip(), 5), 429);\n    }"
+            ),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_throttling_in_another_method_does_not_cover_an_invokable_route(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(
+                "public function __invoke()\n    {\n        return 'token';\n    }\n\n    public function refresh()\n    {\n        abort_if(RateLimiter::tooManyAttempts('refresh|'.request()->ip(), 5), 429);\n    }"
+            ),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::post('/token', TokenController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_routed_method_throttling_through_its_own_helper_is_credited(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Api;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+class TokenController
+{
+    public function store()
+    {
+        $this->guardAttempts();
+
+        return 'token';
+    }
+
+    private function guardAttempts(): void
+    {
+        abort_if(RateLimiter::tooManyAttempts('token|'.request()->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $controller,
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_routed_login_method_checking_has_too_many_login_attempts_is_credited(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Foundation\Auth\ThrottlesLogins;
+use Illuminate\Http\Request;
+
+class SessionController
+{
+    use ThrottlesLogins;
+
+    public function login(Request $request)
+    {
+        if ($this->hasTooManyLoginAttempts($request)) {
+            return $this->sendLockoutResponse($request);
+        }
+
+        return 'session';
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/SessionController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SessionController;\n\nRoute::post('/login', [SessionController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function frameworkThrottleRegistrations(): array
+    {
+        return [
+            'constructor alias' => ["public function __construct()\n    {\n        \$this->middleware('throttle:5,1')->only('store');\n    }"],
+            'constructor class' => ["public function __construct()\n    {\n        \$this->middleware(ThrottleRequests::class.':5,1')->only('store');\n    }"],
+            'HasMiddleware using()' => ["public static function middleware(): array\n    {\n        return [new Middleware(ThrottleRequests::using('token'), only: ['store'])];\n    }"],
+            'HasMiddleware Redis class' => ["public static function middleware(): array\n    {\n        return [new Middleware(ThrottleRequestsWithRedis::class.':5,1', only: ['store'])];\n    }"],
+        ];
+    }
+
+    #[DataProvider('frameworkThrottleRegistrations')]
+    public function test_framework_throttle_a_controller_registers_covers_its_method(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController($registration),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_framework_throttle_a_controller_registers_for_another_method_covers_nothing(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(
+                "public function __construct()\n    {\n        \$this->middleware('throttle:5,1')->only('refresh');\n    }"
+            ),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_framework_throttle_registered_on_the_login_controller_clears_the_controller_check(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+class LoginController
+{
+    public function __construct()
+    {
+        $this->middleware('throttle:5,1')->only('login');
+    }
+
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $controller,
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
     }
 
     public function test_controller_group_whose_controller_does_not_throttle_covers_nothing(): void
@@ -4382,17 +4598,31 @@ PHP;
 
     // ==================== Fortify is judged on its own route (#487) ====================
 
-    public function test_throttling_auth_controller_does_not_excuse_fortify_without_limiters(): void
+    public function test_throttling_auth_controller_does_not_excuse_an_unthrottled_fortify_pipeline(): void
     {
+        $config = <<<'PHP'
+<?php
+
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+use Laravel\Fortify\Actions\PrepareAuthenticatedSession;
+
+return [
+    'guard' => 'web',
+    'pipelines' => [
+        'login' => [AttemptToAuthenticate::class, PrepareAuthenticatedSession::class],
+    ],
+];
+PHP;
+
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
-            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'config/fortify.php' => $config,
             'app/Http/Controllers/Auth/SessionController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionController'),
             'routes/web.php' => '<?php',
         ]);
 
         $this->assertFailed($result);
-        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertSame(['Fortify login pipeline does not throttle login attempts'], $this->issueMessages($result));
     }
 
     public function test_throttling_auth_controller_does_not_excuse_disabled_fortify_throttling(): void
@@ -4556,12 +4786,12 @@ PHP;
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
             'app/Providers/FortifyServiceProvider.php' => $provider,
-            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'config/fortify.php' => $this->unthrottledFortifyPipelineConfig(),
             'routes/web.php' => '<?php',
         ]);
 
         $this->assertFailed($result);
-        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertSame(['Fortify login pipeline does not throttle login attempts'], $this->issueMessages($result));
     }
 
     private function loginControllerWith(string $registration): string
@@ -4653,6 +4883,76 @@ PHP);
     /**
      * A FortifyServiceProvider whose boot() runs the given statements.
      */
+    private function unthrottledFortifyPipelineConfig(): string
+    {
+        return <<<'PHP'
+<?php
+
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+use Laravel\Fortify\Actions\PrepareAuthenticatedSession;
+
+return [
+    'guard' => 'web',
+    'pipelines' => [
+        'login' => [AttemptToAuthenticate::class, PrepareAuthenticatedSession::class],
+    ],
+];
+PHP;
+    }
+
+    private function fortifyPipelineProvider(string $steps): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Laravel\\Fortify\\Actions\\AttemptToAuthenticate;
+use Laravel\\Fortify\\Actions\\EnsureLoginIsNotThrottled;
+use Laravel\\Fortify\\Fortify;
+
+class FortifyServiceProvider
+{
+    public function boot(): void
+    {
+        Fortify::authenticateThrough(function (\$request) {
+            return array_filter([
+                {$steps}
+            ]);
+        });
+    }
+}
+PHP;
+    }
+
+    /**
+     * App\Http\Controllers\Api\TokenController, whose store() does not throttle,
+     * with $extra added as further class members.
+     */
+    private function tokenController(string $extra): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Http\\Controllers\\Api;
+
+use Illuminate\\Routing\\Controllers\\Middleware;
+use Illuminate\\Routing\\Middleware\\ThrottleRequests;
+use Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis;
+use Illuminate\\Support\\Facades\\RateLimiter;
+
+class TokenController
+{
+    {$extra}
+
+    public function store()
+    {
+        return 'token';
+    }
+}
+PHP;
+    }
+
     private function fortifyProvider(string $boot): string
     {
         return <<<PHP
@@ -4685,43 +4985,126 @@ PHP;
         return $analyzer->analyze();
     }
 
-    public function test_login_limiter_the_fortify_config_never_names_does_not_throttle_fortify(): void
+    public function test_limit_none_on_a_login_limiter_the_fortify_config_never_names_is_not_reported(): void
     {
+        // Without limiters.login Fortify throttles in its login pipeline and never
+        // reads the 'login' limiter, so disabling that limiter changes nothing.
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
             'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
-            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::none());"),
             'routes/web.php' => '<?php',
         ]);
 
-        $this->assertFailed($result);
-        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertPassed($result);
     }
 
-    public function test_null_fortify_login_limiter_does_not_throttle_fortify(): void
+    public function test_null_fortify_login_limiter_leaves_the_pipeline_throttle(): void
     {
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
             'config/fortify.php' => "<?php\n\nreturn ['limiters' => ['login' => null, 'two-factor' => 'two-factor']];\n",
-            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
             'routes/web.php' => '<?php',
         ]);
 
-        $this->assertFailed($result);
-        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertPassed($result);
     }
 
-    public function test_unpublished_fortify_config_leaves_fortify_unthrottled(): void
+    public function test_unpublished_fortify_config_leaves_the_pipeline_throttle(): void
     {
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
-            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_empty_fortify_login_limiter_still_reads_the_login_pipeline(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+
+return [
+    'limiters' => ['login' => ''],
+    'pipelines' => ['login' => [AttemptToAuthenticate::class]],
+];
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => $config,
             'routes/web.php' => '<?php',
         ]);
 
         $this->assertFailed($result);
-        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertSame(['Fortify login pipeline does not throttle login attempts'], $this->issueMessages($result));
         $this->assertSame('config/fortify.php', $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_authenticate_through_without_the_throttle_step_is_reported(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyPipelineProvider('AttemptToAuthenticate::class,'),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify login pipeline does not throttle login attempts'], $this->issueMessages($result));
+        $this->assertSame('app/Providers/FortifyServiceProvider.php', $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_authenticate_through_with_the_documented_conditional_throttle_step_passes(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyPipelineProvider(
+                "config('fortify.limiters.login') ? null : EnsureLoginIsNotThrottled::class,\n                AttemptToAuthenticate::class,"
+            ),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_authenticate_through_replaces_the_config_pipeline(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => $this->unthrottledFortifyPipelineConfig(),
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyPipelineProvider(
+                "EnsureLoginIsNotThrottled::class,\n                AttemptToAuthenticate::class,"
+            ),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_limiter_covers_a_custom_pipeline_without_the_throttle_step(): void
+    {
+        $config = <<<'PHP'
+<?php
+
+use Laravel\Fortify\Actions\AttemptToAuthenticate;
+
+return [
+    'limiters' => ['login' => 'login'],
+    'pipelines' => ['login' => [AttemptToAuthenticate::class]],
+];
+PHP;
+
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => $config,
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
     }
 
     public function test_fortify_login_limiter_named_by_env_throttles_fortify(): void

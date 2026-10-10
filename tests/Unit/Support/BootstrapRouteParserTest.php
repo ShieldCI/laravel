@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PhpParser\Node\Expr\MethodCall;
+use PhpParser\Node\Expr\StaticCall;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\BootstrapRouteParser;
@@ -1224,6 +1226,61 @@ PHP;
             $this->assertCount(1, $ranges);
             $this->assertSame(3, $ranges[0]['start']);
             $this->assertSame(5, $ranges[0]['end']);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_group_registered_route_files_record_the_group_that_registers_them(): void
+    {
+        $web = <<<'PHP'
+<?php
+
+Route::middleware('signin')->group(base_path('routes/signin.php'));
+Route::group(['middleware' => 'signin'], function () {
+    require __DIR__.'/admin.php';
+});
+Route::middleware('signin')->group(...);
+Route::prefix('ignored')->get('/', fn () => 'home');
+PHP;
+        $tempDir = $this->createTempDir([
+            'routes/web.php' => $web,
+            'routes/signin.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $registrations = $parser->getGroupRegisteredRouteFiles();
+
+            $this->assertCount(2, $registrations);
+            $this->assertStringEndsWith('/routes/signin.php', $registrations[0]['file']);
+            $this->assertStringEndsWith('/routes/web.php', $registrations[0]['source']);
+            $this->assertInstanceOf(MethodCall::class, $registrations[0]['call']);
+            $this->assertStringEndsWith('/routes/admin.php', $registrations[1]['file']);
+            $this->assertInstanceOf(StaticCall::class, $registrations[1]['call']);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_group_registered_route_files_are_read_from_bootstrap_and_providers(): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => "<?php\n\nRoute::middleware('web')->group(base_path('routes/admin.php'));\n",
+            'app/Providers/RouteServiceProvider.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/partner.php'));\n",
+            'app/Providers/README.md' => 'not php',
+            'routes/admin.php' => '<?php',
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $files = array_column($parser->getGroupRegisteredRouteFiles(), 'file');
+
+            $this->assertCount(2, $files);
+            $this->assertTrue($this->endsWithMatch($files, '/routes/admin.php'));
+            $this->assertTrue($this->endsWithMatch($files, '/routes/partner.php'));
         } finally {
             $this->removeDir($tempDir);
         }

@@ -3990,6 +3990,305 @@ PHP;
         $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function fileGroupRegistrations(): array
+    {
+        return [
+            'base_path()' => ["Route::middleware(CapSignIns::class)->group(base_path('routes/signin.php'));"],
+            'require in closure' => ["Route::middleware(CapSignIns::class)->group(function () {\n    require __DIR__.'/signin.php';\n});"],
+            'attribute array' => ["Route::group(['middleware' => [CapSignIns::class]], base_path('routes/signin.php'));"],
+        ];
+    }
+
+    #[DataProvider('fileGroupRegistrations')]
+    public function test_group_middleware_covers_the_route_file_it_registers(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Middleware\\CapSignIns;\n\n{$registration}\n",
+            'routes/signin.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_middleware_a_provider_registers_covers_the_route_file(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware(['web', CapSignIns::class])->group(base_path('routes/signin.php'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/web.php' => '<?php',
+            'routes/signin.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_middleware_that_does_not_throttle_covers_nothing_in_the_route_file(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/TrackVisits.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass TrackVisits\n{\n    public function handle(\$request, \$next)\n    {\n        return \$next(\$request);\n    }\n}\n",
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Middleware\\TrackVisits;\n\nRoute::middleware(TrackVisits::class)->group(base_path('routes/signin.php'));\n",
+            'routes/signin.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_controller_group_covers_the_route_file_it_registers(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\SessionGate;\n\nRoute::controller(SessionGate::class)->group(base_path('routes/signin.php'));\n",
+            'routes/signin.php' => "<?php\n\nRoute::post('/signin', 'store');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function kernelMiddlewareGroupNames(): array
+    {
+        return [
+            'class entry' => ['signin'],
+            'alias entry' => ['guarded'],
+        ];
+    }
+
+    #[DataProvider('kernelMiddlewareGroupNames')]
+    public function test_kernel_middleware_group_resolves_to_its_throttling_classes(string $group): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $this->kernelWithMiddlewareGroups(),
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store'])->middleware('{$group}');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_kernel_middleware_group_that_names_itself_covers_nothing(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $this->kernelWithMiddlewareGroups(),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store'])->middleware('loop');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_bootstrap_middleware_group_resolves_to_its_throttling_classes(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware) {
+        $middleware->appendToGroup('signin', [CapSignIns::class]);
+    })
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', [SignInController::class, 'store'])->middleware('signin');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_middleware_the_route_removes_does_not_cover_it(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+use App\Http\Middleware\CapSignIns;
+
+Route::post('/signin', [SignInController::class, 'store'])->withoutMiddleware(CapSignIns::class);
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_login_route_chained_after_another_route_call_is_reported(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::middleware('guest')->post('/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame(5, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_login_route_chained_across_lines_is_reported_on_its_verb(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::middleware('guest')
+    ->name('signin')
+    ->post('/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame(7, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function chainedThrottles(): array
+    {
+        return [
+            'throttle alias before the verb' => ["Route::middleware('throttle:6,1')->post('/signin', [SignInController::class, 'store']);"],
+            'throttle alias on an earlier line' => ["Route::middleware(['guest', 'throttle:6,1'])\n    ->post('/signin', [SignInController::class, 'store']);"],
+            'middleware class before the verb' => ["Route::middleware(CapSignIns::class)->post('/signin', [SignInController::class, 'store']);"],
+            'middleware class after a chained verb' => ["Route::prefix('account')->post('/signin', [SignInController::class, 'store'])->middleware(CapSignIns::class);"],
+        ];
+    }
+
+    #[DataProvider('chainedThrottles')]
+    public function test_throttle_on_a_chained_login_route_covers_it(string $route): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\nuse App\\Http\\Middleware\\CapSignIns;\n\n{$route}\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_chained_login_route_is_judged_for_the_method_it_calls(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(
+                "public function __construct()\n    {\n        \$this->middleware('throttle:5,1')->only('refresh');\n    }"
+            ),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::prefix('v1')->post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_chained_login_route_is_credited_with_middleware_registered_for_its_method(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Api/TokenController.php' => $this->tokenController(
+                "public function __construct()\n    {\n        \$this->middleware('throttle:5,1')->only('store');\n    }"
+            ),
+            'routes/api.php' => "<?php\n\nuse App\\Http\\Controllers\\Api\\TokenController;\n\nRoute::prefix('v1')->post('/token', [TokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_chained_login_route_reads_its_chain_from_its_own_verb(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\HomeController;
+use App\Http\Controllers\SignInController;
+
+Route::get('/', [HomeController::class, 'index'])->name('home'); Route::middleware('guest')->post('/signin', [SignInController::class, 'store'])
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_chained_match_route_reads_its_uri_after_the_methods(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\SignInController;
+
+Route::middleware('guest')->match(['get', 'post'], '/signin', [SignInController::class, 'store']);
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_chained_routes_follow_the_web_and_api_route_rules(): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\nRoute::middleware('guest')->get('/signin', fn () => view('signin'));\nRoute::middleware('auth')->post('/auth/logout', fn () => Auth::logout());\n",
+            'routes/api.php' => "<?php\n\nRoute::middleware('guest')->post('/session/token', fn () => 'token');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/token" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_verb_chained_on_something_other_than_route_is_not_a_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Http;
+
+Route::get('/proxy', fn () => Http::acceptJson()->post('https://id.example.test/signin', ['user' => 'demo']));
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_bootstrap_middleware_alias_covers_a_group(): void
     {
         $routes = <<<'PHP'
@@ -4949,6 +5248,32 @@ class TokenController
     {
         return 'token';
     }
+}
+PHP;
+    }
+
+    private function kernelWithMiddlewareGroups(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Http\Middleware\CapSignIns;
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [],
+        'signin' => [CapSignIns::class],
+        'guarded' => ['signin.cap'],
+        'loop' => ['loop'],
+    ];
+
+    protected $middlewareAliases = [
+        'signin.cap' => CapSignIns::class,
+    ];
 }
 PHP;
     }

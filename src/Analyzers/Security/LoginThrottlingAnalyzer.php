@@ -47,9 +47,19 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private array $middlewareAliases = [];
 
     /**
+     * Middleware groups the app defines, mapped to their entries: a class name or
+     * a middleware name still to resolve.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private array $middlewareGroups = [];
+
+    /**
      * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
      * alias names, and the Redis-backed variant.
      */
+    private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource'];
+
     private const THROTTLE_MIDDLEWARE = [
         'Illuminate\\Routing\\Middleware\\ThrottleRequests',
         'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
@@ -89,6 +99,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $issues = [];
         $this->throttlingClasses = [];
         $this->middlewareAliases = $this->readMiddlewareAliases();
+        $this->middlewareGroups = $this->readMiddlewareGroups();
 
         // Throttle on the 'web' and 'api' middleware groups: app/Http/Kernel.php
         // (Laravel 10 and earlier) or bootstrap/app.php (Laravel 11+). The two are
@@ -731,6 +742,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
         $throttledFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
         $apiGroupFiles = $bootstrapParser->getApiRegisteredRouteFiles();
+        $fileGroups = $this->fileGroupMiddleware($bootstrapParser);
 
         try {
             foreach (new \DirectoryIterator($routePath) as $file) {
@@ -761,7 +773,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // Middleware classes each route statement and each route group names,
                 // so a throttling middleware covers the routes it is applied to.
-                [$statementMiddleware, $groupMiddleware, $routeActions] = $this->routeMiddleware($ast);
+                [$statementMiddleware, $groupMiddleware, $routeActions, $chainedRoutes] = $this->routeMiddleware($ast);
+                array_push($groupMiddleware, ...$fileGroups[$normalizedPath] ?? []);
 
                 // AST-derived line ranges of throttled route groups (fluent and
                 // array forms, nesting-safe) — replaces the former brace-depth
@@ -820,6 +833,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
                     }
 
+                    // A verb chained after another Route:: call, Route::middleware(...)->post(...),
+                    // judged by the same verb and URI rules. routeMiddleware() reads the
+                    // middleware on both sides of its verb, so the text scan adds nothing.
+                    $chained = $chainedRoutes[$lineNumber + 1] ?? null;
+                    if ($routeUri === null && $chained !== null && $this->isLoginRoute($chained['verb'], $chained['uri'], $isApiRoute)) {
+                        $routeUri = $chained['uri'];
+                    }
+
                     if ($routeUri !== null) {
                         // Skip endpoints matched only on the broad 'auth'/'oauth'
                         // substring whose action segment is a non-credential one
@@ -844,7 +865,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                         if (! $hasThrottle
                             && ! $fileThrottled
-                            && ! $this->routeClassesThrottle($routeClasses, $routeActions[$lineNumber + 1] ?? null)
+                            && ! $this->routeClassesThrottle($this->actionClasses($routeActions[$lineNumber + 1] ?? null), $routeActions[$lineNumber + 1] ?? null)
                             && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $routeActions[$lineNumber + 1] ?? null)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
@@ -871,24 +892,47 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Whether a route with this verb and URI takes login credentials, by the rules
+     * the Route::verb( text match applies: in an API file, a POST/any/match URI
+     * with a login, auth or token keyword, or a GET/resource URI with a login or
+     * auth one; in a web file, a POST/any/match/resource URI with a login or auth
+     * keyword.
+     */
+    private function isLoginRoute(string $verb, string $uri, bool $isApiRoute): bool
+    {
+        $login = preg_match('/login|signin|auth|authenticate/', $uri) === 1;
+
+        if ($isApiRoute) {
+            return (in_array($verb, ['post', 'any', 'match'], true) && ($login || preg_match('/token|oauth/', $uri) === 1))
+                || (in_array($verb, ['get', 'resource'], true) && $login);
+        }
+
+        return in_array($verb, ['post', 'any', 'match', 'resource'], true) && $login;
+    }
+
+    /**
      * The middleware classes a route file applies: per route statement, keyed by
-     * the line its Route:: call starts on (Route::post(...)->middleware(...)), and
-     * per route group, with the line range of the group's closure
+     * the line its verb is written on, from ->middleware(...) calls before the verb
+     * (Route::middleware(...)->post(...)) and after it (Route::post(...)->middleware(...)),
+     * and per route group, with the line range of the group's closure
      * (Route::middleware(...)->group(...), Route::group(['middleware' => ...], ...)).
      * A group also records the controller a Route::controller(...) group names,
      * since its routes reach that controller. The third list is each route's
-     * action (see routeAction()), keyed like the statements.
+     * action (see routeAction()), keyed like the statements. The fourth is the
+     * routes whose verb is chained after another Route:: call, which no
+     * Route::post( text match finds, with their verb and URI, keyed the same way.
      *
      * Reads the import table, so trackFileImports() must have seen the route file.
      *
      * @param  array<Node>  $ast
-     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: string}>}
+     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: string}>, 3: array<int, array{verb: string, uri: string}>}
      */
     private function routeMiddleware(array $ast): array
     {
         $statements = [];
         $groups = [];
         $actions = [];
+        $chained = [];
 
         foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
             if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier) {
@@ -897,23 +941,29 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
             $method = $call->name->toLowerString();
 
-            if ($method === 'middleware' && ($call->args[0] ?? null) instanceof Node\Arg) {
-                $root = $call->var;
-                while ($root instanceof Node\Expr\MethodCall) {
-                    $root = $root->var;
-                }
-
-                if ($root instanceof Node\Expr\StaticCall
-                    && $root->name instanceof Node\Identifier
-                    && in_array($root->name->toLowerString(), ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match'], true)) {
-                    $line = $root->getStartLine();
-                    $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareClassesIn($call->args[0]->value)];
-                }
+            // Route::post(...)->middleware(...): the verb is further down the chain
+            if ($method === 'middleware' && ($call->args[0] ?? null) instanceof Node\Arg
+                && ($verb = $this->routeVerbIn($call->var)) !== null && $verb->name instanceof Node\Identifier) {
+                $line = $verb->name->getStartLine();
+                $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareClassesIn($call->args[0]->value)];
             }
 
             if ($method === 'group') {
                 [$classes, $controller] = $this->chainClasses($call->var);
                 $this->collectGroupMiddleware($call->args, $classes, $controller, $groups);
+            }
+
+            // Route::middleware(...)->post(...): a verb chained after another Route:: call
+            if (in_array($method, self::ROUTE_VERBS, true) && $this->chainStartsAtRoute($call->var)) {
+                $line = $call->name->getStartLine();
+                [$classes] = $this->chainClasses($call->var);
+                $statements[$line] = [...$statements[$line] ?? [], ...$classes];
+                $this->recordRouteAction($call, $method, $line, $actions);
+
+                $uri = $call->args[$method === 'match' ? 1 : 0] ?? null;
+                if ($uri instanceof Node\Arg && $uri->value instanceof Node\Scalar\String_) {
+                    $chained[$line] = ['verb' => $method, 'uri' => $uri->value->value];
+                }
             }
         }
 
@@ -927,16 +977,61 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $this->collectGroupMiddleware($call->args, [], null, $groups);
             }
 
-            // Route::match() takes its methods first, the others their URI
-            $action = $call->args[$method === 'match' ? 2 : 1] ?? null;
-            if (in_array($method, ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match'], true)
-                && $action instanceof Node\Arg
-                && ($routeAction = $this->routeAction($action->value)) !== null) {
-                $actions[$call->getStartLine()] = $routeAction;
+            if (in_array($method, self::ROUTE_VERBS, true)) {
+                $this->recordRouteAction($call, $method, $call->name->getStartLine(), $actions);
             }
         }
 
-        return [$statements, $groups, $actions];
+        return [$statements, $groups, $actions, $chained];
+    }
+
+    /**
+     * Records the action a route verb call names, under the line its verb is on.
+     * Route::match() takes its methods first, the others their URI.
+     *
+     * @param  array<int, array{class: ?string, method: string}>  $actions
+     */
+    private function recordRouteAction(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, int $line, array &$actions): void
+    {
+        $action = $call->args[$verb === 'match' ? 2 : 1] ?? null;
+        if ($action instanceof Node\Arg && ($routeAction = $this->routeAction($action->value)) !== null) {
+            $actions[$line] = $routeAction;
+        }
+    }
+
+    /**
+     * The route verb call nearest the end of a method chain, or null when the
+     * chain reaches its Route:: start without one.
+     */
+    private function routeVerbIn(Node\Expr $node): Node\Expr\MethodCall|Node\Expr\StaticCall|null
+    {
+        while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier && in_array($node->name->toLowerString(), self::ROUTE_VERBS, true)) {
+                return $node;
+            }
+
+            if ($node instanceof Node\Expr\StaticCall) {
+                return null;
+            }
+            $node = $node->var;
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a method chain starts with a Route:: call, so a verb called on it
+     * registers a route.
+     */
+    private function chainStartsAtRoute(Node\Expr $node): bool
+    {
+        while ($node instanceof Node\Expr\MethodCall) {
+            $node = $node->var;
+        }
+
+        return $node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->class->getLast() === 'Route';
     }
 
     /**
@@ -976,6 +1071,55 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * The middleware, and any Route::controller() controller, of the group each
+     * group-registered route file sits in, keyed by the file's normalized path, as
+     * a group that spans the whole file. Each group is resolved against the
+     * imports of the file that declares it.
+     *
+     * @return array<string, array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>>
+     */
+    private function fileGroupMiddleware(BootstrapRouteParser $bootstrapParser): array
+    {
+        $groups = [];
+        foreach ($bootstrapParser->getGroupRegisteredRouteFiles() as $registration) {
+            $this->trackFileImports($this->parser->parseFile($registration['source']));
+            $call = $registration['call'];
+            [$classes, $controller] = $call instanceof Node\Expr\MethodCall ? $this->chainClasses($call->var) : [[], null];
+            array_push($classes, ...$this->groupAttributeMiddleware($call->args));
+
+            if ($classes !== [] || $controller !== null) {
+                $groups[$registration['file']][] = ['start' => 1, 'end' => PHP_INT_MAX, 'classes' => $classes, 'controller' => $controller];
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * The middleware classes a group's ['middleware' => ...] attribute array names.
+     *
+     * @param  array<Node>  $args
+     * @return array<int, string>
+     */
+    private function groupAttributeMiddleware(array $args): array
+    {
+        $classes = [];
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Node\Expr\Array_) {
+                foreach ($arg->value->items as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem
+                        && $item->key instanceof Node\Scalar\String_
+                        && $item->key->value === 'middleware') {
+                        array_push($classes, ...$this->middlewareClassesIn($item->value));
+                    }
+                }
+            }
+        }
+
+        return $classes;
+    }
+
+    /**
      * Records a group's closure range with the middleware its chain and its
      * ['middleware' => ...] attribute array name, when there is a closure and any.
      *
@@ -988,24 +1132,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     {
         $closure = null;
         foreach ($args as $arg) {
-            if (! $arg instanceof Node\Arg) {
-                continue;
-            }
-
-            if ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction) {
+            if ($arg instanceof Node\Arg && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
                 $closure ??= $arg->value;
             }
-
-            if ($arg->value instanceof Node\Expr\Array_) {
-                foreach ($arg->value->items as $item) {
-                    if ($item instanceof Node\Expr\ArrayItem
-                        && $item->key instanceof Node\Scalar\String_
-                        && $item->key->value === 'middleware') {
-                        array_push($classes, ...$this->middlewareClassesIn($item->value));
-                    }
-                }
-            }
         }
+        array_push($classes, ...$this->groupAttributeMiddleware($args));
 
         if ($closure !== null && ($classes !== [] || $controller !== null)) {
             $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes, 'controller' => $controller];
@@ -1542,10 +1673,22 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a class a route statement names throttles login itself: its
-     * controller, or a middleware class it passes by ::class.
+     * The controller class a route's action names, when it names one. Only the
+     * action counts: other classes on the statement are middleware, which
+     * routeMiddleware() reads, or ones it removes with withoutMiddleware().
      *
-     * Names come from controllersReferencedByRoute(). One outside App\ (a string
+     * @param  array{class: ?string, method: string}|null  $action
+     * @return array<int, string>
+     */
+    private function actionClasses(?array $action): array
+    {
+        return $action !== null && $action['class'] !== null ? [$action['class']] : [];
+    }
+
+    /**
+     * Whether the controller a route's action names throttles login itself.
+     *
+     * Names come from actionClasses(). One outside App\ (a string
      * action or a name the route file never imported) is read as relative to
      * App\Http\Controllers, the namespace legacy route groups and laravel/ui fall
      * back to. Nothing looser: a name that does not resolve to a file covers nothing.
@@ -1884,26 +2027,53 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         if ($expr instanceof Node\Scalar\String_) {
-            $name = strtok($expr->value, ':');
-            if ($name === false) {
-                return [];
-            }
-
-            if (str_contains($name, '\\')) {
-                return [ltrim($name, '\\')];
-            }
-
-            if (isset($this->middlewareAliases[$name])) {
-                return [$this->middlewareAliases[$name]];
-            }
-
-            // Laravel registers 'throttle' itself, so an app need not
-            return $name === 'throttle' ? [self::THROTTLE_MIDDLEWARE[0]] : [];
+            return $this->middlewareClassesNamed($expr->value);
         }
 
         $class = $this->middlewareClassName($expr);
 
         return $class === null ? [] : [$class];
+    }
+
+    /**
+     * The middleware classes a middleware name resolves to, as Laravel's
+     * MiddlewareNameResolver does: a class name, a group the app defines (its
+     * entries resolved in turn), or an alias. 'throttle' resolves to the
+     * framework's ThrottleRequests unless the app registers it.
+     *
+     * @param  array<string, true>  $expanding  Groups being expanded, so a group naming itself ends
+     * @return array<int, string>
+     */
+    private function middlewareClassesNamed(string $value, array $expanding = []): array
+    {
+        $name = strtok($value, ':');
+        if ($name === false) {
+            return [];
+        }
+
+        if (str_contains($name, '\\')) {
+            return [ltrim($name, '\\')];
+        }
+
+        if (isset($this->middlewareGroups[$name])) {
+            if (isset($expanding[$name])) {
+                return [];
+            }
+
+            $classes = [];
+            foreach ($this->middlewareGroups[$name] as $entry) {
+                array_push($classes, ...$this->middlewareClassesNamed($entry, $expanding + [$name => true]));
+            }
+
+            return $classes;
+        }
+
+        if (isset($this->middlewareAliases[$name])) {
+            return [$this->middlewareAliases[$name]];
+        }
+
+        // Laravel registers 'throttle' itself, so an app need not
+        return $name === 'throttle' ? [self::THROTTLE_MIDDLEWARE[0]] : [];
     }
 
     /**
@@ -1980,6 +2150,89 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return $aliases;
+    }
+
+    /**
+     * Middleware groups the app defines: the Kernel's $middlewareGroups (Laravel 10
+     * and earlier) and $middleware->group() / appendToGroup() / prependToGroup() in
+     * bootstrap/app.php (Laravel 11+). A class entry is resolved against the
+     * declaring file's imports; any other entry is kept as a name.
+     *
+     * Runs before any other file's imports are tracked, so it leaves no table to
+     * put back.
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function readMiddlewareGroups(): array
+    {
+        $basePath = $this->getBasePath();
+        $groups = [];
+
+        $kernelPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        if (file_exists($kernelPath)) {
+            $ast = $this->parser->parseFile($kernelPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Stmt\Property::class) as $property) {
+                foreach ($property instanceof Node\Stmt\Property ? $property->props : [] as $prop) {
+                    if ($prop->name->toString() === 'middlewareGroups' && $prop->default instanceof Node\Expr\Array_) {
+                        foreach ($prop->default->items as $item) {
+                            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                                $groups[$item->key->value] = $this->middlewareEntries($item->value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        if (file_exists($bootstrapPath)) {
+            $ast = $this->parser->parseFile($bootstrapPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
+                if (! $call instanceof Node\Expr\MethodCall
+                    || ! $call->name instanceof Node\Identifier
+                    || ! in_array($call->name->toLowerString(), ['group', 'appendtogroup', 'prependtogroup'], true)) {
+                    continue;
+                }
+
+                $name = $call->args[0] ?? null;
+                $entries = $call->args[1] ?? null;
+                if ($name instanceof Node\Arg && $name->value instanceof Node\Scalar\String_ && $entries instanceof Node\Arg) {
+                    $groups[$name->value->value] = [...$groups[$name->value->value] ?? [], ...$this->middlewareEntries($entries->value)];
+                }
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * The entries one middleware value lists: a class name for X::class or a
+     * class-name string, the name itself for any other string.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareEntries(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $entries = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    array_push($entries, ...$this->middlewareEntries($item->value));
+                }
+            }
+
+            return $entries;
+        }
+
+        if ($expr instanceof Node\Scalar\String_) {
+            return [$expr->value];
+        }
+
+        $class = $this->middlewareClassName($expr);
+
+        return $class === null ? [] : [$class];
     }
 
     /**

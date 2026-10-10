@@ -31,6 +31,40 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     use DetectsLaravelVersion;
     use TracksImportedNames;
 
+    /**
+     * Whether a class throttles login, keyed by fully qualified name and the method
+     * judged (see classThrottlesLogin()), for this run.
+     *
+     * @var array<string, bool>
+     */
+    private array $throttlingClasses = [];
+
+    /**
+     * Route middleware aliases the app registers, mapped to their classes, for this run.
+     *
+     * @var array<string, string>
+     */
+    private array $middlewareAliases = [];
+
+    /**
+     * Middleware groups the app defines, mapped to their entries: a class name or
+     * a middleware name still to resolve.
+     *
+     * @var array<string, array<int, string>>
+     */
+    private array $middlewareGroups = [];
+
+    /**
+     * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
+     * alias names, and the Redis-backed variant.
+     */
+    private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource'];
+
+    private const THROTTLE_MIDDLEWARE = [
+        'Illuminate\\Routing\\Middleware\\ThrottleRequests',
+        'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
+    ];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -63,9 +97,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
-
-        // Check for RateLimiter usage in code (global check)
-        $hasLoginRateLimiting = $this->hasRateLimiterUsage();
+        $this->throttlingClasses = [];
+        $this->middlewareAliases = $this->readMiddlewareAliases();
+        $this->middlewareGroups = $this->readMiddlewareGroups();
 
         // Throttle on the 'web' and 'api' middleware groups: app/Http/Kernel.php
         // (Laravel 10 and earlier) or bootstrap/app.php (Laravel 11+). The two are
@@ -81,27 +115,23 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             || $this->hasThrottleInApiMiddlewareGroup()
             || $this->hasThrottleInLaravel11Middleware('api');
 
-        // laravel/ui's AuthenticatesUsers (or ThrottlesLogins on its own) throttles
-        // the web login form only, so it covers web-group files and never an API
-        // token endpoint.
-        $hasLoginThrottlingTrait = $this->hasLoginThrottlingTraitUsage();
-
         // Check route files for login routes without throttling
         $coveredControllers = $this->checkRouteFiles(
             $issues,
             webThrottled: $hasWebGroupThrottle,
             apiThrottled: $hasApiGroupThrottle,
-            webLimited: $hasLoginRateLimiting || $hasLoginThrottlingTrait,
-            apiLimited: $hasLoginRateLimiting,
         );
 
         // Check authentication controllers not already reached through a throttled route
         $this->checkAuthControllers($issues, $coveredControllers);
 
-        // Check Fortify/Breeze/Jetstream configuration. Their login routes run in
-        // the 'web' group, so only a web-group throttle covers them.
-        if (! $hasLoginRateLimiting && ! $hasWebGroupThrottle) {
-            $this->checkAuthenticationPackages($issues);
+        // Fortify registers its login route itself, in the 'web' group, so a
+        // web-group throttle, its route limiter or its login pipeline covers it.
+        // Throttling in the app's controllers never runs on that route. Breeze and Jetstream need no
+        // check of their own: Breeze's login routes are in routes/auth.php, which
+        // checkRouteFiles() reads, and Jetstream logs in through Fortify.
+        if (! $hasWebGroupThrottle && $this->hasFortify()) {
+            $this->checkFortifyThrottling($issues);
         }
 
         $summary = empty($issues)
@@ -109,95 +139,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             : sprintf('Found %d login throttling issue%s', count($issues), count($issues) === 1 ? '' : 's');
 
         return $this->resultBySeverity($summary, $issues);
-    }
-
-    /**
-     * Check if login-specific RateLimiter is used in authentication contexts.
-     *
-     * Only searches auth-related files and looks for login-specific rate limiting patterns:
-     * - RateLimiter::attempt('login:...')
-     * - RateLimiter::for('login', ...)
-     * - tooManyAttempts() / hasTooManyLoginAttempts()
-     * - RateLimiter::hit() / clear() near auth methods
-     */
-    private function hasRateLimiterUsage(): bool
-    {
-        $authFiles = $this->getAuthenticationFiles();
-
-        foreach ($authFiles as $file) {
-            if ($this->hasLoginThrottlingInFile($file)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Get authentication-related files (controllers, middleware, traits).
-     *
-     * @return array<int, string>
-     */
-    private function getAuthenticationFiles(): array
-    {
-        $basePath = $this->getBasePath();
-        $authFiles = [];
-
-        // Check auth controllers and form requests. The official starter kits throttle
-        // login from App\Http\Requests\Auth\LoginRequest (ensureIsNotRateLimited()), so
-        // app/Http/Requests must be scanned too. The filename filter below keeps this to
-        // auth/login/session-named files.
-        $authPaths = [
-            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers'.DIRECTORY_SEPARATOR.'Auth',
-            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Controllers',
-            $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Requests',
-        ];
-
-        foreach ($authPaths as $path) {
-            if (! is_dir($path)) {
-                continue;
-            }
-
-            try {
-                $iterator = new \RecursiveIteratorIterator(
-                    new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS)
-                );
-
-                foreach ($iterator as $file) {
-                    if (! $file instanceof \SplFileInfo) {
-                        continue;
-                    }
-
-                    if ($file->isFile() && $file->getExtension() === 'php') {
-                        $filename = strtolower($file->getFilename());
-                        // Only check auth-related controllers
-                        if (str_contains($filename, 'auth') ||
-                            str_contains($filename, 'login') ||
-                            str_contains($filename, 'session')) {
-                            $authFiles[] = $file->getPathname();
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                continue;
-            }
-        }
-
-        // Check middleware
-        $middlewarePath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Middleware';
-        if (is_dir($middlewarePath)) {
-            try {
-                foreach (new \DirectoryIterator($middlewarePath) as $file) {
-                    if ($file->isFile() && $file->getExtension() === 'php') {
-                        $authFiles[] = $file->getPathname();
-                    }
-                }
-            } catch (\Throwable $e) {
-                // Ignore
-            }
-        }
-
-        return $authFiles;
     }
 
     /**
@@ -236,21 +177,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Pattern 3: AST-based detection - RateLimiter in auth methods
         if ($this->hasRateLimiterInAuthMethodAST($file)) {
             return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Whether an auth-related class uses the ThrottlesLogins trait, directly or
-     * through laravel/ui's AuthenticatesUsers, whose login() checks the lockout first.
-     */
-    private function hasLoginThrottlingTraitUsage(): bool
-    {
-        foreach ($this->getAuthenticationFiles() as $file) {
-            if ($this->usesLoginThrottlingTrait($file)) {
-                return true;
-            }
         }
 
         return false;
@@ -783,8 +709,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * routes/api.php and files registered in the 'api' group are matched with the
      * API route patterns and use the api flags, every other file the web patterns
      * and the web flags. A route is covered by a throttle its group applies
-     * ($webThrottled / $apiThrottled) or by login rate limiting found in code
-     * ($webLimited / $apiLimited).
+     * ($webThrottled / $apiThrottled), or by a class its statement names that
+     * throttles login itself (see routeClassesThrottle()). Login rate limiting
+     * elsewhere in the code covers no route.
      *
      * Returns the controllers that throttled login routes point at, so the
      * controller check does not report a controller whose route is already
@@ -799,8 +726,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         array &$issues,
         bool $webThrottled,
         bool $apiThrottled,
-        bool $webLimited,
-        bool $apiLimited,
     ): array {
         $coveredControllers = [];
         $routePath = $this->getBasePath().DIRECTORY_SEPARATOR.'routes';
@@ -817,6 +742,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
         $throttledFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
         $apiGroupFiles = $bootstrapParser->getApiRegisteredRouteFiles();
+        $fileGroups = $this->fileGroupMiddleware($bootstrapParser);
 
         try {
             foreach (new \DirectoryIterator($routePath) as $file) {
@@ -831,7 +757,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $isApiRoute = $file->getFilename() === 'api.php' || in_array($normalizedPath, $apiGroupFiles, true);
                 $fileThrottled = in_array($normalizedPath, $throttledFiles, true)
                     || ($isApiRoute ? $apiThrottled : $webThrottled);
-                $groupCovered = $fileThrottled || ($isApiRoute ? $apiLimited : $webLimited);
                 $content = $this->readCode($filePath);
                 if ($content === null) {
                     continue;
@@ -843,7 +768,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // A route reference string carries no position, so controller names
                 // resolve against the imports the file declares by its end.
-                $this->trackFileImports($this->parser->parseFile($filePath));
+                $ast = $this->parser->parseFile($filePath);
+                $this->trackFileImports($ast);
+
+                // Middleware classes each route statement and each route group names,
+                // so a throttling middleware covers the routes it is applied to.
+                [$statementMiddleware, $groupMiddleware, $routeActions, $chainedRoutes] = $this->routeMiddleware($ast);
+                array_push($groupMiddleware, ...$fileGroups[$normalizedPath] ?? []);
 
                 // AST-derived line ranges of throttled route groups (fluent and
                 // array forms, nesting-safe) — replaces the former brace-depth
@@ -859,9 +790,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // Check for Auth::routes() helper
                     if (preg_match('/Auth::routes\s*\(/i', $line, $authCall, PREG_OFFSET_CAPTURE)) {
                         // Auth::routes() includes login routes - check if throttled
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1]);
+                        // laravel/ui registers these against App\Http\Controllers\Auth\LoginController,
+                        // posting the credentials to its login() method
+                        $loginController = 'App\\Http\\Controllers\\Auth\\LoginController';
+                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
+                            || $this->routeClassesThrottle([$loginController], ['class' => $loginController, 'method' => 'login'])
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, ['class' => $loginController, 'method' => 'login']);
 
-                        if (! $hasThrottle && ! $groupCovered && ! $inThrottledGroup) {
+                        if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: 'Auth::routes() includes login endpoint without explicit rate limiting',
                                 filePath: $filePath,
@@ -897,6 +833,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
                     }
 
+                    // A verb chained after another Route:: call, Route::middleware(...)->post(...),
+                    // judged by the same verb and URI rules. routeMiddleware() reads the
+                    // middleware on both sides of its verb, so the text scan adds nothing.
+                    $chained = $chainedRoutes[$lineNumber + 1] ?? null;
+                    if ($routeUri === null && $chained !== null && $this->isLoginRoute($chained['verb'], $chained['uri'], $isApiRoute)) {
+                        $routeUri = $chained['uri'];
+                    }
+
                     if ($routeUri !== null) {
                         // Skip endpoints matched only on the broad 'auth'/'oauth'
                         // substring whose action segment is a non-credential one
@@ -911,14 +855,18 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                         // Check if this route or surrounding lines have throttle middleware
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $routeColumn) || $inThrottledGroup;
+                        $routeClasses = $this->controllersReferencedByRoute($lines, $lineNumber);
 
                         if ($hasThrottle || $fileThrottled) {
-                            foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
+                            foreach ($routeClasses as $controller) {
                                 $coveredControllers[$controller] = true;
                             }
                         }
 
-                        if (! $hasThrottle && ! $groupCovered) {
+                        if (! $hasThrottle
+                            && ! $fileThrottled
+                            && ! $this->routeClassesThrottle($this->actionClasses($routeActions[$lineNumber + 1] ?? null), $routeActions[$lineNumber + 1] ?? null)
+                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $routeActions[$lineNumber + 1] ?? null)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -941,6 +889,324 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return $coveredControllers;
+    }
+
+    /**
+     * Whether a route with this verb and URI takes login credentials, by the rules
+     * the Route::verb( text match applies: in an API file, a POST/any/match URI
+     * with a login, auth or token keyword, or a GET/resource URI with a login or
+     * auth one; in a web file, a POST/any/match/resource URI with a login or auth
+     * keyword.
+     */
+    private function isLoginRoute(string $verb, string $uri, bool $isApiRoute): bool
+    {
+        $login = preg_match('/login|signin|auth|authenticate/', $uri) === 1;
+
+        if ($isApiRoute) {
+            return (in_array($verb, ['post', 'any', 'match'], true) && ($login || preg_match('/token|oauth/', $uri) === 1))
+                || (in_array($verb, ['get', 'resource'], true) && $login);
+        }
+
+        return in_array($verb, ['post', 'any', 'match', 'resource'], true) && $login;
+    }
+
+    /**
+     * The middleware classes a route file applies: per route statement, keyed by
+     * the line its verb is written on, from ->middleware(...) calls before the verb
+     * (Route::middleware(...)->post(...)) and after it (Route::post(...)->middleware(...)),
+     * and per route group, with the line range of the group's closure
+     * (Route::middleware(...)->group(...), Route::group(['middleware' => ...], ...)).
+     * A group also records the controller a Route::controller(...) group names,
+     * since its routes reach that controller. The third list is each route's
+     * action (see routeAction()), keyed like the statements. The fourth is the
+     * routes whose verb is chained after another Route:: call, which no
+     * Route::post( text match finds, with their verb and URI, keyed the same way.
+     *
+     * Reads the import table, so trackFileImports() must have seen the route file.
+     *
+     * @param  array<Node>  $ast
+     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: string}>, 3: array<int, array{verb: string, uri: string}>}
+     */
+    private function routeMiddleware(array $ast): array
+    {
+        $statements = [];
+        $groups = [];
+        $actions = [];
+        $chained = [];
+
+        foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $method = $call->name->toLowerString();
+
+            // Route::post(...)->middleware(...): the verb is further down the chain
+            if ($method === 'middleware' && ($call->args[0] ?? null) instanceof Node\Arg
+                && ($verb = $this->routeVerbIn($call->var)) !== null && $verb->name instanceof Node\Identifier) {
+                $line = $verb->name->getStartLine();
+                $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareClassesIn($call->args[0]->value)];
+            }
+
+            if ($method === 'group') {
+                [$classes, $controller] = $this->chainClasses($call->var);
+                $this->collectGroupMiddleware($call->args, $classes, $controller, $groups);
+            }
+
+            // Route::middleware(...)->post(...): a verb chained after another Route:: call
+            if (in_array($method, self::ROUTE_VERBS, true) && $this->chainStartsAtRoute($call->var)) {
+                $line = $call->name->getStartLine();
+                [$classes] = $this->chainClasses($call->var);
+                $statements[$line] = [...$statements[$line] ?? [], ...$classes];
+                $this->recordRouteAction($call, $method, $line, $actions);
+
+                $uri = $call->args[$method === 'match' ? 1 : 0] ?? null;
+                if ($uri instanceof Node\Arg && $uri->value instanceof Node\Scalar\String_) {
+                    $chained[$line] = ['verb' => $method, 'uri' => $uri->value->value];
+                }
+            }
+        }
+
+        foreach ($this->parser->findNodes($ast, Node\Expr\StaticCall::class) as $call) {
+            if (! $call instanceof Node\Expr\StaticCall || ! $call->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $method = $call->name->toLowerString();
+            if ($method === 'group') {
+                $this->collectGroupMiddleware($call->args, [], null, $groups);
+            }
+
+            if (in_array($method, self::ROUTE_VERBS, true)) {
+                $this->recordRouteAction($call, $method, $call->name->getStartLine(), $actions);
+            }
+        }
+
+        return [$statements, $groups, $actions, $chained];
+    }
+
+    /**
+     * Records the action a route verb call names, under the line its verb is on.
+     * Route::match() takes its methods first, the others their URI.
+     *
+     * @param  array<int, array{class: ?string, method: string}>  $actions
+     */
+    private function recordRouteAction(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, int $line, array &$actions): void
+    {
+        $action = $call->args[$verb === 'match' ? 2 : 1] ?? null;
+        if ($action instanceof Node\Arg && ($routeAction = $this->routeAction($action->value)) !== null) {
+            $actions[$line] = $routeAction;
+        }
+    }
+
+    /**
+     * The route verb call nearest the end of a method chain, or null when the
+     * chain reaches its Route:: start without one.
+     */
+    private function routeVerbIn(Node\Expr $node): Node\Expr\MethodCall|Node\Expr\StaticCall|null
+    {
+        while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier && in_array($node->name->toLowerString(), self::ROUTE_VERBS, true)) {
+                return $node;
+            }
+
+            if ($node instanceof Node\Expr\StaticCall) {
+                return null;
+            }
+            $node = $node->var;
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a method chain starts with a Route:: call, so a verb called on it
+     * registers a route.
+     */
+    private function chainStartsAtRoute(Node\Expr $node): bool
+    {
+        while ($node instanceof Node\Expr\MethodCall) {
+            $node = $node->var;
+        }
+
+        return $node instanceof Node\Expr\StaticCall
+            && $node->class instanceof Node\Name
+            && $node->class->getLast() === 'Route';
+    }
+
+    /**
+     * The controller method a route action calls: [X::class, 'method'], 'X@method',
+     * an invokable X::class (__invoke), or a bare 'method' a Route::controller()
+     * group resolves, with no class. An X::class name is resolved against the
+     * import table; an 'X@method' string is kept as written, as
+     * controllersReferencedByRoute() keeps it.
+     *
+     * @return array{class: ?string, method: string}|null
+     */
+    private function routeAction(Node\Expr $action): ?array
+    {
+        if ($action instanceof Node\Expr\Array_) {
+            $class = $action->items[0]->value ?? null;
+            $method = $action->items[1]->value ?? null;
+
+            return $class instanceof Node\Expr\ClassConstFetch && $class->class instanceof Node\Name
+                && $method instanceof Node\Scalar\String_
+                ? ['class' => $this->resolvedClassFqn($class->class), 'method' => $method->value]
+                : null;
+        }
+
+        if ($action instanceof Node\Expr\ClassConstFetch && $action->class instanceof Node\Name) {
+            return ['class' => $this->resolvedClassFqn($action->class), 'method' => '__invoke'];
+        }
+
+        if ($action instanceof Node\Scalar\String_) {
+            $at = strpos($action->value, '@');
+
+            return $at === false
+                ? ['class' => null, 'method' => $action->value]
+                : ['class' => ltrim(substr($action->value, 0, $at), '\\'), 'method' => substr($action->value, $at + 1)];
+        }
+
+        return null;
+    }
+
+    /**
+     * The middleware, and any Route::controller() controller, of the group each
+     * group-registered route file sits in, keyed by the file's normalized path, as
+     * a group that spans the whole file. Each group is resolved against the
+     * imports of the file that declares it.
+     *
+     * @return array<string, array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>>
+     */
+    private function fileGroupMiddleware(BootstrapRouteParser $bootstrapParser): array
+    {
+        $groups = [];
+        foreach ($bootstrapParser->getGroupRegisteredRouteFiles() as $registration) {
+            $this->trackFileImports($this->parser->parseFile($registration['source']));
+            $call = $registration['call'];
+            [$classes, $controller] = $call instanceof Node\Expr\MethodCall ? $this->chainClasses($call->var) : [[], null];
+            array_push($classes, ...$this->groupAttributeMiddleware($call->args));
+
+            if ($classes !== [] || $controller !== null) {
+                $groups[$registration['file']][] = ['start' => 1, 'end' => PHP_INT_MAX, 'classes' => $classes, 'controller' => $controller];
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * The middleware classes a group's ['middleware' => ...] attribute array names.
+     *
+     * @param  array<Node>  $args
+     * @return array<int, string>
+     */
+    private function groupAttributeMiddleware(array $args): array
+    {
+        $classes = [];
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Node\Expr\Array_) {
+                foreach ($arg->value->items as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem
+                        && $item->key instanceof Node\Scalar\String_
+                        && $item->key->value === 'middleware') {
+                        array_push($classes, ...$this->middlewareClassesIn($item->value));
+                    }
+                }
+            }
+        }
+
+        return $classes;
+    }
+
+    /**
+     * Records a group's closure range with the middleware its chain and its
+     * ['middleware' => ...] attribute array name, when there is a closure and any.
+     *
+     * @param  array<Node>  $args
+     * @param  array<int, string>  $classes  Middleware the group's method chain applies (see chainClasses())
+     * @param  ?string  $controller  The controller the group's method chain names
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groups
+     */
+    private function collectGroupMiddleware(array $args, array $classes, ?string $controller, array &$groups): void
+    {
+        $closure = null;
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
+                $closure ??= $arg->value;
+            }
+        }
+        array_push($classes, ...$this->groupAttributeMiddleware($args));
+
+        if ($closure !== null && ($classes !== [] || $controller !== null)) {
+            $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes, 'controller' => $controller];
+        }
+    }
+
+    /**
+     * The classes a group's method chain sends its routes through: the middleware
+     * its ->middleware(...) / Route::middleware(...) calls name, and the controller
+     * a ->controller(X::class) / Route::controller(X::class) call names, whose
+     * routes give only a method.
+     *
+     * @return array{0: array<int, string>, 1: ?string}
+     */
+    private function chainClasses(Node\Expr $node): array
+    {
+        $classes = [];
+        $controller = null;
+        while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            $first = $node->args[0] ?? null;
+            if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
+                $method = $node->name->toLowerString();
+                if ($method === 'middleware') {
+                    array_push($classes, ...$this->middlewareClassesIn($first->value));
+                } elseif ($method === 'controller') {
+                    $controller = $this->middlewareClassName($first->value);
+                }
+            }
+
+            if (! $node instanceof Node\Expr\MethodCall) {
+                break;
+            }
+            $node = $node->var;
+        }
+
+        return [$classes, $controller];
+    }
+
+    /**
+     * Whether a class applied to the route on this 1-based line, a middleware on
+     * its own statement or a middleware or controller a group around it names,
+     * throttles login. A group's controller is judged, for the method the route
+     * calls, only when the route's action names a method and no class: a route
+     * that names its own controller does not reach the group's.
+     *
+     * @param  array<int, array<int, string>>  $statementMiddleware
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groupMiddleware
+     * @param  array{class: ?string, method: string}|null  $action  See routeAction()
+     */
+    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware, ?array $action = null): bool
+    {
+        $classes = $statementMiddleware[$line] ?? [];
+        foreach ($groupMiddleware as $group) {
+            if ($line >= $group['start'] && $line <= $group['end']) {
+                array_push($classes, ...$group['classes']);
+
+                if ($group['controller'] !== null && $action !== null && $action['class'] === null
+                    && $this->classThrottlesLogin($group['controller'], $action['method'])) {
+                    return true;
+                }
+            }
+        }
+
+        foreach ($classes as $class) {
+            if ($this->classThrottlesLogin($class)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1156,6 +1422,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             continue;
                         }
 
+                        // Middleware the controller registers on itself wraps the method it
+                        // applies to. Throttling a parent or trait does is not credited: the
+                        // methods reported here are declared on this class, overriding theirs.
+                        $registered = [];
+                        foreach ($class->getMethods() as $classMethod) {
+                            array_push($registered, ...$this->middlewareRegisteredBy($classMethod));
+                        }
+
                         // Look for login methods
                         if (! isset($class->stmts) || ! is_array($class->stmts)) {
                             continue;
@@ -1167,7 +1441,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                                 // Check for auth methods including __invoke (single-action controllers)
                                 if (in_array($methodName, ['login', 'authenticate', 'postLogin', 'attempt', '__invoke'], true)
-                                    && ! $this->delegatesToThrottlingRequest($stmt)) {
+                                    && ! $this->delegatesToThrottlingRequest($stmt)
+                                    && ! $this->registeredMiddlewareThrottles($registered, $methodName)) {
                                     $issues[] = $this->createIssueWithSnippet(
                                         message: sprintf('Authentication method %s::%s() lacks rate limiting', $className, $methodName),
                                         filePath: $controllerPath,
@@ -1190,6 +1465,26 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
         }
+    }
+
+    /**
+     * Whether middleware a controller registers on itself applies to this method and
+     * throttles login.
+     *
+     * @param  array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>  $registered
+     */
+    private function registeredMiddlewareThrottles(array $registered, string $methodName): bool
+    {
+        $method = strtolower($methodName);
+        foreach ($registered as $middleware) {
+            if (($middleware['only'] === null || in_array($method, $middleware['only'], true))
+                && ! in_array($method, $middleware['except'], true)
+                && $this->classThrottlesLogin($middleware['class'])) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1267,8 +1562,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a request-class method reaches a RateLimiter call, directly or through
-     * $this->method() calls within the same class.
+     * Whether a class method reaches a RateLimiter call, or ThrottlesLogins'
+     * hasTooManyLoginAttempts() or a limiter's tooManyAttempts(), directly or
+     * through $this->method() calls within the same class.
      *
      * @param  array<string, Node\Stmt\ClassMethod>  $methods  Keyed by lowercased name
      * @param  array<string, true>  $visited
@@ -1286,6 +1582,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($this->parser->findNodes($stmts, Node\Expr\MethodCall::class) as $call) {
+            if ($call instanceof Node\Expr\MethodCall
+                && $call->name instanceof Node\Identifier
+                && in_array($call->name->toLowerString(), ['hastoomanyloginattempts', 'toomanyattempts'], true)) {
+                return true;
+            }
+
             if ($call instanceof Node\Expr\MethodCall
                 && $call->var instanceof Node\Expr\Variable
                 && $call->var->name === 'this'
@@ -1316,9 +1618,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
         $seen[strtolower($fqn)] = true;
 
-        $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
-            .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
-        if (! file_exists($path)) {
+        $path = $this->appClassPath($fqn);
+        if ($path === null) {
             return [];
         }
 
@@ -1335,15 +1636,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $methods[$classMethod->name->toLowerString()] = $classMethod;
             }
 
-            $inherited = [];
-            foreach ($class->stmts as $stmt) {
-                if ($stmt instanceof Node\Stmt\TraitUse) {
-                    array_push($inherited, ...$stmt->traits);
-                }
-            }
-            if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
-                $inherited[] = $class->extends;
-            }
+            $inherited = $this->inheritedNames($class);
 
             // These names are written in this file, so they resolve against its imports.
             // The controller's table is put back afterwards: the caller is still reading
@@ -1361,6 +1654,603 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return [];
+    }
+
+    /**
+     * The file Laravel's default autoload mapping (App\ to app/) puts an App\ class
+     * in, or null when the name is outside App\ or the file is missing.
+     */
+    private function appClassPath(string $fqn): ?string
+    {
+        if (! str_starts_with($fqn, 'App\\')) {
+            return null;
+        }
+
+        $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR
+            .str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
+
+        return file_exists($path) ? $path : null;
+    }
+
+    /**
+     * The controller class a route's action names, when it names one. Only the
+     * action counts: other classes on the statement are middleware, which
+     * routeMiddleware() reads, or ones it removes with withoutMiddleware().
+     *
+     * @param  array{class: ?string, method: string}|null  $action
+     * @return array<int, string>
+     */
+    private function actionClasses(?array $action): array
+    {
+        return $action !== null && $action['class'] !== null ? [$action['class']] : [];
+    }
+
+    /**
+     * Whether the controller a route's action names throttles login itself.
+     *
+     * Names come from actionClasses(). One outside App\ (a string
+     * action or a name the route file never imported) is read as relative to
+     * App\Http\Controllers, the namespace legacy route groups and laravel/ui fall
+     * back to. Nothing looser: a name that does not resolve to a file covers nothing.
+     * The route's action, when the statement names one, is checked for the method
+     * it calls; every other name for the class as a whole.
+     *
+     * @param  array<int, string>  $names
+     * @param  array{class: ?string, method: string}|null  $action  See routeActions()
+     */
+    private function routeClassesThrottle(array $names, ?array $action = null): bool
+    {
+        foreach ($names as $name) {
+            $fqn = str_starts_with($name, 'App\\') ? $name : 'App\\Http\\Controllers\\'.$name;
+            $method = $action !== null && $action['class'] === $name ? $action['method'] : null;
+            if ($this->classThrottlesLogin($fqn, $method)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether an App\ class throttles login: its file has login throttling, it uses
+     * AuthenticatesUsers or ThrottlesLogins, one of its methods delegates to a
+     * throttling FormRequest, or a class it reaches does: the middleware it
+     * registers on itself, the traits it uses and the class it extends.
+     * Memoised for the run.
+     *
+     * With a method, the one a route calls, only that method is judged. Middleware
+     * counts when its only()/except() lets the method through. A method the class
+     * declares itself replaces the one its traits and parent declare, so their
+     * throttling, AuthenticatesUsers' login() included, is not credited; only the
+     * middleware they register still runs. Without one, as for a middleware class or
+     * a route that names no method, any of its methods and middleware count.
+     *
+     * @param  bool  $middlewareOnly  Credit only registered middleware: the class's
+     *                                method is overridden by the class that reached it
+     */
+    private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
+    {
+        // The framework's own throttle middleware, which 'throttle' names
+        if (in_array($fqn, self::THROTTLE_MIDDLEWARE, true)) {
+            return true;
+        }
+
+        $method = $method === null ? null : strtolower($method);
+        $key = $fqn.'::'.($method ?? '*').($middlewareOnly ? ':middleware' : '');
+        if (isset($this->throttlingClasses[$key])) {
+            return $this->throttlingClasses[$key];
+        }
+
+        // Seeded so an inheritance or middleware cycle ends instead of recursing
+        $this->throttlingClasses[$key] = false;
+
+        $path = $this->appClassPath($fqn);
+        if ($path === null) {
+            return false;
+        }
+
+        $facts = $this->classFacts($path, $fqn);
+        $declared = $method !== null && isset($facts['methods'][$method]);
+
+        if (! $middlewareOnly) {
+            // With a method, only its body and the $this->method() calls it makes
+            // count, so throttling in a sibling method covers nothing.
+            $visited = [];
+            $bodyThrottles = $method === null
+                ? $this->hasLoginThrottlingInFile($path)
+                : $declared && $this->requestMethodThrottles($method, $this->appClassMethods($fqn), $visited);
+
+            if ($bodyThrottles
+                || (! $declared && $this->usesLoginThrottlingTrait($path))
+                || ($method === null ? $facts['delegating'] !== [] : isset($facts['delegating'][$method]))) {
+                return $this->throttlingClasses[$key] = true;
+            }
+        }
+
+        if ($method === null) {
+            foreach ($facts['middleware'] as $middleware) {
+                if ($this->classThrottlesLogin($middleware['class'])) {
+                    return $this->throttlingClasses[$key] = true;
+                }
+            }
+        } elseif ($this->registeredMiddlewareThrottles($facts['middleware'], $method)) {
+            return $this->throttlingClasses[$key] = true;
+        }
+
+        foreach ($facts['inherited'] as $class) {
+            if ($this->classThrottlesLogin($class, $method, $middlewareOnly || $declared)) {
+                return $this->throttlingClasses[$key] = true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * What an App\ class or trait declares that bears on its throttling: its own
+     * methods, those of them that delegate to a throttling FormRequest, the
+     * middleware it registers on itself (in a constructor, $this->middleware(...),
+     * or through HasMiddleware's static middleware()), and the traits it uses and
+     * the class it extends. Method names are lowercased.
+     *
+     * @return array{methods: array<string, true>, delegating: array<string, true>, middleware: array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>, inherited: array<int, string>}
+     */
+    private function classFacts(string $path, string $fqn): array
+    {
+        $ast = $this->parser->parseFile($path);
+        $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
+        $facts = ['methods' => [], 'delegating' => [], 'middleware' => [], 'inherited' => []];
+
+        // Names in the class resolve against its own imports. The caller's table is
+        // put back afterwards: a route file's remaining routes are still read with it.
+        $callerImports = $this->importedNames;
+        $this->trackFileImports($ast);
+
+        foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
+            if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
+                || $class->name?->toString() !== $shortName) {
+                continue;
+            }
+
+            foreach ($class->getMethods() as $classMethod) {
+                $name = $classMethod->name->toLowerString();
+                $facts['methods'][$name] = true;
+
+                if ($this->delegatesToThrottlingRequest($classMethod)) {
+                    $facts['delegating'][$name] = true;
+                }
+
+                array_push($facts['middleware'], ...$this->middlewareRegisteredBy($classMethod));
+            }
+
+            foreach ($this->inheritedNames($class) as $name) {
+                $facts['inherited'][] = $this->resolvedClassFqn($name);
+            }
+
+            break;
+        }
+
+        $this->importedNames = $callerImports;
+
+        return $facts;
+    }
+
+    /**
+     * Middleware classes a controller method registers on its own controller,
+     * with the methods it is limited to: $this->middleware(...)->only(...) /
+     * ->except(...) in the constructor, or the list HasMiddleware's static
+     * middleware() returns, with new Middleware(..., only: ..., except: ...).
+     * Method names are lowercased; a null only means every method.
+     *
+     * @return array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>
+     */
+    private function middlewareRegisteredBy(Node\Stmt\ClassMethod $method): array
+    {
+        $name = $method->name->toLowerString();
+        $registered = [];
+
+        if ($name === '__construct') {
+            $calls = $this->parser->findNodes($method->stmts ?? [], Node\Expr\MethodCall::class);
+
+            // only()/except() wrap the middleware() call they limit
+            $filters = [];
+            foreach ($calls as $call) {
+                if (! $call instanceof Node\Expr\MethodCall
+                    || ! $call->name instanceof Node\Identifier
+                    || ! in_array($call->name->toLowerString(), ['only', 'except'], true)) {
+                    continue;
+                }
+
+                $inner = $call->var;
+                while ($inner instanceof Node\Expr\MethodCall && ! $this->isThisMiddlewareCall($inner)) {
+                    $inner = $inner->var;
+                }
+                if ($inner instanceof Node\Expr\MethodCall) {
+                    $names = [];
+                    foreach ($call->args as $arg) {
+                        if ($arg instanceof Node\Arg) {
+                            array_push($names, ...$this->methodNamesIn($arg->value));
+                        }
+                    }
+                    $filters[spl_object_id($inner)][$call->name->toLowerString()] = $names;
+                }
+            }
+
+            foreach ($calls as $call) {
+                if ($call instanceof Node\Expr\MethodCall
+                    && $this->isThisMiddlewareCall($call)
+                    && ($call->args[0] ?? null) instanceof Node\Arg) {
+                    $filter = $filters[spl_object_id($call)] ?? [];
+                    foreach ($this->middlewareClassesIn($call->args[0]->value) as $class) {
+                        $registered[] = ['class' => $class, 'only' => $filter['only'] ?? null, 'except' => $filter['except'] ?? []];
+                    }
+                }
+            }
+        }
+
+        if ($name === 'middleware' && $method->isStatic()) {
+            foreach ($this->parser->findNodes($method->stmts ?? [], Node\Stmt\Return_::class) as $return) {
+                if (! $return instanceof Node\Stmt\Return_ || $return->expr === null) {
+                    continue;
+                }
+
+                $entries = $return->expr instanceof Node\Expr\Array_
+                    ? array_map(fn (?Node\Expr\ArrayItem $item): ?Node\Expr => $item?->value, $return->expr->items)
+                    : [$return->expr];
+                foreach ($entries as $entry) {
+                    if ($entry !== null) {
+                        array_push($registered, ...$this->declaredMiddleware($entry));
+                    }
+                }
+            }
+        }
+
+        return $registered;
+    }
+
+    /**
+     * Whether a call is $this->middleware(...).
+     */
+    private function isThisMiddlewareCall(Node\Expr\MethodCall $call): bool
+    {
+        return $call->var instanceof Node\Expr\Variable
+            && $call->var->name === 'this'
+            && $call->name instanceof Node\Identifier
+            && $call->name->toLowerString() === 'middleware';
+    }
+
+    /**
+     * The middleware one entry of HasMiddleware's list names: new Middleware(X,
+     * only: [...], except: [...]), with its arguments named or positional, or a
+     * bare middleware value that applies to every method.
+     *
+     * @return array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>
+     */
+    private function declaredMiddleware(Node\Expr $entry): array
+    {
+        $only = null;
+        $except = [];
+        $value = $entry;
+
+        if ($entry instanceof Node\Expr\New_) {
+            $value = null;
+            foreach ($entry->args as $position => $arg) {
+                if (! $arg instanceof Node\Arg) {
+                    continue;
+                }
+
+                $param = $arg->name?->toLowerString() ?? [0 => 'middleware', 1 => 'only', 2 => 'except'][$position] ?? null;
+                match ($param) {
+                    'middleware' => $value = $arg->value,
+                    'only' => $only = $this->methodNamesIn($arg->value),
+                    'except' => $except = $this->methodNamesIn($arg->value),
+                    default => null,
+                };
+            }
+        }
+
+        if ($value === null) {
+            return [];
+        }
+
+        return array_map(
+            fn (string $class): array => ['class' => $class, 'only' => $only, 'except' => $except],
+            $this->middlewareClassesIn($value),
+        );
+    }
+
+    /**
+     * The lowercased method names one only()/except() argument lists: a string
+     * or a list of them.
+     *
+     * @return array<int, string>
+     */
+    private function methodNamesIn(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Scalar\String_) {
+            return [strtolower($expr->value)];
+        }
+
+        $names = [];
+        if ($expr instanceof Node\Expr\Array_) {
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
+                    $names[] = strtolower($item->value->value);
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * The traits a class or trait uses and the class it extends, as written.
+     *
+     * @return array<int, Node\Name>
+     */
+    private function inheritedNames(Node\Stmt\ClassLike $class): array
+    {
+        $names = [];
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Node\Stmt\TraitUse) {
+                array_push($names, ...$stmt->traits);
+            }
+        }
+        if ($class instanceof Node\Stmt\Class_ && $class->extends !== null) {
+            $names[] = $class->extends;
+        }
+
+        return $names;
+    }
+
+    /**
+     * The middleware classes a middleware value names, resolved against the current
+     * import table: X::class, X::class.':5,1', a class-name string, an alias
+     * string ('signin.cap:5,1'), or a list of any of these.
+     * 'throttle' resolves to the framework's ThrottleRequests unless the app
+     * registers it; any other name that resolves to no class (a built-in alias
+     * like 'auth' that the app does not register) is dropped.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareClassesIn(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $classes = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    array_push($classes, ...$this->middlewareClassesIn($item->value));
+                }
+            }
+
+            return $classes;
+        }
+
+        if ($expr instanceof Node\Scalar\String_) {
+            return $this->middlewareClassesNamed($expr->value);
+        }
+
+        $class = $this->middlewareClassName($expr);
+
+        return $class === null ? [] : [$class];
+    }
+
+    /**
+     * The middleware classes a middleware name resolves to, as Laravel's
+     * MiddlewareNameResolver does: a class name, a group the app defines (its
+     * entries resolved in turn), or an alias. 'throttle' resolves to the
+     * framework's ThrottleRequests unless the app registers it.
+     *
+     * @param  array<string, true>  $expanding  Groups being expanded, so a group naming itself ends
+     * @return array<int, string>
+     */
+    private function middlewareClassesNamed(string $value, array $expanding = []): array
+    {
+        $name = strtok($value, ':');
+        if ($name === false) {
+            return [];
+        }
+
+        if (str_contains($name, '\\')) {
+            return [ltrim($name, '\\')];
+        }
+
+        if (isset($this->middlewareGroups[$name])) {
+            if (isset($expanding[$name])) {
+                return [];
+            }
+
+            $classes = [];
+            foreach ($this->middlewareGroups[$name] as $entry) {
+                array_push($classes, ...$this->middlewareClassesNamed($entry, $expanding + [$name => true]));
+            }
+
+            return $classes;
+        }
+
+        if (isset($this->middlewareAliases[$name])) {
+            return [$this->middlewareAliases[$name]];
+        }
+
+        // Laravel registers 'throttle' itself, so an app need not
+        return $name === 'throttle' ? [self::THROTTLE_MIDDLEWARE[0]] : [];
+    }
+
+    /**
+     * The class an X::class, X::class.':params' or X::using(...) / X::with(...)
+     * expression names, resolved against the current import table.
+     */
+    private function middlewareClassName(Node\Expr $expr): ?string
+    {
+        if ($expr instanceof Node\Expr\BinaryOp\Concat) {
+            return $this->middlewareClassName($expr->left);
+        }
+
+        // ThrottleRequests::using('login') and ::with(5, 1) build the 'Class:params' string
+        if ($expr instanceof Node\Expr\StaticCall
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && in_array($expr->name->toLowerString(), ['using', 'with'], true)) {
+            return $this->resolvedClassFqn($expr->class);
+        }
+
+        if ($expr instanceof Node\Expr\ClassConstFetch
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && $expr->name->toLowerString() === 'class') {
+            return $this->resolvedClassFqn($expr->class);
+        }
+
+        if ($expr instanceof Node\Scalar\String_ && str_contains($expr->value, '\\')) {
+            return ltrim((string) strtok($expr->value, ':'), '\\');
+        }
+
+        return null;
+    }
+
+    /**
+     * Route middleware aliases the app registers, mapped to their classes: the
+     * Kernel's $middlewareAliases / $routeMiddleware (Laravel 10 and earlier) and
+     * $middleware->alias([...]) in bootstrap/app.php (Laravel 11+).
+     *
+     * Runs before any other file's imports are tracked, so it leaves no table to
+     * put back.
+     *
+     * @return array<string, string>
+     */
+    private function readMiddlewareAliases(): array
+    {
+        $basePath = $this->getBasePath();
+        $aliases = [];
+
+        $kernelPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        if (file_exists($kernelPath)) {
+            $ast = $this->parser->parseFile($kernelPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Stmt\Property::class) as $property) {
+                foreach ($property instanceof Node\Stmt\Property ? $property->props : [] as $prop) {
+                    if (in_array($prop->name->toString(), ['middlewareAliases', 'routeMiddleware'], true)
+                        && $prop->default instanceof Node\Expr\Array_) {
+                        $aliases += $this->aliasesIn($prop->default);
+                    }
+                }
+            }
+        }
+
+        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        if (file_exists($bootstrapPath)) {
+            $ast = $this->parser->parseFile($bootstrapPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findMethodCalls($ast, 'alias') as $call) {
+                $first = $call instanceof Node\Expr\MethodCall ? ($call->args[0] ?? null) : null;
+                if ($first instanceof Node\Arg && $first->value instanceof Node\Expr\Array_) {
+                    $aliases += $this->aliasesIn($first->value);
+                }
+            }
+        }
+
+        return $aliases;
+    }
+
+    /**
+     * Middleware groups the app defines: the Kernel's $middlewareGroups (Laravel 10
+     * and earlier) and $middleware->group() / appendToGroup() / prependToGroup() in
+     * bootstrap/app.php (Laravel 11+). A class entry is resolved against the
+     * declaring file's imports; any other entry is kept as a name.
+     *
+     * Runs before any other file's imports are tracked, so it leaves no table to
+     * put back.
+     *
+     * @return array<string, array<int, string>>
+     */
+    private function readMiddlewareGroups(): array
+    {
+        $basePath = $this->getBasePath();
+        $groups = [];
+
+        $kernelPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Http'.DIRECTORY_SEPARATOR.'Kernel.php';
+        if (file_exists($kernelPath)) {
+            $ast = $this->parser->parseFile($kernelPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Stmt\Property::class) as $property) {
+                foreach ($property instanceof Node\Stmt\Property ? $property->props : [] as $prop) {
+                    if ($prop->name->toString() === 'middlewareGroups' && $prop->default instanceof Node\Expr\Array_) {
+                        foreach ($prop->default->items as $item) {
+                            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                                $groups[$item->key->value] = $this->middlewareEntries($item->value);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        $bootstrapPath = $basePath.DIRECTORY_SEPARATOR.'bootstrap'.DIRECTORY_SEPARATOR.'app.php';
+        if (file_exists($bootstrapPath)) {
+            $ast = $this->parser->parseFile($bootstrapPath);
+            $this->trackFileImports($ast);
+            foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
+                if (! $call instanceof Node\Expr\MethodCall
+                    || ! $call->name instanceof Node\Identifier
+                    || ! in_array($call->name->toLowerString(), ['group', 'appendtogroup', 'prependtogroup'], true)) {
+                    continue;
+                }
+
+                $name = $call->args[0] ?? null;
+                $entries = $call->args[1] ?? null;
+                if ($name instanceof Node\Arg && $name->value instanceof Node\Scalar\String_ && $entries instanceof Node\Arg) {
+                    $groups[$name->value->value] = [...$groups[$name->value->value] ?? [], ...$this->middlewareEntries($entries->value)];
+                }
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * The entries one middleware value lists: a class name for X::class or a
+     * class-name string, the name itself for any other string.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareEntries(Node\Expr $expr): array
+    {
+        if ($expr instanceof Node\Expr\Array_) {
+            $entries = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    array_push($entries, ...$this->middlewareEntries($item->value));
+                }
+            }
+
+            return $entries;
+        }
+
+        if ($expr instanceof Node\Scalar\String_) {
+            return [$expr->value];
+        }
+
+        $class = $this->middlewareClassName($expr);
+
+        return $class === null ? [] : [$class];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function aliasesIn(Node\Expr\Array_ $array): array
+    {
+        $aliases = [];
+        foreach ($array->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                $class = $this->middlewareClassName($item->value);
+                if ($class !== null) {
+                    $aliases[$item->key->value] = $class;
+                }
+            }
+        }
+
+        return $aliases;
     }
 
     /**
@@ -1405,43 +2295,118 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check Fortify/Breeze/Jetstream configuration for throttling.
-     *
-     * @param  array<int, Issue>  &$issues
+     * Whether a RateLimiter::for() call defines the named limiter.
      */
-    private function checkAuthenticationPackages(array &$issues): void
+    private function definesLimiter(Node\Expr\StaticCall $call, string $limiter): bool
     {
-        $basePath = $this->getBasePath();
+        $name = $call->args[0] ?? null;
 
-        // Check if Fortify is installed
-        $composerLock = $basePath.DIRECTORY_SEPARATOR.'composer.lock';
-        $hasFortify = false;
-        $hasBreeze = false;
-        $hasJetstream = false;
+        return $name instanceof Node\Arg
+            && $name->value instanceof Node\Scalar\String_
+            && $name->value->value === $limiter;
+    }
 
-        if (file_exists($composerLock)) {
-            $lockContent = FileParser::readFile($composerLock);
-            if ($lockContent !== null) {
-                $hasFortify = str_contains($lockContent, '"name": "laravel/fortify"');
-                $hasBreeze = str_contains($lockContent, '"name": "laravel/breeze"');
-                $hasJetstream = str_contains($lockContent, '"name": "laravel/jetstream"');
+    /**
+     * The limiter Fortify throttles its login route with: the value of
+     * fortify.limiters.login. Fortify's routes add throttle:<limiter> only when it
+     * is set; when it is not, which is the package default, its login pipeline runs
+     * EnsureLoginIsNotThrottled instead, so login is throttled either way.
+     *
+     * Returns false when the value is unset or empty, null when it is set by
+     * something other than a literal (env(), a constant), or the name.
+     *
+     * @param  array<Node>  $config
+     */
+    private function fortifyLoginLimiter(array $config): string|false|null
+    {
+        $limiters = $this->fortifyConfigValue($config, 'limiters');
+        $login = $limiters instanceof Node\Expr\Array_ ? $this->arrayValue($limiters, 'login') : null;
+
+        if ($login === null
+            || ($login instanceof Node\Expr\ConstFetch && in_array($login->name->toLowerString(), ['null', 'false'], true))
+            || ($login instanceof Node\Scalar\String_ && $login->value === '')) {
+            return false;
+        }
+
+        return $login instanceof Node\Scalar\String_ ? $login->value : null;
+    }
+
+    /**
+     * The value config/fortify.php returns under a top-level key, or null.
+     *
+     * @param  array<Node>  $config
+     */
+    private function fortifyConfigValue(array $config, string $key): ?Node\Expr
+    {
+        foreach ($this->parser->findNodes($config, Node\Stmt\Return_::class) as $return) {
+            if ($return instanceof Node\Stmt\Return_ && $return->expr instanceof Node\Expr\Array_) {
+                return $this->arrayValue($return->expr, $key);
             }
         }
 
-        // If none are installed, skip
-        if (! $hasFortify && ! $hasBreeze && ! $hasJetstream) {
-            return;
+        return null;
+    }
+
+    /**
+     * Whether a login pipeline the app gives Fortify names EnsureLoginIsNotThrottled,
+     * the step that throttles login when no route limiter does. The conditional
+     * form Fortify's documentation shows counts.
+     */
+    private function pipelineThrottles(Node $pipeline): bool
+    {
+        foreach ($this->parser->findNodes([$pipeline], Node\Expr\ClassConstFetch::class) as $fetch) {
+            if ($fetch instanceof Node\Expr\ClassConstFetch
+                && $fetch->class instanceof Node\Name
+                && $fetch->class->getLast() === 'EnsureLoginIsNotThrottled') {
+                return true;
+            }
         }
 
-        // Check Fortify configuration
-        if ($hasFortify) {
-            $this->checkFortifyThrottling($issues);
+        return false;
+    }
+
+    /**
+     * The value an array literal holds under a string key, or null when it has none.
+     */
+    private function arrayValue(Node\Expr\Array_ $array, string $key): ?Node\Expr
+    {
+        foreach ($array->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem
+                && $item->key instanceof Node\Scalar\String_
+                && $item->key->value === $key) {
+                return $item->value;
+            }
         }
 
-        // Check Breeze/Jetstream service providers
-        if ($hasBreeze || $hasJetstream) {
-            $this->checkBreezeJetstreamThrottling($issues, $hasBreeze, $hasJetstream);
+        return null;
+    }
+
+    /**
+     * Whether an expression calls Limit::none() anywhere inside it.
+     */
+    private function containsLimitNone(Node\Expr $expr): bool
+    {
+        foreach ($this->parser->findNodes([$expr], Node\Expr\StaticCall::class) as $call) {
+            if ($call instanceof Node\Expr\StaticCall
+                && $call->class instanceof Node\Name
+                && $call->class->getLast() === 'Limit'
+                && $call->name instanceof Node\Identifier
+                && $call->name->toLowerString() === 'none') {
+                return true;
+            }
         }
+
+        return false;
+    }
+
+    /**
+     * Whether laravel/fortify is installed, read from composer.lock.
+     */
+    private function hasFortify(): bool
+    {
+        $lockContent = FileParser::readFile($this->getBasePath().DIRECTORY_SEPARATOR.'composer.lock');
+
+        return $lockContent !== null && str_contains($lockContent, '"name": "laravel/fortify"');
     }
 
     /**
@@ -1452,12 +2417,17 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function checkFortifyThrottling(array &$issues): void
     {
         $basePath = $this->getBasePath();
+        $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
+        $config = file_exists($fortifyConfigPath) ? $this->parser->parseFile($fortifyConfigPath) : [];
+        $configLimiter = $this->fortifyLoginLimiter($config);
 
-        // Check all provider files for RateLimiter configuration
+        // A limiter named by something other than a literal is most likely still 'login'
+        $limiter = is_string($configLimiter) ? $configLimiter : 'login';
+
+        // Check all provider files for the login limiter's definition and the login pipeline
         $providerPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Providers';
-        $hasLoginRateLimiter = false;
-        $hasDisabledThrottling = false;
         $throttleDisabledFile = null;
+        $customPipeline = null;
 
         if (is_dir($providerPath)) {
             try {
@@ -1470,21 +2440,39 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if ($file->isFile() && $file->getExtension() === 'php') {
-                        $content = $this->readCode($file->getPathname());
-                        if ($content === null) {
+                    if (! $file->isFile() || $file->getExtension() !== 'php') {
+                        continue;
+                    }
+
+                    foreach ($this->parser->findNodes($this->parser->parseFile($file->getPathname()), Node\Expr\StaticCall::class) as $call) {
+                        if (! $call instanceof Node\Expr\StaticCall
+                            || ! $call->class instanceof Node\Name
+                            || ! $call->name instanceof Node\Identifier) {
                             continue;
                         }
 
-                        // Check if Fortify throttling is explicitly disabled
-                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,\s*.*Limit::none\(\)/is', $content)) {
-                            $hasDisabledThrottling = true;
-                            $throttleDisabledFile = $file->getPathname();
+                        $class = $call->class->getLast();
+                        $method = $call->name->toLowerString();
+
+                        // Fortify::ignoreRoutes() registers no Fortify routes: the app's own
+                        // login routes are in routes/, which checkRouteFiles() judges.
+                        if ($class === 'Fortify' && $method === 'ignoreroutes') {
+                            return;
                         }
 
-                        // Check if custom login rate limiter is defined
-                        if (preg_match('/RateLimiter::for\s*\(\s*["\']login["\']\s*,/i', $content)) {
-                            $hasLoginRateLimiter = true;
+                        // Fortify::authenticateThrough() replaces the login pipeline,
+                        // EnsureLoginIsNotThrottled included unless the callback lists it.
+                        $first = $call->args[0] ?? null;
+                        if ($class === 'Fortify' && $method === 'authenticatethrough' && $first instanceof Node\Arg) {
+                            $customPipeline = ['throttles' => $this->pipelineThrottles($first->value), 'file' => $file->getPathname(), 'line' => $call->getStartLine()];
+                        }
+
+                        // Limit::none() disables the login limiter only when the limiter's own
+                        // callback returns it, not when another limiter in the file does.
+                        $callback = $call->args[1] ?? null;
+                        if ($class === 'RateLimiter' && $method === 'for' && $this->definesLimiter($call, $limiter)
+                            && $callback instanceof Node\Arg && $this->containsLimitNone($callback->value)) {
+                            $throttleDisabledFile = $file->getPathname();
                         }
                     }
                 }
@@ -1493,8 +2481,35 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Without a route limiter, Fortify's login pipeline throttles, unless the app
+        // replaces it: authenticateThrough() first, then fortify.pipelines.login, as
+        // Fortify's AuthenticatedSessionController reads them.
+        if ($configLimiter === false) {
+            $pipelines = $this->fortifyConfigValue($config, 'pipelines');
+            $configPipeline = $pipelines instanceof Node\Expr\Array_ ? $this->arrayValue($pipelines, 'login') : null;
+            if ($customPipeline === null && $configPipeline instanceof Node\Expr\Array_) {
+                $customPipeline = ['throttles' => $this->pipelineThrottles($configPipeline), 'file' => $fortifyConfigPath, 'line' => $configPipeline->getStartLine()];
+            }
+
+            if ($customPipeline !== null && ! $customPipeline['throttles']) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Fortify login pipeline does not throttle login attempts',
+                    filePath: $customPipeline['file'],
+                    lineNumber: $customPipeline['line'],
+                    severity: Severity::High,
+                    recommendation: 'Add EnsureLoginIsNotThrottled to the custom login pipeline, or set limiters.login in config/fortify.php to a named rate limiter so Fortify throttles the login route, to prevent brute force attacks.',
+                    metadata: [
+                        'framework' => 'fortify',
+                        'issue_type' => 'fortify_pipeline_unthrottled',
+                    ]
+                );
+            }
+
+            return;
+        }
+
         // If throttling is explicitly disabled, flag as critical
-        if ($hasDisabledThrottling && $throttleDisabledFile !== null) {
+        if ($throttleDisabledFile !== null) {
             $issues[] = $this->createIssueWithSnippet(
                 message: 'Fortify login throttling is explicitly disabled',
                 filePath: $throttleDisabledFile,
@@ -1506,95 +2521,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     'issue_type' => 'fortify_throttle_disabled',
                 ]
             );
-
-            return;
         }
-
-        // If custom login rate limiter is defined, we're good
-        if ($hasLoginRateLimiter) {
-            return;
-        }
-
-        // Check Fortify configuration file
-        $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
-        if (file_exists($fortifyConfigPath)) {
-            $fortifyConfig = $this->readCode($fortifyConfigPath);
-            if ($fortifyConfig !== null) {
-                // Check if limiters configuration exists
-                if (! preg_match('/["\']limiters["\']\s*=>/i', $fortifyConfig)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Fortify authentication lacks custom rate limiter configuration',
-                        filePath: $fortifyConfigPath,
-                        lineNumber: 1,
-                        severity: Severity::High,
-                        recommendation: 'Configure login rate limiting in config/fortify.php or register a named rate limiter for the login endpoint in a service provider.',
-                        metadata: [
-                            'framework' => 'fortify',
-                            'issue_type' => 'fortify_no_custom_limiter',
-                        ]
-                    );
-                }
-            }
-        }
-    }
-
-    /**
-     * Check Breeze/Jetstream throttling in their routes/configuration.
-     *
-     * NOTE: Both Breeze and Jetstream rely on Fortify for authentication by default,
-     * and Fortify includes throttling out of the box. This method only flags issues
-     * if the default throttling has been explicitly disabled or misconfigured.
-     *
-     * @param  array<int, Issue>  &$issues
-     */
-    private function checkBreezeJetstreamThrottling(array &$issues, bool $hasBreeze, bool $hasJetstream): void
-    {
-        $basePath = $this->getBasePath();
-
-        // Breeze (Blade/Inertia/React) uses Fortify for authentication
-        // Jetstream also uses Fortify under the hood
-        // Both include default throttling via Fortify's RateLimiter::for('login', ...)
-        // We only need to check if they've explicitly disabled it or used custom routes
-
-        // Check if they're using custom authentication routes instead of Fortify
-        $authRoutesPath = $basePath.DIRECTORY_SEPARATOR.'routes'.DIRECTORY_SEPARATOR.'auth.php';
-
-        if (file_exists($authRoutesPath)) {
-            $authRoutes = $this->readCode($authRoutesPath);
-            if ($authRoutes !== null) {
-                // Check if these are custom routes (not using Fortify/Breeze defaults)
-                $hasCustomLoginRoute = preg_match('/Route::(post|get|any)\s*\(["\'][^"\']*login[^"\']*["\'],\s*\[.*Controller/i', $authRoutes);
-
-                if ($hasCustomLoginRoute) {
-                    // Custom routes detected - check for throttling
-                    $hasThrottling = str_contains($authRoutes, 'throttle') ||
-                                   str_contains($authRoutes, 'ThrottleRequests');
-
-                    if (! $hasThrottling) {
-                        $framework = $hasBreeze ? 'Breeze' : ($hasJetstream ? 'Jetstream' : 'Laravel');
-
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('%s uses custom authentication routes without rate limiting', $framework),
-                            filePath: $authRoutesPath,
-                            lineNumber: 1,
-                            severity: Severity::High,
-                            recommendation: sprintf(
-                                'Add throttle middleware to custom login routes in routes/auth.php. '.
-                                'Alternatively, use %s default Fortify-based authentication which includes throttling.',
-                                $framework
-                            ),
-                            metadata: [
-                                'framework' => strtolower($framework),
-                                'issue_type' => 'custom_routes_no_throttle',
-                            ]
-                        );
-                    }
-                }
-            }
-        }
-
-        // For Breeze/Jetstream using default Fortify routes, the Fortify check above
-        // already validates throttling configuration, so we don't need additional checks here.
-        // This avoids false positives since Fortify's default behavior includes throttling.
     }
 }

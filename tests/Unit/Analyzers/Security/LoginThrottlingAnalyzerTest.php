@@ -2283,6 +2283,242 @@ PHP;
         $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
     }
 
+    // ==================== A route's throttle stops at its statement ====================
+
+    public function test_next_routes_throttle_does_not_clear_a_one_line_login_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', [AccountController::class, 'signin']); // keep in sync with the app
+
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_next_routes_throttle_does_not_clear_auth_routes(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Auth::routes();
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Auth::routes() includes login endpoint without explicit rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_next_routes_throttle_does_not_clear_login_controller(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', [LoginController::class, 'login']);
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'Login route "/account/signin" lacks rate limiting protection',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
+    }
+
+    public function test_one_line_closure_route_still_reads_its_next_line_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function () { return view('account.signin'); })
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_closure_route_reads_the_throttle_after_its_body(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    $status = 'checked; then signed in';
+    logger("Sign-in for {$request->email} from ${ip}");
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    return redirect('/home');
+})
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_multi_line_closure_route_does_not_read_the_next_routes_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    return redirect('/home');
+});
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_in_arrow_function_group_ends_at_the_group(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('web')->group(fn () =>
+    Route::post('/account/signin', [AccountController::class, 'signin'])
+);
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_statement_before_the_route_on_its_line_does_not_end_the_routes_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('home')->group(function () {
+    Route::get('/', [HomeController::class, 'index']);
+}); Route::post('/account/signin', [AccountController::class, 'signin'])
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_group_opened_on_the_routes_line_does_not_extend_the_routes_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('account')->group(function () { Route::post('/signin', [AccountController::class, 'signin']);
+    Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+});
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_group_opened_on_the_auth_routes_line_does_not_extend_its_chain(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('account')->group(function () { Auth::routes();
+    Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+});
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Auth::routes() includes login endpoint without explicit rate limiting'], $this->issueMessages($result));
+    }
+
+    public function test_long_closure_route_reads_the_throttle_after_its_body(): void
+    {
+        // The body runs past the first eight-line window, which ends inside the
+        // multi-line string, so the statement's end is found by widening it.
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    $request->session()->put('signed_in_at', now());
+    event(new SignedIn($request->user()));
+    logger()->info('signed in', ['id' => $request->user()->id]);
+    $notice = 'Signed in; welcome back.
+Close this notice with ) or }; it will not return.';
+    return redirect('/home')->with('notice', $notice);
+})
+    ->middleware('throttle:6,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_long_closure_route_does_not_read_the_next_routes_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', function (Request $request) {
+    $request->validate(['email' => 'required']);
+    Auth::attempt($request->only('email', 'password'));
+    session()->regenerate();
+    $request->session()->put('signed_in_at', now());
+    event(new SignedIn($request->user()));
+    logger()->info('signed in', ['id' => $request->user()->id]);
+    $notice = 'Signed in; welcome back.
+Close this notice with ) or }; it will not return.';
+    return redirect('/home')->with('notice', $notice);
+});
+Route::put('/settings', [SettingsController::class, 'update'])->middleware('throttle:30,1');
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_unterminated_route_reads_its_chain_to_the_end_of_the_file(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/account/signin', [AccountController::class, 'signin'])
+    ->middleware('throttle:6,1')
+PHP;
+
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
     // ==================== Route throttling clears the controller check ====================
 
     public function test_route_level_throttle_clears_controller_check(): void

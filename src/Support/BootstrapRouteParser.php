@@ -143,6 +143,65 @@ class BootstrapRouteParser
     }
 
     /**
+     * Route files a group registers, each with the group call it inherits its
+     * middleware from: ->group(base_path('...')), Route::group([...], base_path('...')),
+     * or a file require'd/include'd inside a group's closure. Read from the route
+     * files, bootstrap/app.php and app/Providers/*.php, so the caller can resolve
+     * the group's middleware against the imports of the file that declares it.
+     *
+     * @return array<int, array{file: string, source: string, call: MethodCall|StaticCall}>
+     */
+    public function getGroupRegisteredRouteFiles(): array
+    {
+        $sources = [$this->basePath.'/bootstrap/app.php'];
+        foreach (['routes', 'app/Providers'] as $dir) {
+            if (is_dir($this->basePath.'/'.$dir)) {
+                $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->basePath.'/'.$dir, \FilesystemIterator::SKIP_DOTS));
+                foreach ($files as $file) {
+                    if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
+                        $sources[] = $file->getPathname();
+                    }
+                }
+            }
+        }
+
+        $found = [];
+        foreach ($sources as $source) {
+            if (! file_exists($source)) {
+                continue;
+            }
+
+            $ast = $this->parser->parseFile($source);
+            $calls = [
+                ...$this->parser->findMethodCalls($ast, 'group'),
+                ...$this->parser->findNodes($ast, StaticCall::class),
+            ];
+            foreach ($calls as $call) {
+                if (! ($call instanceof MethodCall || $call instanceof StaticCall)
+                    || ! $call->name instanceof Identifier
+                    || $call->name->name !== 'group') {
+                    continue;
+                }
+
+                foreach ($call->args as $arg) {
+                    $value = $arg instanceof Node\Arg ? $arg->value : null;
+                    $basePathFile = $value === null ? null : $this->extractBasePathArgument($value);
+                    $paths = match (true) {
+                        $basePathFile !== null => array_filter([$this->normalizePath($basePathFile)]),
+                        $value !== null => $this->extractIncludesFromClosure($value, dirname($source)),
+                        default => [],
+                    };
+                    foreach ($paths as $path) {
+                        $found[] = ['file' => $path, 'source' => $source, 'call' => $call];
+                    }
+                }
+            }
+        }
+
+        return $found;
+    }
+
+    /**
      * Returns the line ranges of throttled Route::...->group(Closure) blocks
      * declared inside the given route file. Covers both the fluent form
      * (Route::middleware([...'throttle'...])->group(fn)) and the array form

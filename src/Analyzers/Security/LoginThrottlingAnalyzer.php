@@ -54,12 +54,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      */
     private array $middlewareGroups = [];
 
+    private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource'];
+
     /**
      * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
      * alias names, and the Redis-backed variant.
      */
-    private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource'];
-
     private const THROTTLE_MIDDLEWARE = [
         'Illuminate\\Routing\\Middleware\\ThrottleRequests',
         'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
@@ -925,7 +925,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * Reads the import table, so trackFileImports() must have seen the route file.
      *
      * @param  array<Node>  $ast
-     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: string}>, 3: array<int, array{verb: string, uri: string}>}
+     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: ?string}>, 3: array<int, array{verb: string, uri: string}>}
      */
     private function routeMiddleware(array $ast): array
     {
@@ -987,15 +987,16 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Records the action a route verb call names, under the line its verb is on.
-     * Route::match() takes its methods first, the others their URI.
+     * Route::match() takes its methods first, the others their URI. A resource
+     * route names its controller with no method: its routes reach several.
      *
-     * @param  array<int, array{class: ?string, method: string}>  $actions
+     * @param  array<int, array{class: ?string, method: ?string}>  $actions
      */
     private function recordRouteAction(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, int $line, array &$actions): void
     {
         $action = $call->args[$verb === 'match' ? 2 : 1] ?? null;
         if ($action instanceof Node\Arg && ($routeAction = $this->routeAction($action->value)) !== null) {
-            $actions[$line] = $routeAction;
+            $actions[$line] = $verb === 'resource' ? ['class' => $routeAction['class'], 'method' => null] : $routeAction;
         }
     }
 
@@ -1184,7 +1185,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      *
      * @param  array<int, array<int, string>>  $statementMiddleware
      * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groupMiddleware
-     * @param  array{class: ?string, method: string}|null  $action  See routeAction()
+     * @param  array{class: ?string, method: ?string}|null  $action  See routeAction()
      */
     private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware, ?array $action = null): bool
     {
@@ -1677,7 +1678,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * action counts: other classes on the statement are middleware, which
      * routeMiddleware() reads, or ones it removes with withoutMiddleware().
      *
-     * @param  array{class: ?string, method: string}|null  $action
+     * @param  array{class: ?string, method: ?string}|null  $action
      * @return array<int, string>
      */
     private function actionClasses(?array $action): array
@@ -1696,7 +1697,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * it calls; every other name for the class as a whole.
      *
      * @param  array<int, string>  $names
-     * @param  array{class: ?string, method: string}|null  $action  See routeActions()
+     * @param  array{class: ?string, method: ?string}|null  $action  See routeActions()
      */
     private function routeClassesThrottle(array $names, ?array $action = null): bool
     {

@@ -4824,6 +4824,16 @@ PHP;
         $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    public function test_resource_route_is_judged_on_its_whole_controller(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\SessionGate;\n\nRoute::resource('login', SessionGate::class);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_route_check_credits_parent_middleware_for_a_method_the_controller_overrides(): void
     {
         $parent = <<<'PHP'

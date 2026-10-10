@@ -1911,15 +1911,62 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a RateLimiter::for() call defines the 'login' limiter.
+     * Whether a RateLimiter::for() call defines the named limiter.
      */
-    private function isLoginLimiterName(Node\Expr\StaticCall $call): bool
+    private function definesLimiter(Node\Expr\StaticCall $call, string $limiter): bool
     {
         $name = $call->args[0] ?? null;
 
         return $name instanceof Node\Arg
             && $name->value instanceof Node\Scalar\String_
-            && $name->value->value === 'login';
+            && $name->value->value === $limiter;
+    }
+
+    /**
+     * The limiter Fortify throttles its login route with: the value of
+     * fortify.limiters.login. Fortify's routes add throttle:<limiter> only when
+     * it is set, and the package's own default is null, so a missing config file,
+     * limiters key or login key leaves the route unthrottled.
+     *
+     * Returns false when the route is unthrottled, null when it is throttled by a
+     * limiter whose name is not a literal (env(), a constant), or the name.
+     */
+    private function fortifyLoginLimiter(string $configPath): string|false|null
+    {
+        foreach ($this->parser->findNodes($this->parser->parseFile($configPath), Node\Stmt\Return_::class) as $return) {
+            if (! $return instanceof Node\Stmt\Return_ || ! $return->expr instanceof Node\Expr\Array_) {
+                continue;
+            }
+
+            $limiters = $this->arrayValue($return->expr, 'limiters');
+            $login = $limiters instanceof Node\Expr\Array_ ? $this->arrayValue($limiters, 'login') : null;
+
+            if ($login === null
+                || ($login instanceof Node\Expr\ConstFetch && in_array($login->name->toLowerString(), ['null', 'false'], true))
+                || ($login instanceof Node\Scalar\String_ && $login->value === '')) {
+                return false;
+            }
+
+            return $login instanceof Node\Scalar\String_ ? $login->value : null;
+        }
+
+        return false;
+    }
+
+    /**
+     * The value an array literal holds under a string key, or null when it has none.
+     */
+    private function arrayValue(Node\Expr\Array_ $array, string $key): ?Node\Expr
+    {
+        foreach ($array->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem
+                && $item->key instanceof Node\Scalar\String_
+                && $item->key->value === $key) {
+                return $item->value;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1958,11 +2005,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function checkFortifyThrottling(array &$issues): void
     {
         $basePath = $this->getBasePath();
+        $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
+        $configLimiter = file_exists($fortifyConfigPath) ? $this->fortifyLoginLimiter($fortifyConfigPath) : false;
 
-        // Check all provider files for RateLimiter configuration
+        // A limiter named by something other than a literal is most likely still 'login'
+        $limiter = is_string($configLimiter) ? $configLimiter : 'login';
+
+        // Check all provider files for the login limiter's definition
         $providerPath = $basePath.DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Providers';
-        $hasLoginRateLimiter = false;
-        $hasDisabledThrottling = false;
         $throttleDisabledFile = null;
 
         if (is_dir($providerPath)) {
@@ -1996,17 +2046,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             return;
                         }
 
-                        if ($class !== 'RateLimiter' || $method !== 'for' || ! $this->isLoginLimiterName($call)) {
-                            continue;
-                        }
-
-                        $hasLoginRateLimiter = true;
-
                         // Limit::none() disables the login limiter only when the limiter's own
                         // callback returns it, not when another limiter in the file does.
                         $callback = $call->args[1] ?? null;
-                        if ($callback instanceof Node\Arg && $this->containsLimitNone($callback->value)) {
-                            $hasDisabledThrottling = true;
+                        if ($class === 'RateLimiter' && $method === 'for' && $this->definesLimiter($call, $limiter)
+                            && $callback instanceof Node\Arg && $this->containsLimitNone($callback->value)) {
                             $throttleDisabledFile = $file->getPathname();
                         }
                     }
@@ -2016,8 +2060,26 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Without fortify.limiters.login, Fortify's login route has no throttle
+        // middleware, whatever limiters a provider defines.
+        if ($configLimiter === false) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Fortify authentication lacks custom rate limiter configuration',
+                filePath: $fortifyConfigPath,
+                lineNumber: file_exists($fortifyConfigPath) ? 1 : null,
+                severity: Severity::High,
+                recommendation: 'Set limiters.login in config/fortify.php to a named rate limiter for the login endpoint, and register that limiter in a service provider.',
+                metadata: [
+                    'framework' => 'fortify',
+                    'issue_type' => 'fortify_no_custom_limiter',
+                ]
+            );
+
+            return;
+        }
+
         // If throttling is explicitly disabled, flag as critical
-        if ($hasDisabledThrottling && $throttleDisabledFile !== null) {
+        if ($throttleDisabledFile !== null) {
             $issues[] = $this->createIssueWithSnippet(
                 message: 'Fortify login throttling is explicitly disabled',
                 filePath: $throttleDisabledFile,
@@ -2029,35 +2091,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     'issue_type' => 'fortify_throttle_disabled',
                 ]
             );
-
-            return;
-        }
-
-        // If custom login rate limiter is defined, we're good
-        if ($hasLoginRateLimiter) {
-            return;
-        }
-
-        // Check Fortify configuration file
-        $fortifyConfigPath = $basePath.DIRECTORY_SEPARATOR.'config'.DIRECTORY_SEPARATOR.'fortify.php';
-        if (file_exists($fortifyConfigPath)) {
-            $fortifyConfig = $this->readCode($fortifyConfigPath);
-            if ($fortifyConfig !== null) {
-                // Check if limiters configuration exists
-                if (! preg_match('/["\']limiters["\']\s*=>/i', $fortifyConfig)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Fortify authentication lacks custom rate limiter configuration',
-                        filePath: $fortifyConfigPath,
-                        lineNumber: 1,
-                        severity: Severity::High,
-                        recommendation: 'Configure login rate limiting in config/fortify.php or register a named rate limiter for the login endpoint in a service provider.',
-                        metadata: [
-                            'framework' => 'fortify',
-                            'issue_type' => 'fortify_no_custom_limiter',
-                        ]
-                    );
-                }
-            }
         }
     }
 }

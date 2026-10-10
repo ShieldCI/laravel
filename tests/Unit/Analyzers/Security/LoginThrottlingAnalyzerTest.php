@@ -12,6 +12,9 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class LoginThrottlingAnalyzerTest extends AnalyzerTestCase
 {
+    /** The limiters config fortify:install publishes */
+    private const FORTIFY_CONFIG = "<?php\n\nreturn ['limiters' => ['login' => 'login', 'two-factor' => 'two-factor']];\n";
+
     protected function createAnalyzer(): AnalyzerInterface
     {
         return new LoginThrottlingAnalyzer($this->parser);
@@ -1149,6 +1152,7 @@ PHP;
         $tempDir = $this->createTempDirectory([
             'composer.lock' => $composerLock,
             'app/Providers/FortifyServiceProvider.php' => $providerCode,
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'routes/web.php' => '<?php // empty',
         ]);
 
@@ -1223,9 +1227,10 @@ PHP;
 }
 JSON;
 
-        // Breeze with default Fortify routes (no custom routes/auth.php)
+        // Fortify's own routes with the config fortify:install publishes (no custom routes/auth.php)
         $tempDir = $this->createTempDirectory([
             'composer.lock' => $composerLock,
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'routes/web.php' => '<?php // empty - uses Fortify routes',
         ]);
 
@@ -1235,8 +1240,7 @@ JSON;
 
         $result = $analyzer->analyze();
 
-        // Should pass - Breeze uses Fortify which includes throttling by default
-        // No custom routes/auth.php means using defaults
+        // Should pass - the published config throttles Fortify's login route with the 'login' limiter
         $this->assertPassed($result);
     }
 
@@ -2049,6 +2053,7 @@ PHP;
 
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'app/Http/Kernel.php' => $this->stockKernel("\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':api'"),
             'app/Providers/FortifyServiceProvider.php' => $provider,
             'routes/web.php' => '<?php',
@@ -3332,6 +3337,7 @@ PHP;
 
         $result = $this->analyzeRoutesOnly([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'app/Providers/FortifyServiceProvider.php' => $provider,
             'routes/web.php' => '<?php',
         ]);
@@ -4153,6 +4159,7 @@ PHP;
 
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'app/Providers/FortifyServiceProvider.php' => $provider,
             'app/Http/Controllers/Auth/SessionController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionController'),
             'routes/web.php' => '<?php',
@@ -4199,6 +4206,7 @@ PHP;
 
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'app/Providers/AppServiceProvider.php' => $provider,
             'routes/web.php' => '<?php',
         ]);
@@ -4231,6 +4239,7 @@ PHP;
 
         $result = $this->analyzeApp([
             'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => self::FORTIFY_CONFIG,
             'app/Providers/AppServiceProvider.php' => $provider,
             'routes/web.php' => '<?php',
         ]);
@@ -4385,6 +4394,29 @@ PHP);
     }
 
     /**
+     * A FortifyServiceProvider whose boot() runs the given statements.
+     */
+    private function fortifyProvider(string $boot): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Cache\\RateLimiting\\Limit;
+use Illuminate\\Support\\Facades\\RateLimiter;
+
+class FortifyServiceProvider
+{
+    public function boot(): void
+    {
+        {$boot}
+    }
+}
+PHP;
+    }
+
+    /**
      * @param  array<string, string>  $files
      */
     private function analyzeRoutesOnly(array $files): ResultInterface
@@ -4394,5 +4426,82 @@ PHP);
         $analyzer->setPaths(['app', 'bootstrap', 'config', 'routes']);
 
         return $analyzer->analyze();
+    }
+
+    public function test_login_limiter_the_fortify_config_never_names_does_not_throttle_fortify(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['guard' => 'web'];\n",
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+    }
+
+    public function test_null_fortify_login_limiter_does_not_throttle_fortify(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['limiters' => ['login' => null, 'two-factor' => 'two-factor']];\n",
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+    }
+
+    public function test_unpublished_fortify_config_leaves_fortify_unthrottled(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('login', fn () => Limit::perMinute(5));"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify authentication lacks custom rate limiter configuration'], $this->issueMessages($result));
+        $this->assertSame('config/fortify.php', $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_fortify_login_limiter_named_by_env_throttles_fortify(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['limiters' => ['login' => env('FORTIFY_LOGIN_LIMITER', 'login')]];\n",
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_limit_none_on_the_limiter_the_fortify_config_names_is_disabled_throttling(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['limiters' => ['login' => 'sign-in']];\n",
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider("RateLimiter::for('sign-in', fn () => Limit::none());"),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Fortify login throttling is explicitly disabled'], $this->issueMessages($result));
+    }
+
+    public function test_limit_none_on_a_login_limiter_fortify_does_not_use_is_not_disabled_throttling(): void
+    {
+        $result = $this->analyzeApp([
+            'composer.lock' => '{"packages": [{"name": "laravel/fortify", "version": "1.0.0"}]}',
+            'config/fortify.php' => "<?php\n\nreturn ['limiters' => ['login' => 'sign-in']];\n",
+            'app/Providers/FortifyServiceProvider.php' => $this->fortifyProvider(
+                "RateLimiter::for('sign-in', fn () => Limit::perMinute(5));\n        RateLimiter::for('login', fn () => Limit::none());"
+            ),
+            'routes/web.php' => '<?php',
+        ]);
+
+        $this->assertPassed($result);
     }
 }

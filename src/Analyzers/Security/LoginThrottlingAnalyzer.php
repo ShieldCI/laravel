@@ -32,7 +32,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     use TracksImportedNames;
 
     /**
-     * Whether a class throttles login, keyed by fully qualified name, for this run.
+     * Whether a class throttles login, keyed by fully qualified name and the method
+     * judged (see classThrottlesLogin()), for this run.
      *
      * @var array<string, bool>
      */
@@ -751,7 +752,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // Middleware classes each route statement and each route group names,
                 // so a throttling middleware covers the routes it is applied to.
-                [$statementMiddleware, $groupMiddleware] = $this->routeMiddleware($ast);
+                [$statementMiddleware, $groupMiddleware, $routeActions] = $this->routeMiddleware($ast);
 
                 // AST-derived line ranges of throttled route groups (fluent and
                 // array forms, nesting-safe) — replaces the former brace-depth
@@ -767,10 +768,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // Check for Auth::routes() helper
                     if (preg_match('/Auth::routes\s*\(/i', $line, $authCall, PREG_OFFSET_CAPTURE)) {
                         // Auth::routes() includes login routes - check if throttled
-                        // laravel/ui registers these against App\Http\Controllers\Auth\LoginController
+                        // laravel/ui registers these against App\Http\Controllers\Auth\LoginController,
+                        // posting the credentials to its login() method
+                        $loginController = 'App\\Http\\Controllers\\Auth\\LoginController';
                         $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
-                            || $this->routeClassesThrottle(['App\\Http\\Controllers\\Auth\\LoginController'])
-                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware);
+                            || $this->routeClassesThrottle([$loginController], ['class' => $loginController, 'method' => 'login'])
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, 'login');
 
                         if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
                             $issues[] = $this->createIssueWithSnippet(
@@ -832,8 +835,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                         if (! $hasThrottle
                             && ! $fileThrottled
-                            && ! $this->routeClassesThrottle($routeClasses)
-                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware)) {
+                            && ! $this->routeClassesThrottle($routeClasses, $routeActions[$lineNumber + 1] ?? null)
+                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, ($routeActions[$lineNumber + 1] ?? null)['method'] ?? null)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -863,18 +866,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * the line its Route:: call starts on (Route::post(...)->middleware(...)), and
      * per route group, with the line range of the group's closure
      * (Route::middleware(...)->group(...), Route::group(['middleware' => ...], ...)).
-     * A group's classes also hold the controller a Route::controller(...) group
-     * names, since its routes reach that controller.
+     * A group also records the controller a Route::controller(...) group names,
+     * since its routes reach that controller. The third list is each route's
+     * action (see routeAction()), keyed like the statements.
      *
      * Reads the import table, so trackFileImports() must have seen the route file.
      *
      * @param  array<Node>  $ast
-     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>}>}
+     * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: string}>}
      */
     private function routeMiddleware(array $ast): array
     {
         $statements = [];
         $groups = [];
+        $actions = [];
 
         foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
             if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier) {
@@ -898,19 +903,67 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
 
             if ($method === 'group') {
-                $this->collectGroupMiddleware($call->args, $this->chainClasses($call->var), $groups);
+                [$classes, $controller] = $this->chainClasses($call->var);
+                $this->collectGroupMiddleware($call->args, $classes, $controller, $groups);
             }
         }
 
         foreach ($this->parser->findNodes($ast, Node\Expr\StaticCall::class) as $call) {
-            if ($call instanceof Node\Expr\StaticCall
-                && $call->name instanceof Node\Identifier
-                && $call->name->toLowerString() === 'group') {
-                $this->collectGroupMiddleware($call->args, [], $groups);
+            if (! $call instanceof Node\Expr\StaticCall || ! $call->name instanceof Node\Identifier) {
+                continue;
+            }
+
+            $method = $call->name->toLowerString();
+            if ($method === 'group') {
+                $this->collectGroupMiddleware($call->args, [], null, $groups);
+            }
+
+            // Route::match() takes its methods first, the others their URI
+            $action = $call->args[$method === 'match' ? 2 : 1] ?? null;
+            if (in_array($method, ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match'], true)
+                && $action instanceof Node\Arg
+                && ($routeAction = $this->routeAction($action->value)) !== null) {
+                $actions[$call->getStartLine()] = $routeAction;
             }
         }
 
-        return [$statements, $groups];
+        return [$statements, $groups, $actions];
+    }
+
+    /**
+     * The controller method a route action calls: [X::class, 'method'], 'X@method',
+     * an invokable X::class (__invoke), or a bare 'method' a Route::controller()
+     * group resolves, with no class. An X::class name is resolved against the
+     * import table; an 'X@method' string is kept as written, as
+     * controllersReferencedByRoute() keeps it.
+     *
+     * @return array{class: ?string, method: string}|null
+     */
+    private function routeAction(Node\Expr $action): ?array
+    {
+        if ($action instanceof Node\Expr\Array_) {
+            $class = $action->items[0]->value ?? null;
+            $method = $action->items[1]->value ?? null;
+
+            return $class instanceof Node\Expr\ClassConstFetch && $class->class instanceof Node\Name
+                && $method instanceof Node\Scalar\String_
+                ? ['class' => $this->resolvedClassFqn($class->class), 'method' => $method->value]
+                : null;
+        }
+
+        if ($action instanceof Node\Expr\ClassConstFetch && $action->class instanceof Node\Name) {
+            return ['class' => $this->resolvedClassFqn($action->class), 'method' => '__invoke'];
+        }
+
+        if ($action instanceof Node\Scalar\String_) {
+            $at = strpos($action->value, '@');
+
+            return $at === false
+                ? ['class' => null, 'method' => $action->value]
+                : ['class' => ltrim(substr($action->value, 0, $at), '\\'), 'method' => substr($action->value, $at + 1)];
+        }
+
+        return null;
     }
 
     /**
@@ -918,10 +971,11 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * ['middleware' => ...] attribute array name, when there is a closure and any.
      *
      * @param  array<Node>  $args
-     * @param  array<int, string>  $classes  Classes the group's method chain applies (see chainClasses())
-     * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groups
+     * @param  array<int, string>  $classes  Middleware the group's method chain applies (see chainClasses())
+     * @param  ?string  $controller  The controller the group's method chain names
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groups
      */
-    private function collectGroupMiddleware(array $args, array $classes, array &$groups): void
+    private function collectGroupMiddleware(array $args, array $classes, ?string $controller, array &$groups): void
     {
         $closure = null;
         foreach ($args as $arg) {
@@ -944,8 +998,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        if ($closure !== null && $classes !== []) {
-            $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes];
+        if ($closure !== null && ($classes !== [] || $controller !== null)) {
+            $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes, 'controller' => $controller];
         }
     }
 
@@ -955,19 +1009,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * a ->controller(X::class) / Route::controller(X::class) call names, whose
      * routes give only a method.
      *
-     * @return array<int, string>
+     * @return array{0: array<int, string>, 1: ?string}
      */
     private function chainClasses(Node\Expr $node): array
     {
         $classes = [];
+        $controller = null;
         while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
             $first = $node->args[0] ?? null;
             if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
                 $method = $node->name->toLowerString();
                 if ($method === 'middleware') {
                     array_push($classes, ...$this->middlewareClassesIn($first->value));
-                } elseif ($method === 'controller' && ($controller = $this->middlewareClassName($first->value)) !== null) {
-                    $classes[] = $controller;
+                } elseif ($method === 'controller') {
+                    $controller = $this->middlewareClassName($first->value);
                 }
             }
 
@@ -977,23 +1032,28 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             $node = $node->var;
         }
 
-        return $classes;
+        return [$classes, $controller];
     }
 
     /**
      * Whether a class applied to the route on this 1-based line, a middleware on
      * its own statement or a middleware or controller a group around it names,
-     * throttles login.
+     * throttles login. A group's controller is judged for the method the route
+     * calls, when it names one.
      *
      * @param  array<int, array<int, string>>  $statementMiddleware
-     * @param  array<int, array{start: int, end: int, classes: array<int, string>}>  $groupMiddleware
+     * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groupMiddleware
      */
-    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware): bool
+    private function middlewareThrottles(int $line, array $statementMiddleware, array $groupMiddleware, ?string $method = null): bool
     {
         $classes = $statementMiddleware[$line] ?? [];
         foreach ($groupMiddleware as $group) {
             if ($line >= $group['start'] && $line <= $group['end']) {
                 array_push($classes, ...$group['classes']);
+
+                if ($group['controller'] !== null && $this->classThrottlesLogin($group['controller'], $method)) {
+                    return true;
+                }
             }
         }
 
@@ -1470,14 +1530,18 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * action or a name the route file never imported) is read as relative to
      * App\Http\Controllers, the namespace legacy route groups and laravel/ui fall
      * back to. Nothing looser: a name that does not resolve to a file covers nothing.
+     * The route's action, when the statement names one, is checked for the method
+     * it calls; every other name for the class as a whole.
      *
      * @param  array<int, string>  $names
+     * @param  array{class: ?string, method: string}|null  $action  See routeActions()
      */
-    private function routeClassesThrottle(array $names): bool
+    private function routeClassesThrottle(array $names, ?array $action = null): bool
     {
         foreach ($names as $name) {
             $fqn = str_starts_with($name, 'App\\') ? $name : 'App\\Http\\Controllers\\'.$name;
-            if ($this->classThrottlesLogin($fqn)) {
+            $method = $action !== null && $action['class'] === $name ? $action['method'] : null;
+            if ($this->classThrottlesLogin($fqn, $method)) {
                 return true;
             }
         }
@@ -1488,36 +1552,60 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     /**
      * Whether an App\ class throttles login: its file has login throttling, it uses
      * AuthenticatesUsers or ThrottlesLogins, one of its methods delegates to a
-     * throttling FormRequest, or a class it reaches does (see reachedClasses()).
+     * throttling FormRequest, or a class it reaches does: the middleware it
+     * registers on itself, the traits it uses and the class it extends.
      * Memoised for the run.
+     *
+     * With a method, the one a route calls, only that method is judged. Middleware
+     * counts when its only()/except() lets the method through. A method the class
+     * declares itself replaces the one its traits and parent declare, so their
+     * throttling, AuthenticatesUsers' login() included, is not credited; only the
+     * middleware they register still runs. Without one, as for a middleware class or
+     * a route that names no method, any of its methods and middleware count.
+     *
+     * @param  bool  $middlewareOnly  Credit only registered middleware: the class's
+     *                                method is overridden by the class that reached it
      */
-    private function classThrottlesLogin(string $fqn): bool
+    private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
     {
-        if (isset($this->throttlingClasses[$fqn])) {
-            return $this->throttlingClasses[$fqn];
+        $method = $method === null ? null : strtolower($method);
+        $key = $fqn.'::'.($method ?? '*').($middlewareOnly ? ':middleware' : '');
+        if (isset($this->throttlingClasses[$key])) {
+            return $this->throttlingClasses[$key];
         }
 
         // Seeded so an inheritance or middleware cycle ends instead of recursing
-        $this->throttlingClasses[$fqn] = false;
+        $this->throttlingClasses[$key] = false;
 
         $path = $this->appClassPath($fqn);
         if ($path === null) {
             return false;
         }
 
-        if ($this->hasLoginThrottlingInFile($path) || $this->usesLoginThrottlingTrait($path)) {
-            return $this->throttlingClasses[$fqn] = true;
+        $facts = $this->classFacts($path, $fqn);
+        $declared = $method !== null && isset($facts['methods'][$method]);
+
+        if (! $middlewareOnly) {
+            if ($this->hasLoginThrottlingInFile($path)
+                || (! $declared && $this->usesLoginThrottlingTrait($path))
+                || ($method === null ? $facts['delegating'] !== [] : isset($facts['delegating'][$method]))) {
+                return $this->throttlingClasses[$key] = true;
+            }
         }
 
-        $delegates = false;
-        $reached = $this->reachedClasses($path, $fqn, $delegates);
-        if ($delegates) {
-            return $this->throttlingClasses[$fqn] = true;
+        if ($method === null) {
+            foreach ($facts['middleware'] as $middleware) {
+                if ($this->classThrottlesLogin($middleware['class'])) {
+                    return $this->throttlingClasses[$key] = true;
+                }
+            }
+        } elseif ($this->registeredMiddlewareThrottles($facts['middleware'], $method)) {
+            return $this->throttlingClasses[$key] = true;
         }
 
-        foreach ($reached as $class) {
-            if ($this->classThrottlesLogin($class)) {
-                return $this->throttlingClasses[$fqn] = true;
+        foreach ($facts['inherited'] as $class) {
+            if ($this->classThrottlesLogin($class, $method, $middlewareOnly || $declared)) {
+                return $this->throttlingClasses[$key] = true;
             }
         }
 
@@ -1525,46 +1613,44 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The classes whose throttling an App\ class takes on: the traits it uses, the
-     * class it extends, and the middleware it registers on itself, in a constructor
-     * ($this->middleware(...)) or through HasMiddleware's static middleware().
-     * Also sets $delegates when one of its own methods delegates to a throttling
-     * FormRequest.
+     * What an App\ class or trait declares that bears on its throttling: its own
+     * methods, those of them that delegate to a throttling FormRequest, the
+     * middleware it registers on itself (in a constructor, $this->middleware(...),
+     * or through HasMiddleware's static middleware()), and the traits it uses and
+     * the class it extends. Method names are lowercased.
      *
-     * Middleware is credited whatever only()/except() it is limited to: the
-     * route names the controller, not the method.
-     *
-     * @return array<int, string>
+     * @return array{methods: array<string, true>, delegating: array<string, true>, middleware: array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>, inherited: array<int, string>}
      */
-    private function reachedClasses(string $path, string $fqn, bool &$delegates): array
+    private function classFacts(string $path, string $fqn): array
     {
         $ast = $this->parser->parseFile($path);
         $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
+        $facts = ['methods' => [], 'delegating' => [], 'middleware' => [], 'inherited' => []];
 
         // Names in the class resolve against its own imports. The caller's table is
         // put back afterwards: a route file's remaining routes are still read with it.
         $callerImports = $this->importedNames;
         $this->trackFileImports($ast);
 
-        $reached = [];
         foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
             if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
                 || $class->name?->toString() !== $shortName) {
                 continue;
             }
 
-            foreach ($class->getMethods() as $method) {
-                if ($this->delegatesToThrottlingRequest($method)) {
-                    $delegates = true;
+            foreach ($class->getMethods() as $classMethod) {
+                $name = $classMethod->name->toLowerString();
+                $facts['methods'][$name] = true;
+
+                if ($this->delegatesToThrottlingRequest($classMethod)) {
+                    $facts['delegating'][$name] = true;
                 }
 
-                foreach ($this->middlewareRegisteredBy($method) as $middleware) {
-                    $reached[] = $middleware['class'];
-                }
+                array_push($facts['middleware'], ...$this->middlewareRegisteredBy($classMethod));
             }
 
             foreach ($this->inheritedNames($class) as $name) {
-                $reached[] = $this->resolvedClassFqn($name);
+                $facts['inherited'][] = $this->resolvedClassFqn($name);
             }
 
             break;
@@ -1572,7 +1658,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         $this->importedNames = $callerImports;
 
-        return $reached;
+        return $facts;
     }
 
     /**

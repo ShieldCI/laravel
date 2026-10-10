@@ -4084,6 +4084,263 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider controllerMiddlewareCoveringLogin
+     */
+    #[DataProvider('controllerMiddlewareCoveringLogin')]
+    public function test_route_check_credits_registered_middleware_that_reaches_the_routed_method(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith($registration),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\LoginController;\n\nRoute::post('/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider controllerMiddlewareMissingLogin
+     */
+    #[DataProvider('controllerMiddlewareMissingLogin')]
+    public function test_route_check_reports_a_route_whose_method_registered_middleware_skips(string $registration): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith($registration),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\LoginController;\n\nRoute::post('/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertContains('Login route "/login" lacks rate limiting protection', $this->issueMessages($result));
+    }
+
+    public function test_route_check_reads_the_method_of_a_string_action(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith('public function __construct() { $this->middleware(CapSignIns::class)->only(\'logout\'); }'),
+            'routes/web.php' => "<?php\n\nRoute::post('/login', 'Auth\\LoginController@login');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertContains('Login route "/login" lacks rate limiting protection', $this->issueMessages($result));
+    }
+
+    public function test_controller_group_route_is_judged_by_the_method_it_names(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\LoginController;
+
+Route::controller(LoginController::class)->group(function () {
+    Route::post('/login', 'login');
+    Route::post('/logout', 'logout');
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->loginControllerWith('public function __construct() { $this->middleware(CapSignIns::class)->only(\'logout\'); }'),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertContains('Login route "/login" lacks rate limiting protection', $this->issueMessages($result));
+    }
+
+    public function test_route_check_does_not_credit_a_parent_method_the_controller_overrides(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Support\Facades\RateLimiter;
+
+abstract class GuardedSignIn
+{
+    public function store()
+    {
+        abort_if(RateLimiter::tooManyAttempts('sign-in|'.request()->ip(), 5), 429);
+    }
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Auth\GuardedSignIn;
+
+class StaffSignInController extends GuardedSignIn
+{
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/GuardedSignIn.php' => $parent,
+            'app/Http/Controllers/Admin/StaffSignInController.php' => $child,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Admin\\StaffSignInController;\n\nRoute::post('/staff/signin', [StaffSignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/staff/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_check_does_not_credit_authenticates_users_for_a_login_method_the_controller_declares(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+abstract class GuardSignIn
+{
+    use AuthenticatesUsers;
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Auth\GuardSignIn;
+
+class StaffSignInController extends GuardSignIn
+{
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/GuardSignIn.php' => $parent,
+            'app/Http/Controllers/Admin/StaffSignInController.php' => $child,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Admin\\StaffSignInController;\n\nRoute::post('/staff/login', [StaffSignInController::class, 'login']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/staff/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_check_does_not_credit_a_used_authenticates_users_for_a_login_method_the_class_declares(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use Illuminate\Foundation\Auth\AuthenticatesUsers;
+
+class StaffSignInController
+{
+    use AuthenticatesUsers;
+
+    public function login()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Admin/StaffSignInController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Admin\\StaffSignInController;\n\nRoute::post('/staff/login', [StaffSignInController::class, 'login']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/staff/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_invokable_route_is_judged_by_the_middleware_that_reaches_invoke(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Middleware\CapSignIns;
+
+class SignInController
+{
+    public function __construct()
+    {
+        $this->middleware(CapSignIns::class)->only('store');
+    }
+
+    public function __invoke()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/SignInController.php' => $controller,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\SignInController;\n\nRoute::post('/signin', SignInController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_check_credits_parent_middleware_for_a_method_the_controller_overrides(): void
+    {
+        $parent = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Auth;
+
+use App\Http\Middleware\CapSignIns;
+
+abstract class GuardedSignIn
+{
+    public function __construct()
+    {
+        $this->middleware(CapSignIns::class);
+    }
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Auth\GuardedSignIn;
+
+class StaffSignInController extends GuardedSignIn
+{
+    public function store()
+    {
+        return Auth::attempt(request()->only('email', 'password'));
+    }
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Middleware/CapSignIns.php' => $this->throttlingMiddleware('CapSignIns'),
+            'app/Http/Controllers/Auth/GuardedSignIn.php' => $parent,
+            'app/Http/Controllers/Admin/StaffSignInController.php' => $child,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Admin\\StaffSignInController;\n\nRoute::post('/staff/signin', [StaffSignInController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_controller_check_does_not_credit_a_parent_for_a_login_method_the_controller_declares(): void
     {
         $parent = <<<'PHP'

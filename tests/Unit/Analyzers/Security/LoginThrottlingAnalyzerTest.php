@@ -3828,6 +3828,9 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider frameworkThrottleRegistrations
+     */
     #[DataProvider('frameworkThrottleRegistrations')]
     public function test_framework_throttle_a_controller_registers_covers_its_method(string $registration): void
     {
@@ -4002,6 +4005,9 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider fileGroupRegistrations
+     */
     #[DataProvider('fileGroupRegistrations')]
     public function test_group_middleware_covers_the_route_file_it_registers(string $registration): void
     {
@@ -4077,6 +4083,9 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider kernelMiddlewareGroupNames
+     */
     #[DataProvider('kernelMiddlewareGroupNames')]
     public function test_kernel_middleware_group_resolves_to_its_throttling_classes(string $group): void
     {
@@ -4194,6 +4203,9 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider chainedThrottles
+     */
     #[DataProvider('chainedThrottles')]
     public function test_throttle_on_a_chained_login_route_covers_it(string $route): void
     {

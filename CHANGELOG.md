@@ -5,18 +5,19 @@
 ### Added
 - `OriginReachabilityChecker` takes an optional `ProbeRequest`, so a probe can send `Accept-Encoding` and keep the origin's `Content-Encoding` (#488)
 
+### Changed
+- `login-throttling` reports each unthrottled login route in `routes/auth.php`, replacing the single file-level Breeze or Jetstream finding (#483, #491)
+
 ### Fixed
 - `login-throttling` ignores commented-out code, so a commented-out route or throttle no longer changes the result (#482)
 - `login-throttling` scans `routes/web.php`, which every install registers in the `web` group, so an unthrottled `POST /login` is reported (#483)
-- `login-throttling` no longer lets an api-group throttle, such as the stock `throttle:api`, clear web login routes (#483)
-- `login-throttling` no longer flags a GET login route, which renders the form rather than receiving credentials (#483)
-- `login-throttling` no longer reports a controller whose login route carries throttle middleware (#484)
-- `login-throttling` credits a login method that throttles through its FormRequest, such as `$request->authenticate()` (#486)
+- `login-throttling` no longer lets an api-group throttle, such as the stock `throttle:api`, clear web login routes or skip the Fortify check (#483)
+- `login-throttling` no longer reports a login controller whose route carries throttle middleware or whose FormRequest throttles, such as `$request->authenticate()` (#484, #486)
 - `login-throttling` reads a route's throttle to the end of its statement, so a one-line route no longer borrows the next route's throttle (#490)
 - `login-throttling` credits a login route only with its own controller's or middleware's throttling, so a throttled web controller no longer hides an unthrottled API route (#491)
-- `login-throttling` checks a verb chained after another call, such as `Route::middleware('guest')->post('/login', ...)` (#491)
-- `login-throttling` no longer reports Fortify without a `limiters` config, since Fortify throttles login through its pipeline by default (#491)
-- `login-throttling` reports a custom Fortify login pipeline that leaves out `EnsureLoginIsNotThrottled` (#491)
+- `login-throttling` detects a login route chained after another call, such as `Route::middleware('guest')->post()` (#491)
+- `login-throttling` no longer reports Fortify without a `limiters` config or after `Fortify::ignoreRoutes()`, since neither leaves an unthrottled Fortify login route (#491)
+- `login-throttling` checks Fortify even when the app calls `RateLimiter` itself, and reports a login pipeline that leaves out `EnsureLoginIsNotThrottled` (#491)
 
 ## v1.17.0
 

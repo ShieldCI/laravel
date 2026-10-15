@@ -458,27 +458,31 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Get the URL for a Mix asset.
+     * Get the URL for a Mix asset, as mix() builds it.
+     *
+     * mix() prefixes app.mix_url to the manifest value and nothing else, so a CDN set there
+     * is where the browser fetches from. A result with no host is root-relative and is
+     * fetched from the page's own origin, app.url.
      */
     private function getMixUrl(string $path): ?string
     {
-        try {
-            return $this->buildAbsoluteUrl($path);
-        } catch (\Throwable) {
-            return null;
-        }
+        $url = $this->getConfigString('app.mix_url').$path;
+
+        return parse_url($url, PHP_URL_HOST) !== null
+            ? $url
+            : $this->buildAbsoluteUrl($this->getAppUrl(), $url);
     }
 
     /**
-     * Get the URL for a Vite asset.
+     * Get the URL for a Vite asset, as the Vite helper builds it.
+     *
+     * The helper resolves asset('build/'.$file), which is rooted at app.asset_url when that
+     * is set. Probing app.url instead asks a host that never serves the asset, and every
+     * asset of an application on a CDN would answer 404.
      */
     private function getViteAssetUrl(string $file): ?string
     {
-        try {
-            return $this->buildAbsoluteUrl('build/'.$file);
-        } catch (\Throwable) {
-            return null;
-        }
+        return $this->buildAbsoluteUrl($this->getConfigString('app.asset_url') ?? $this->getAppUrl(), 'build/'.$file);
     }
 
     /**
@@ -566,19 +570,29 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         return filter_var($normalized, FILTER_VALIDATE_URL) !== false ? $normalized : null;
     }
 
-    private function buildAbsoluteUrl(string $path): ?string
+    private function buildAbsoluteUrl(?string $base, string $path): ?string
     {
-        $base = $this->getAppUrl();
-
         if ($base === null) {
             return null;
         }
 
+        $base = rtrim($base, '/');
         $trimmed = ltrim($path, '/');
 
         return $trimmed === ''
             ? $base
             : $base.'/'.$trimmed;
+    }
+
+    private function getConfigString(string $key): ?string
+    {
+        if (! function_exists('config')) {
+            return null;
+        }
+
+        $value = config($key);
+
+        return is_string($value) && $value !== '' ? $value : null;
     }
 
     /**
@@ -629,7 +643,8 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
      * Ask the checker about one asset URL, on the origin that URL names.
      *
      * The checker caches each probe by URL, so an asset referenced from several manifest
-     * entries costs one request.
+     * entries costs one request. A protocol-relative CDN URL is fetched over the scheme
+     * the page is served with.
      */
     private function probeAsset(?string $url): ?OriginProbeResult
     {
@@ -637,13 +652,14 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             return null;
         }
 
-        $origin = DeclaredOriginResolver::normalizeOrigin($url, 'https');
+        $scheme = parse_url((string) $this->getAppUrl(), PHP_URL_SCHEME);
+        $origin = DeclaredOriginResolver::normalizeOrigin($url, is_string($scheme) ? strtolower($scheme) : 'https');
 
         if ($origin === null) {
             return null;
         }
 
-        $declared = new DeclaredOrigin($origin, [DeclaredOrigin::SOURCE_APP_URL]);
+        $declared = new DeclaredOrigin($origin);
 
         return $this->checker->probe([$declared], null, [], $url)->probeFor($origin);
     }

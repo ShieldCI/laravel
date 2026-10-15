@@ -761,6 +761,88 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertSame([['path' => '/js/app.js', 'source' => 'mix']], $issues[0]->metadata['uncached_assets']);
     }
 
+    public function test_probes_vite_assets_on_asset_url(): void
+    {
+        config(['app.asset_url' => 'https://cdn.example.test/prefix/']);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => json_encode([
+                'resources/js/app.js' => ['file' => 'assets/app-x.js'],
+            ]),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertNotNull($this->mock);
+        $this->assertSame('https://cdn.example.test/prefix/build/assets/app-x.js', (string) $this->mock->getLastRequest()?->getUri());
+    }
+
+    public function test_protocol_relative_asset_url_uses_the_app_url_scheme(): void
+    {
+        config(['app.asset_url' => '//cdn.example.test']);
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => json_encode([
+                'resources/js/app.js' => ['file' => 'assets/app-x.js'],
+            ]),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ]);
+        $analyzer->setAppUrl('http://example.test');
+        $analyzer->setPublicPath($tempDir.'/public');
+        $analyzer->analyze();
+
+        $this->assertNotNull($this->mock);
+        $this->assertSame('http://cdn.example.test/build/assets/app-x.js', (string) $this->mock->getLastRequest()?->getUri());
+    }
+
+    public function test_probes_mix_assets_on_mix_url(): void
+    {
+        config(['app.mix_url' => 'https://cdn.example.test']);
+
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode(['/js/app.js' => '/js/app.js?id=abc123']),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertNotNull($this->mock);
+        $this->assertSame('https://cdn.example.test/js/app.js?id=abc123', (string) $this->mock->getLastRequest()?->getUri());
+    }
+
+    public function test_probes_absolute_mix_manifest_value_as_is(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode(['/js/app.js' => 'https://cdn.example.test/js/app.js?id=abc123']),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(200, ['Cache-Control' => 'public, max-age=31536000']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertNotNull($this->mock);
+        $this->assertSame('https://cdn.example.test/js/app.js?id=abc123', (string) $this->mock->getLastRequest()?->getUri());
+    }
+
     public function test_stops_probing_after_reaching_unobserved_threshold(): void
     {
         $manifest = [];

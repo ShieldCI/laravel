@@ -733,6 +733,82 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $this->assertSame(1, $this->mock->count());
     }
 
+    public function test_does_not_grade_a_same_host_redirect(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => json_encode([
+                'resources/js/app.js' => ['file' => 'assets/app-x.js'],
+            ]),
+        ]);
+
+        // APP_URL names http while the server upgrades every request to https on the same
+        // host. The redirect is not followed, so the asset behind it is never graded.
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(301, ['Location' => 'https://example.test/build/assets/app-x.js']),
+            new Response(200, ['Cache-Control' => 'no-store']),
+        ]);
+        $analyzer->setAppUrl('http://example.test');
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertEmpty($result->getIssues());
+        $this->assertStringContainsString('http://example.test/build/assets/app-x.js: connected (non-2xx) HTTP 301', $result->getMessage());
+        $this->assertNotNull($this->mock);
+        $this->assertSame(1, $this->mock->count());
+    }
+
+    public function test_stops_probing_an_origin_that_gave_no_response(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode([
+                '/js/app.js' => '/js/app.js?id=abc123',
+                '/css/app.css' => '/css/app.css?id=def456',
+            ]),
+        ]);
+
+        // The second response would grade the second asset if it were requested.
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new ConnectException('Connection refused', new Request('GET', 'https://example.test/js/app.js?id=abc123')),
+            new Response(200, ['Cache-Control' => 'no-store']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('Could not verify cache headers on 2 compiled asset(s)', $result->getMessage());
+        $this->assertNotNull($this->mock);
+        $this->assertSame(1, $this->mock->count());
+
+        $reasons = (fn () => $this->unobservedAssets->pluck('reason')->all())->call($analyzer);
+        $this->assertSame('https://example.test/css/app.css?id=def456: not probed, its origin gave no response (https://example.test/js/app.js?id=abc123: connection refused: Connection refused)', $reasons[1]);
+    }
+
+    public function test_keeps_probing_an_origin_that_answered_non_2xx(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode([
+                '/js/app.js' => '/js/app.js?id=abc123',
+                '/css/app.css' => '/css/app.css?id=def456',
+            ]),
+        ]);
+
+        // A 404 is about one file, so the next asset on the same origin is still asked about.
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(404),
+            new Response(200, ['Cache-Control' => 'no-store']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertNotNull($this->mock);
+        $this->assertSame(0, $this->mock->count());
+    }
+
     public function test_reports_uncached_assets_and_counts_unobserved_ones(): void
     {
         $tempDir = $this->createTempDirectory([
@@ -751,7 +827,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertSame('Found 1 asset(s) without proper cache headers (1 further asset(s) could not be checked)', $result->getMessage());
+        $this->assertSame('Found 1 asset(s) without proper cache headers (1 further asset(s) could not be checked, first: https://example.test/css/app.css?id=def456: connected (non-2xx) HTTP 503)', $result->getMessage());
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);

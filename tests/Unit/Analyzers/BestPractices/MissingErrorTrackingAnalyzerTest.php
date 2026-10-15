@@ -772,6 +772,16 @@ PHP,
         $this->assertWarning($result);
     }
 
+    public function test_fails_when_unquoted_env_value_switches_off_nightwatch_before_a_comment(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false # paused\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
     public function test_passes_when_env_file_enables_nightwatch(): void
     {
         $result = $this->analyzeProject([
@@ -999,6 +1009,16 @@ PHP,
         $analyzer->setBasePath($tempDir);
 
         $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_lock_entry_with_capitals_matches_known_package(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/framework'),
+            'composer.lock' => $this->composerLock(['Sentry/Sentry-Laravel']),
+        ]);
+
+        $this->assertPassed($result);
     }
 
     public function test_passes_with_flare_wired_in_bootstrap_app(): void

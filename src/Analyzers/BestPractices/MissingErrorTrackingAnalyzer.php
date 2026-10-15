@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsErrorTracking;
 
 /**
  * Detects applications without error tracking service.
@@ -25,6 +26,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  */
 class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsErrorTracking;
+
     /**
      * This analyzer is only relevant in production and staging environments.
      *
@@ -109,18 +112,6 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
      */
     private function loadConfiguration(): void
     {
-        // Default known error tracking packages
-        // Only includes dedicated production error tracking services
-        // Excludes: facade/ignition, spatie/laravel-ray, spatie/flare-client-php (dev-only tools)
-        // Excludes: aws/aws-sdk-php (too broad - used for S3, SES, SQS without error tracking)
-        $defaultPackages = [
-            'sentry/sentry-laravel',
-            'bugsnag/bugsnag-laravel',
-            'rollbar/rollbar-laravel',
-            'airbrake/phpbrake',
-            'honeybadger-io/honeybadger-laravel',
-        ];
-
         // Load from config
         $configPackages = $this->config->get('shieldci.analyzers.best-practices.missing-error-tracking.known_packages', []);
 
@@ -134,7 +125,7 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
         if (! empty($configPackages)) {
             $this->knownPackages = array_values(array_unique(array_filter($configPackages, 'is_string')));
         } else {
-            $this->knownPackages = $defaultPackages;
+            $this->knownPackages = $this->errorTrackingPackages();
         }
     }
 
@@ -145,32 +136,33 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 
         $issues = [];
 
-        // Check composer.json for error tracking packages (we know it exists from shouldRun())
-        $composerPath = $this->basePath.'/composer.json';
-
-        $composer = $this->parseComposerJson($composerPath);
-        if ($composer === null) {
-            // An unparseable composer.json leaves nothing to inspect. Reporting the
-            // broken file is composer-validation's job, so this is an analysis error
-            // rather than a finding about error tracking.
-            return $this->error('composer.json contains invalid JSON and cannot be parsed');
+        // Packages a --no-dev deploy installs, from composer.lock or, without one, from
+        // composer.json (we know it exists from shouldRun())
+        $production = $this->productionPackages();
+        if ($production['problem'] !== null) {
+            // An unreadable manifest leaves nothing to inspect. Reporting the broken
+            // file is composer-validation's job, so this is an analysis error rather
+            // than a finding about error tracking.
+            return $this->error($production['manifest'].' '.$production['problem']);
         }
 
         // Check for error tracking packages
-        $hasErrorTracking = $this->checkForErrorTrackingPackages($composer);
+        $hasErrorTracking = $this->hasProductionErrorTracker($this->knownPackages, $production['packages']);
 
         // If no package found, check for custom implementations
         if (! $hasErrorTracking) {
             $hasErrorTracking = $this->checkForCustomErrorTracking();
         }
 
-        // If still no error tracking found, report it as info
+        // If still no error tracking found, report it as info. The location stays
+        // composer.json even when composer.lock decided: it is part of the baseline hash.
         if (! $hasErrorTracking) {
             $issues[] = $this->createIssue(
                 message: 'No error tracking service detected',
                 location: new Location('composer.json'),
                 severity: Severity::Info,
-                recommendation: 'Consider installing an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for better production error visibility. '.
+                recommendation: $this->decidedBy($production['manifest']).
+                    'Consider installing an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for better production error visibility. '.
                     'This provides automatic error grouping, stack traces, release tracking, and faster debugging. '.
                     'If you\'re using custom error logging (CloudWatch, Datadog, New Relic APM, or custom solutions), you can safely ignore this recommendation.',
             );
@@ -187,51 +179,15 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Parse composer.json with proper error handling.
-     *
-     * @return array<string, mixed>|null
+     * Which file the finding was decided from, when that is not the file it points at.
      */
-    private function parseComposerJson(string $path): ?array
+    private function decidedBy(string $manifest): string
     {
-        $content = FileParser::readFile($path);
-        if ($content === null) {
-            return null;
+        if ($manifest !== 'composer.lock') {
+            return '';
         }
 
-        $decoded = json_decode($content, true);
-
-        // Check for JSON decode errors
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            return null;
-        }
-
-        // Ensure it's an array
-        if (! is_array($decoded)) {
-            return null;
-        }
-
-        /** @var array<string, mixed> $decoded */
-        return $decoded;
-    }
-
-    /**
-     * Check for known error tracking packages in composer dependencies.
-     *
-     * @param  array<string, mixed>  $composer
-     */
-    private function checkForErrorTrackingPackages(array $composer): bool
-    {
-        $require = is_array($composer['require'] ?? null) ? $composer['require'] : [];
-        $requireDev = is_array($composer['require-dev'] ?? null) ? $composer['require-dev'] : [];
-        $dependencies = array_merge($require, $requireDev);
-
-        foreach ($this->knownPackages as $service) {
-            if (isset($dependencies[$service])) {
-                return true;
-            }
-        }
-
-        return false;
+        return 'composer.lock, not composer.json, decides what a production install gets, and it lists no error tracking package; refresh it if it is out of date. ';
     }
 
     /**
@@ -314,6 +270,8 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'Bugsnag::',             // Bugsnag SDK
             'Rollbar::',             // Rollbar SDK
             'Honeybadger::',         // Honeybadger SDK
+            'Flare::',               // Flare SDK (Flare::handles($exceptions))
+            'Inspector::',           // Inspector SDK
             'notifyException',       // Common method name
 
             // Container-based integrations

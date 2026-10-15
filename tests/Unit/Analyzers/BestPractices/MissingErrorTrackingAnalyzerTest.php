@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 use Illuminate\Config\Repository;
 use ShieldCI\Analyzers\BestPractices\MissingErrorTrackingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
@@ -150,7 +151,7 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
         $this->assertPassed($result);
     }
 
-    public function test_passes_with_error_tracking_in_require_dev(): void
+    public function test_fails_with_error_tracking_only_in_require_dev(): void
     {
         $composerJson = json_encode([
             'require' => [
@@ -172,7 +173,8 @@ class MissingErrorTrackingAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
     }
 
     public function test_fails_without_error_tracking_service(): void
@@ -689,5 +691,430 @@ PHP;
 
         $this->assertWarning($result);
         $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_passes_with_laravel_flare_installed(): void
+    {
+        $this->assertPassed($this->analyzeProject(['composer.json' => $this->composerRequiring('spatie/laravel-flare')]));
+    }
+
+    public function test_passes_with_inspector_installed(): void
+    {
+        $this->assertPassed($this->analyzeProject(['composer.json' => $this->composerRequiring('inspector-apm/inspector-laravel')]));
+    }
+
+    public function test_passes_with_nightwatch_installed(): void
+    {
+        $this->assertPassed($this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]));
+    }
+
+    public function test_log_channel_does_not_count_for_switched_off_nightwatch(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false",
+            'config/logging.php' => <<<'PHP'
+<?php
+
+return [
+    'default' => env('LOG_CHANNEL', 'stack'),
+    'channels' => [
+        'stack' => ['driver' => 'stack', 'channels' => ['nightwatch']],
+        'nightwatch' => ['driver' => 'nightwatch'],
+    ],
+];
+PHP,
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_nightwatch_is_switched_off_in_config(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn [\n    'enabled' => false,\n    'token' => env('NIGHTWATCH_TOKEN'),\n];\n",
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_passes_when_nightwatch_enabled_comes_from_env(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn [\n    'enabled' => env('NIGHTWATCH_ENABLED', false),\n];\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_env_file_switches_off_unpublished_nightwatch(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_fails_when_env_file_switches_off_published_nightwatch(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn [\n    'enabled' => env('NIGHTWATCH_ENABLED', true),\n    'token' => env('NIGHTWATCH_TOKEN'),\n];\n",
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=\"(false)\" # paused\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_unquoted_env_value_switches_off_nightwatch_before_a_comment(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false # paused\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_passes_when_env_file_enables_nightwatch(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=true # on\nNIGHTWATCH_TOKEN='abc123'",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_env_file_leaves_nightwatch_token_to_the_server(): void
+    {
+        $result = $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_env_file_leaves_nightwatch_token_empty(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_TOKEN=",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_env_file_sets_nightwatch_token_to_null(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nexport NIGHTWATCH_TOKEN=null",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_config_hard_codes_an_empty_nightwatch_token(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn [\n    'enabled' => true,\n    'token' => '',\n];\n",
+            '.env' => "APP_ENV=production\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_passes_when_config_hard_codes_a_nightwatch_token(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn [\n    'token' => 'abc123',\n];\n",
+            '.env' => "APP_ENV=production\nNIGHTWATCH_TOKEN=",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_switched_off_nightwatch_does_not_hide_a_tracker_listed_after_it(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => (string) json_encode(['require' => [
+                'laravel/nightwatch' => '^1.0',
+                'sentry/sentry-laravel' => '^4.0',
+            ]]),
+            'config/nightwatch.php' => "<?php\n\nreturn ['enabled' => false];\n",
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer(['known_packages' => ['laravel/nightwatch', 'sentry/sentry-laravel']]);
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_passes_with_tracker_in_lock_file_packages(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('acme/monitoring-bundle'),
+            'composer.lock' => $this->composerLock(['acme/monitoring-bundle', 'sentry/sentry-laravel']),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_with_tracker_only_in_lock_file_packages_dev(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/framework'),
+            'composer.lock' => $this->composerLock(['laravel/framework'], ['sentry/sentry-laravel']),
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_lock_file_is_authoritative_over_composer_json(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('sentry/sentry-laravel'),
+            'composer.lock' => $this->composerLock(['laravel/framework']),
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_ignores_tracker_named_only_in_a_package_requirement(): void
+    {
+        $lock = (string) json_encode([
+            'packages' => [[
+                'name' => 'acme/toolkit',
+                'suggest' => ['sentry/sentry-laravel' => 'Report errors'],
+            ]],
+            'packages-dev' => [],
+        ]);
+
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('acme/toolkit'),
+            'composer.lock' => $lock,
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_errors_on_malformed_composer_lock(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('sentry/sentry-laravel'),
+            'composer.lock' => 'invalid json {{{',
+        ]);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('composer.lock', $result->getMessage());
+    }
+
+    public function test_errors_on_composer_lock_without_packages(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('sentry/sentry-laravel'),
+            'composer.lock' => (string) json_encode(['content-hash' => 'abc']),
+        ]);
+
+        $this->assertError($result);
+        $this->assertSame('composer.lock has no "packages" list', $result->getMessage());
+    }
+
+    public function test_errors_on_composer_json_that_is_not_an_object(): void
+    {
+        $result = $this->analyzeProject(['composer.json' => '"sentry/sentry-laravel"']);
+
+        $this->assertError($result);
+        $this->assertSame('composer.json does not contain a JSON object', $result->getMessage());
+    }
+
+    public function test_errors_on_unreadable_composer_lock(): void
+    {
+        if (function_exists('posix_getuid') && posix_getuid() === 0) {
+            $this->markTestSkipped('root reads a file whatever its mode');
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $this->composerRequiring('sentry/sentry-laravel'),
+            'composer.lock' => $this->composerLock(['sentry/sentry-laravel']),
+            '.env' => 'APP_ENV=production',
+        ]);
+        chmod($tempDir.'/composer.lock', 0000);
+
+        try {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $result = $analyzer->analyze();
+        } finally {
+            chmod($tempDir.'/composer.lock', 0644);
+        }
+
+        $this->assertError($result);
+        $this->assertSame('composer.lock could not be read', $result->getMessage());
+    }
+
+    public function test_finding_from_lock_file_names_it_but_points_at_composer_json(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('sentry/sentry-laravel'),
+            'composer.lock' => $this->composerLock(['laravel/framework']),
+        ]);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('composer.json', $issues[0]->location?->file);
+        $this->assertStringStartsWith('composer.lock, not composer.json, decides', $issues[0]->recommendation);
+    }
+
+    public function test_finding_from_composer_json_has_no_lock_file_note(): void
+    {
+        $result = $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/framework')]);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringStartsWith('Consider installing', $issues[0]->recommendation);
+    }
+
+    public function test_package_names_match_case_insensitively(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => (string) json_encode(['require' => ['Sentry/Sentry-Laravel' => '^4.0']]),
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer(['known_packages' => ['SENTRY/sentry-laravel']]);
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_known_package_with_capitals_matches_lowercase_lock_entry(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $this->composerRequiring('acme/error-reporter'),
+            'composer.lock' => $this->composerLock(['acme/error-reporter']),
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer(['known_packages' => ['Acme/Error-Reporter']]);
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_lock_entry_with_capitals_matches_known_package(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/framework'),
+            'composer.lock' => $this->composerLock(['Sentry/Sentry-Laravel']),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_flare_wired_in_bootstrap_app(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/framework'),
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Spatie\LaravelFlare\Facades\Flare;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withExceptions(function (Exceptions $exceptions) {
+        Flare::handles($exceptions);
+    })->create();
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_with_inspector_reporting_in_handler(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/framework'),
+            'app/Exceptions/Handler.php' => <<<'PHP'
+<?php
+
+namespace App\Exceptions;
+
+use Illuminate\Foundation\Exceptions\Handler as ExceptionHandler;
+use Inspector\Laravel\Facades\Inspector;
+use Throwable;
+
+class Handler extends ExceptionHandler
+{
+    public function report(Throwable $e): void
+    {
+        Inspector::reportException($e);
+        parent::report($e);
+    }
+}
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_known_packages_override_applies_to_lock_file(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'composer.json' => $this->composerRequiring('acme/error-reporter'),
+            'composer.lock' => $this->composerLock(['acme/error-reporter']),
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer(['known_packages' => ['acme/error-reporter']]);
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function analyzeProject(array $files): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory($files + ['.env' => 'APP_ENV=production']);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze();
+    }
+
+    private function composerRequiring(string $package): string
+    {
+        return (string) json_encode(['require' => ['php' => '^8.1', $package => '*']]);
+    }
+
+    /**
+     * @param  list<string>  $packages
+     * @param  list<string>  $devPackages
+     */
+    private function composerLock(array $packages, array $devPackages = []): string
+    {
+        $entries = fn (array $names): array => array_map(
+            fn (string $name): array => ['name' => $name, 'version' => '1.0.0'],
+            $names,
+        );
+
+        return (string) json_encode([
+            'packages' => $entries($packages),
+            'packages-dev' => $entries($devPackages),
+        ]);
     }
 }

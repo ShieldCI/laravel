@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.19.0
+
+### Added
+- `DetectsErrorTracking` shares the error-tracking package list, now including Flare, Inspector and Nightwatch (#494)
+
+### Fixed
+- `missing-error-tracking` no longer passes on a tracker installed only under `require-dev` (#494)
+- `asset-cache-headers` warns about an asset it could not fetch, instead of failing at High (#495)
+- `asset-cache-headers` probes assets under `app.asset_url` or `app.mix_url` rather than `app.url` (#495)
+
 ## v1.18.0
 
 ### Added

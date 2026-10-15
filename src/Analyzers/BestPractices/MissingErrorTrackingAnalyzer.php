@@ -138,29 +138,31 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
 
         // Packages a --no-dev deploy installs, from composer.lock or, without one, from
         // composer.json (we know it exists from shouldRun())
-        $installed = $this->productionPackageNames();
-        if ($installed === null) {
-            // An unparseable manifest leaves nothing to inspect. Reporting the broken
+        $production = $this->productionPackages();
+        if ($production['problem'] !== null) {
+            // An unreadable manifest leaves nothing to inspect. Reporting the broken
             // file is composer-validation's job, so this is an analysis error rather
             // than a finding about error tracking.
-            return $this->error($this->productionManifest().' contains invalid JSON and cannot be parsed');
+            return $this->error($production['manifest'].' '.$production['problem']);
         }
 
         // Check for error tracking packages
-        $hasErrorTracking = $this->hasProductionErrorTracker($this->knownPackages, $installed);
+        $hasErrorTracking = $this->hasProductionErrorTracker($this->knownPackages, $production['packages']);
 
         // If no package found, check for custom implementations
         if (! $hasErrorTracking) {
             $hasErrorTracking = $this->checkForCustomErrorTracking();
         }
 
-        // If still no error tracking found, report it as info
+        // If still no error tracking found, report it as info. The location stays
+        // composer.json even when composer.lock decided: it is part of the baseline hash.
         if (! $hasErrorTracking) {
             $issues[] = $this->createIssue(
                 message: 'No error tracking service detected',
                 location: new Location('composer.json'),
                 severity: Severity::Info,
-                recommendation: 'Consider installing an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for better production error visibility. '.
+                recommendation: $this->decidedBy($production['manifest']).
+                    'Consider installing an error tracking service like Sentry (sentry/sentry-laravel), Bugsnag, or Rollbar for better production error visibility. '.
                     'This provides automatic error grouping, stack traces, release tracking, and faster debugging. '.
                     'If you\'re using custom error logging (CloudWatch, Datadog, New Relic APM, or custom solutions), you can safely ignore this recommendation.',
             );
@@ -174,6 +176,18 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'No error tracking service detected',
             $issues
         );
+    }
+
+    /**
+     * Which file the finding was decided from, when that is not the file it points at.
+     */
+    private function decidedBy(string $manifest): string
+    {
+        if ($manifest !== 'composer.lock') {
+            return '';
+        }
+
+        return 'composer.lock, not composer.json, decides what a production install gets, and it lists no error tracking package; refresh it if it is out of date. ';
     }
 
     /**
@@ -256,6 +270,8 @@ class MissingErrorTrackingAnalyzer extends AbstractFileAnalyzer
             'Bugsnag::',             // Bugsnag SDK
             'Rollbar::',             // Rollbar SDK
             'Honeybadger::',         // Honeybadger SDK
+            'Flare::',               // Flare SDK (Flare::handles($exceptions))
+            'Inspector::',           // Inspector SDK
             'notifyException',       // Common method name
 
             // Container-based integrations

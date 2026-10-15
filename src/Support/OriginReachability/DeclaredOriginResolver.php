@@ -87,7 +87,7 @@ final class DeclaredOriginResolver
      */
     private function collect(array &$collected, array &$unusable, ?string $url, string $source, string $defaultScheme, bool $reportUnusable): void
     {
-        $origin = $this->normalizeOrigin($url, $defaultScheme);
+        $origin = self::normalizeOrigin($url, $defaultScheme);
 
         if ($origin === null) {
             if ($reportUnusable && $url !== null && trim($url) !== '' && ! in_array($source, $unusable, true)) {
@@ -140,7 +140,7 @@ final class DeclaredOriginResolver
      * Dropping it would leave an origin the application is genuinely served from unprobed
      * while the report still read Passed, so it inherits $defaultScheme instead.
      */
-    private function normalizeOrigin(?string $url, string $defaultScheme): ?string
+    public static function normalizeOrigin(?string $url, string $defaultScheme): ?string
     {
         if ($url === null) {
             return null;

@@ -12,8 +12,12 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
-use ShieldCI\Concerns\AnalyzesHeaders;
 use ShieldCI\Concerns\DetectsDeploymentPlatform;
+use ShieldCI\Support\OriginReachability\DeclaredOrigin;
+use ShieldCI\Support\OriginReachability\DeclaredOriginResolver;
+use ShieldCI\Support\OriginReachability\OriginOutcome;
+use ShieldCI\Support\OriginReachability\OriginProbeResult;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 
 /**
  * Analyzes cache headers for compiled assets using HTTP verification.
@@ -34,7 +38,6 @@ use ShieldCI\Concerns\DetectsDeploymentPlatform;
  */
 class CacheHeaderAnalyzer extends AbstractAnalyzer
 {
-    use AnalyzesHeaders;
     use DetectsDeploymentPlatform;
 
     /**
@@ -60,6 +63,17 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     protected $uncachedAssets;
 
     /**
+     * Assets no 2xx response was received for, and why.
+     *
+     * They are neither cached nor uncached: nothing was observed about them, and grading
+     * an empty header list from a refused connection, a 404 or a redirect to a login page
+     * is how this analyzer used to report a High failure from zero responses.
+     *
+     * @var Collection<int, array{path: string, source: string, type?: string, reason: string}>
+     */
+    protected $unobservedAssets;
+
+    /**
      * The public path (for testing).
      */
     private ?string $publicPath = null;
@@ -75,20 +89,24 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     private bool $appUrlExplicitlySet = false;
 
     /**
-     * Cache of URL header check results to avoid duplicate HTTP requests.
-     *
-     * @var array<string, bool>
-     */
-    private array $headerCheckCache = [];
-
-    /**
-     * Maximum number of uncached assets to detect before stopping.
-     * Prevents excessive HTTP requests for large builds.
+     * Maximum number of uncached, or of unobserved, assets to detect before stopping.
+     * Prevents excessive HTTP requests for large builds and for an origin that does not answer.
      */
     private int $maxUncachedAssets = 10;
 
+    /**
+     * The checker is a container singleton, so each asset URL is probed once for the whole
+     * run however many analyzers ask about it. It never follows a redirect, which keeps an
+     * identity-aware proxy's login page from being graded as the asset.
+     *
+     * Certificate verification is the checker's and is left on, as it is for
+     * env-http-accessibility: a header read over a connection whose peer was never
+     * authenticated is a claim about a host nobody identified. A staging origin with a
+     * self-signed certificate now produces a warning that names the TLS failure.
+     */
     public function __construct(
-        private Filesystem $files
+        private Filesystem $files,
+        private OriginReachabilityChecker $checker,
     ) {}
 
     /**
@@ -165,9 +183,8 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         }
 
         // On Vapor/serverless, compiled assets are served from a CDN (ASSET_URL /
-        // CloudFront) with platform-managed cache headers, not from APP_URL. Probing
-        // APP_URL yields false positives (and is intercepted by any auth gateway such
-        // as CloudFlare Access), so there is no actionable fix to surface.
+        // CloudFront) whose cache headers the platform manages, so whatever the probe
+        // found there would have no fix the application could apply.
         if ($this->isVaporOrServerless()) {
             return false;
         }
@@ -199,7 +216,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $this->uncachedAssets = collect();
-        $this->headerCheckCache = []; // Reset cache for each analysis run
+        $this->unobservedAssets = collect();
 
         // Validate APP_URL configuration before making HTTP requests
         if (! $this->isAppUrlConfigured()) {
@@ -220,7 +237,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
         }
 
         if ($this->uncachedAssets->isEmpty()) {
-            return $this->passed('All compiled assets have appropriate cache headers');
+            // Nothing uncached and something unobserved is not a clean bill of health.
+            return $this->unobservedAssets->isEmpty()
+                ? $this->passed('All compiled assets have appropriate cache headers')
+                : $this->warning($this->describeUnobserved());
         }
 
         /** @var array{path: string, source: string} $firstAsset */
@@ -237,6 +257,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         $message = 'Compiled assets are missing Cache-Control headers or use non-cacheable directives';
         $summary = sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count());
+
+        if ($this->unobservedAssets->isNotEmpty()) {
+            $summary .= sprintf(' (%d further asset(s) could not be checked)', $this->unobservedAssets->count());
+        }
 
         $issues = [$this->createIssueWithSnippet(
             message: $message,
@@ -279,12 +303,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                     $compiledUrl = $this->getMixUrl($value);
 
                     // Check the compiled URL (the actual asset served to users)
-                    if (! $this->assetHasCacheHeaders($compiledUrl)) {
-                        $this->uncachedAssets->push([
-                            'path' => $key,
-                            'source' => 'mix',
-                        ]);
-                    }
+                    $this->recordAsset($compiledUrl, [
+                        'path' => (string) $key,
+                        'source' => 'mix',
+                    ]);
                 }
             }
         } catch (\Throwable) {
@@ -350,13 +372,10 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         // Check the main file
         if (isset($entry['file']) && is_string($entry['file'])) {
-            $url = $this->getViteAssetUrl($entry['file']);
-            if (! $this->assetHasCacheHeaders($url)) {
-                $this->uncachedAssets->push([
-                    'path' => 'build/'.$entry['file'],
-                    'source' => 'vite',
-                ]);
-            }
+            $this->recordAsset($this->getViteAssetUrl($entry['file']), [
+                'path' => 'build/'.$entry['file'],
+                'source' => 'vite',
+            ]);
         }
 
         // No need to check hasReachedMaxUncached() again - we already return early above
@@ -397,14 +416,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 continue;
             }
 
-            $url = $this->getViteAssetUrl($file);
-            if (! $this->assetHasCacheHeaders($url)) {
-                $this->uncachedAssets->push([
-                    'path' => 'build/'.$file,
-                    'source' => 'vite',
-                    'type' => $type,
-                ]);
-            }
+            $this->recordAsset($this->getViteAssetUrl($file), [
+                'path' => 'build/'.$file,
+                'source' => 'vite',
+                'type' => $type,
+            ]);
         }
     }
 
@@ -433,14 +449,11 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
                 continue;
             }
 
-            $url = $this->getViteAssetUrl($importKey);
-            if (! $this->assetHasCacheHeaders($url)) {
-                $this->uncachedAssets->push([
-                    'path' => 'build/'.$importKey,
-                    'source' => 'vite',
-                    'type' => 'import',
-                ]);
-            }
+            $this->recordAsset($this->getViteAssetUrl($importKey), [
+                'path' => 'build/'.$importKey,
+                'source' => 'vite',
+                'type' => 'import',
+            ]);
         }
     }
 
@@ -569,46 +582,92 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
     }
 
     /**
-     * Check if we've reached the maximum number of uncached assets.
+     * Check if we've reached the maximum number of uncached, or of unobserved, assets.
+     *
+     * Unobserved assets are capped too: an origin that times out would otherwise be asked
+     * about every asset in the manifest, each costing the full timeout.
      */
     private function hasReachedMaxUncached(): bool
     {
-        return $this->uncachedAssets->count() >= $this->maxUncachedAssets;
+        return $this->uncachedAssets->count() >= $this->maxUncachedAssets
+            || $this->unobservedAssets->count() >= $this->maxUncachedAssets;
     }
 
-    private function assetHasCacheHeaders(?string $url): bool
+    /**
+     * Probe one asset and file it as cached, uncached or unobserved.
+     *
+     * Only a 2xx is graded. A transport failure, a non-2xx and a redirect off the host all
+     * carry no Cache-Control about the asset, and reading their empty header list as
+     * "not cached" is the conflation this analyzer was filed for. hasEvidence() is not the
+     * test: it is true for an off-host redirect, which is exactly what an identity-aware
+     * proxy such as Cloudflare Access answers every asset with.
+     *
+     * @param  array{path: string, source: string, type?: string}  $asset
+     */
+    private function recordAsset(?string $url, array $asset): void
     {
-        if ($url === null) {
-            return false;
+        $probe = $this->probeAsset($url);
+
+        if ($probe === null || $probe->outcome !== OriginOutcome::Connected2xx) {
+            $this->unobservedAssets->push($asset + [
+                'reason' => $probe?->describe() ?? sprintf('no http(s) URL could be built for %s', $asset['path']),
+            ]);
+
+            return;
         }
 
-        // Check cache first to avoid duplicate HTTP requests
-        if (isset($this->headerCheckCache[$url])) {
-            return $this->headerCheckCache[$url];
-        }
-
-        $headers = $this->getHeadersOnUrl($url, 'Cache-Control');
-
-        if (empty($headers)) {
-            // Cache the result (no headers = not cached)
-            $this->headerCheckCache[$url] = false;
-
-            return false;
-        }
-
-        foreach ($headers as $header) {
+        foreach ($probe->headerValues('Cache-Control') as $header) {
             if ($this->isCacheHeaderOptimized($header)) {
-                // Cache the result (valid headers found)
-                $this->headerCheckCache[$url] = true;
-
-                return true;
+                return;
             }
         }
 
-        // Cache the result (headers present but not optimized)
-        $this->headerCheckCache[$url] = false;
+        $this->uncachedAssets->push($asset);
+    }
 
-        return false;
+    /**
+     * Ask the checker about one asset URL, on the origin that URL names.
+     *
+     * The checker caches each probe by URL, so an asset referenced from several manifest
+     * entries costs one request.
+     */
+    private function probeAsset(?string $url): ?OriginProbeResult
+    {
+        if ($url === null) {
+            return null;
+        }
+
+        $origin = DeclaredOriginResolver::normalizeOrigin($url, 'https');
+
+        if ($origin === null) {
+            return null;
+        }
+
+        $declared = new DeclaredOrigin($origin, [DeclaredOrigin::SOURCE_APP_URL]);
+
+        return $this->checker->probe([$declared], null, [], $url)->probeFor($origin);
+    }
+
+    /**
+     * Warning text for a run that found nothing uncached but could not observe everything.
+     */
+    private function describeUnobserved(): string
+    {
+        $count = $this->unobservedAssets->count();
+
+        /** @var array{reason: string} $first */
+        $first = $this->unobservedAssets->first();
+
+        $message = sprintf(
+            'Could not verify cache headers on %d compiled asset(s): no 2xx response was received, so nothing was learned about %s (first: %s).',
+            $count,
+            $count === 1 ? 'it' : 'them',
+            $first['reason']
+        );
+
+        return $count >= $this->maxUncachedAssets
+            ? $message.' Probing stopped after '.$this->maxUncachedAssets.' unanswered assets.'
+            : $message;
     }
 
     /**

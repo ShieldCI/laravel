@@ -16,17 +16,27 @@ use ShieldCI\Analyzers\Performance\CacheHeaderAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 {
+    private ?MockHandler $mock = null;
+
     /**
+     * Every analyzer gets a mock-backed checker, so no test can reach the network: a request
+     * with no queued response fails as a transport error.
+     *
      * @param  array<ResponseInterface|\Exception>  $responses
      */
     protected function createAnalyzer(array $responses = [], bool $setAppUrl = true): AnalyzerInterface
     {
+        $this->mock = new MockHandler($responses);
+        $handlerStack = HandlerStack::create($this->mock);
+
         $files = new Filesystem;
-        $analyzer = new CacheHeaderAnalyzer($files);
+        $analyzer = new CacheHeaderAnalyzer($files, new OriginReachabilityChecker(new Client(['handler' => $handlerStack])));
 
         // Allow analyzer to run in test environment
         $analyzer->setRelevantEnvironments(null);
@@ -36,13 +46,6 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         } else {
             // Explicitly set to null to prevent fallback to config('app.url')
             $analyzer->setAppUrl(null);
-        }
-
-        if (! empty($responses)) {
-            $mock = new MockHandler($responses);
-            $handlerStack = HandlerStack::create($mock);
-            $client = new Client(['handler' => $handlerStack]);
-            $analyzer->setClient($client);
         }
 
         return $analyzer;
@@ -572,7 +575,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         ]);
 
         $files = new Filesystem;
-        $analyzer = new CacheHeaderAnalyzer($files);
+        $analyzer = new CacheHeaderAnalyzer($files, new OriginReachabilityChecker);
 
         // Test that setRelevantEnvironments works
         $analyzer->setRelevantEnvironments(['production', 'staging']);
@@ -592,7 +595,7 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
         $tempDir = $this->createTempDirectory([]);
 
         $files = new Filesystem;
-        $analyzer = new CacheHeaderAnalyzer($files);
+        $analyzer = new CacheHeaderAnalyzer($files, new OriginReachabilityChecker);
         $analyzer->setRelevantEnvironments(null);
         $analyzer->setAppUrl('https://example.test');
         $analyzer->setPublicPath($tempDir.'/public');
@@ -674,25 +677,112 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
             'public/mix-manifest.json' => $manifest,
         ]);
 
-        // Mock handler that throws exception
-        $mock = new MockHandler([
-            new ConnectException(
-                'Connection failed',
-                new Request('GET', 'test')
-            ),
-        ]);
-        $handlerStack = HandlerStack::create($mock);
-        $client = new Client(['handler' => $handlerStack]);
-
         /** @var CacheHeaderAnalyzer $analyzer */
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setClient($client);
+        $analyzer = $this->createAnalyzer([
+            new ConnectException('Connection refused', new Request('GET', 'https://example.test/css/app.css?id=abc123')),
+        ]);
         $analyzer->setPublicPath($tempDir.'/public');
         $result = $analyzer->analyze();
 
-        // Should fail gracefully (treats exception as no headers)
+        // No response was received, so nothing is known about the asset's headers
+        $this->assertNotSame(Status::Failed, $result->getStatus());
+        $this->assertWarning($result);
+        $this->assertEmpty($result->getIssues());
+        $this->assertStringContainsString('Could not verify cache headers on 1 compiled asset(s)', $result->getMessage());
+        $this->assertStringContainsString('https://example.test/css/app.css?id=abc123: connection refused', $result->getMessage());
+    }
+
+    public function test_warns_when_asset_answers_non_2xx(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode(['/css/app.css' => '/css/app.css?id=abc123']),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([new Response(404)]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertEmpty($result->getIssues());
+        $this->assertStringContainsString('connected (non-2xx) HTTP 404', $result->getMessage());
+    }
+
+    public function test_does_not_follow_or_grade_an_off_host_redirect(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => json_encode([
+                'resources/js/app.js' => ['file' => 'assets/app-x.js'],
+            ]),
+        ]);
+
+        // An identity-aware proxy answers every asset with a redirect to its login page.
+        // The second response stands in for that page; following the redirect would grade it.
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(302, ['Location' => 'https://gate.example.net/login?next=/build/assets/app-x.js']),
+            new Response(200, ['Cache-Control' => 'no-store']),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertEmpty($result->getIssues());
+        $this->assertStringContainsString('redirected off host HTTP 302 to https://gate.example.net/login', $result->getMessage());
+        $this->assertNotNull($this->mock);
+        $this->assertSame(1, $this->mock->count());
+    }
+
+    public function test_reports_uncached_assets_and_counts_unobserved_ones(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'public/mix-manifest.json' => json_encode([
+                '/js/app.js' => '/js/app.js?id=abc123',
+                '/css/app.css' => '/css/app.css?id=def456',
+            ]),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer([
+            new Response(200),
+            new Response(503),
+        ]);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('Cache-Control headers', $result);
+        $this->assertSame('Found 1 asset(s) without proper cache headers (1 further asset(s) could not be checked)', $result->getMessage());
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('Compiled assets are missing Cache-Control headers or use non-cacheable directives', $issues[0]->message);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+        $this->assertSame(1, $issues[0]->metadata['count']);
+        $this->assertSame([['path' => '/js/app.js', 'source' => 'mix']], $issues[0]->metadata['uncached_assets']);
+    }
+
+    public function test_stops_probing_after_reaching_unobserved_threshold(): void
+    {
+        $manifest = [];
+        for ($i = 1; $i <= 12; $i++) {
+            $manifest["resources/js/file{$i}.js"] = ['file' => "assets/file{$i}.js"];
+        }
+
+        $tempDir = $this->createTempDirectory([
+            'public/build/manifest.json' => json_encode($manifest),
+        ]);
+
+        /** @var CacheHeaderAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer(array_fill(0, 12, new Response(404)));
+        $analyzer->setMaxUncachedAssets(10);
+        $analyzer->setPublicPath($tempDir.'/public');
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringContainsString('Could not verify cache headers on 10 compiled asset(s)', $result->getMessage());
+        $this->assertStringContainsString('Probing stopped after 10 unanswered assets.', $result->getMessage());
+        $this->assertNotNull($this->mock);
+        $this->assertSame(2, $this->mock->count());
     }
 
     public function test_handles_mix_non_versioned_assets(): void

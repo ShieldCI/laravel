@@ -858,6 +858,91 @@ PHP,
         $this->assertPassed($analyzer->analyze());
     }
 
+    public function test_fails_when_the_running_app_environment_switches_off_nightwatch(): void
+    {
+        $result = $this->analyzeRunningApp(
+            ['composer.json' => $this->composerRequiring('laravel/nightwatch')],
+            ['NIGHTWATCH_ENABLED' => 'false'],
+        );
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('No error tracking service detected', $result);
+    }
+
+    public function test_fails_when_the_running_app_environment_empties_the_nightwatch_token(): void
+    {
+        $result = $this->analyzeRunningApp(
+            ['composer.json' => $this->composerRequiring('laravel/nightwatch')],
+            ['NIGHTWATCH_TOKEN' => ''],
+        );
+
+        $this->assertWarning($result);
+    }
+
+    public function test_running_app_environment_overrides_the_env_file(): void
+    {
+        $result = $this->analyzeRunningApp(
+            [
+                'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+                '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false",
+            ],
+            ['NIGHTWATCH_ENABLED' => 'true'],
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_falls_back_to_the_env_file_when_the_running_app_environment_is_silent(): void
+    {
+        $result = $this->analyzeRunningApp(
+            [
+                'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+                '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false",
+            ],
+            [],
+        );
+
+        $this->assertWarning($result);
+    }
+
+    public function test_ignores_this_process_environment_for_another_project(): void
+    {
+        putenv('NIGHTWATCH_ENABLED=false');
+
+        try {
+            $result = $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]);
+        } finally {
+            putenv('NIGHTWATCH_ENABLED');
+        }
+
+        $this->assertPassed($result);
+    }
+
+    public function test_recognises_the_running_app_through_a_symlinked_base_path(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'project/composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'project/.env' => 'APP_ENV=production',
+        ]);
+
+        if (! @symlink($tempDir.'/project', $tempDir.'/link')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir.'/project');
+
+        putenv('NIGHTWATCH_ENABLED=false');
+
+        try {
+            $result = $this->withBasePath($tempDir.'/link', fn () => $analyzer->analyze());
+        } finally {
+            putenv('NIGHTWATCH_ENABLED');
+        }
+
+        $this->assertWarning($result);
+    }
+
     public function test_passes_with_tracker_in_lock_file_packages(): void
     {
         $result = $this->analyzeProject([
@@ -1094,6 +1179,33 @@ PHP,
         $analyzer->setBasePath($tempDir);
 
         return $analyzer->analyze();
+    }
+
+    /**
+     * Analyze a project that is also the application running the analysis, with the given
+     * variables in this process's environment.
+     *
+     * @param  array<string, string>  $files
+     * @param  array<string, string>  $env
+     */
+    private function analyzeRunningApp(array $files, array $env): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory($files + ['.env' => 'APP_ENV=production']);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        foreach ($env as $key => $value) {
+            putenv("{$key}={$value}");
+        }
+
+        try {
+            return $this->withBasePath($tempDir, fn () => $analyzer->analyze());
+        } finally {
+            foreach (array_keys($env) as $key) {
+                putenv($key);
+            }
+        }
     }
 
     private function composerRequiring(string $package): string

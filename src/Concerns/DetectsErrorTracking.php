@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Concerns;
 
+use Illuminate\Support\Env;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -134,8 +135,9 @@ trait DetectsErrorTracking
      * published file is taken to read that same variable.
      *
      * Only explicit values count. A literal is read from the config file; an env() value only
-     * when .env assigns it, since a variable .env leaves out may still come from the server's
-     * environment, as Laravel Cloud and Vapor provide them.
+     * when the running application's environment or .env assigns it. Another project's server
+     * variables are not in this process, so for any other base path only .env is read, and a
+     * variable it leaves out may still come from the server, as Laravel Cloud and Vapor provide them.
      */
     private function isNightwatchSwitchedOff(): bool
     {
@@ -146,7 +148,7 @@ trait DetectsErrorTracking
             if ($enabled['value'] === false) {
                 return true;
             }
-        } elseif (in_array(strtolower((string) $this->envFileValue('NIGHTWATCH_ENABLED')), ['false', '(false)'], true)) {
+        } elseif (in_array(strtolower((string) $this->envValue('NIGHTWATCH_ENABLED')), ['false', '(false)'], true)) {
             return true;
         }
 
@@ -155,7 +157,7 @@ trait DetectsErrorTracking
             return $token['value'] === '';
         }
 
-        $envToken = $this->envFileValue('NIGHTWATCH_TOKEN');
+        $envToken = $this->envValue('NIGHTWATCH_TOKEN');
 
         // env() reads these as null or an empty string
         return $envToken !== null && in_array(strtolower($envToken), ['', 'null', '(null)', 'empty', '(empty)'], true);
@@ -178,6 +180,32 @@ trait DetectsErrorTracking
         }
 
         return (new ConfigFileParser(app(AstParser::class)))->parseArray($configPath);
+    }
+
+    /**
+     * The value env() would read $key from, unconverted, or null when nothing assigns it.
+     *
+     * For the running application that is its environment repository first, where platform
+     * variables override .env as they do at runtime, then .env, which a cached config leaves
+     * unloaded. The repository is read raw because env() turns "(false)" into false and both
+     * "null" and an unset variable into null, so a token set to null would read as unset.
+     */
+    private function envValue(string $key): ?string
+    {
+        $value = $this->analyzesRunningApp() ? Env::getRepository()->get($key) : null;
+
+        return $value ?? $this->envFileValue($key);
+    }
+
+    /**
+     * Whether the analyzed base path is the application running this analysis, compared
+     * resolved, since deploy and temporary directories are often reached through symlinks.
+     */
+    private function analyzesRunningApp(): bool
+    {
+        $running = realpath(base_path());
+
+        return $running !== false && $running === realpath($this->getBasePath());
     }
 
     /**

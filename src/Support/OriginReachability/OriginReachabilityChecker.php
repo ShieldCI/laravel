@@ -6,7 +6,10 @@ namespace ShieldCI\Support\OriginReachability;
 
 use GuzzleHttp\Client;
 use GuzzleHttp\ClientInterface;
+use GuzzleHttp\Psr7\Uri;
+use GuzzleHttp\Psr7\UriResolver;
 use Illuminate\Contracts\Config\Repository;
+use InvalidArgumentException;
 use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Concerns\SanitizesErrorMessages;
 use Throwable;
@@ -21,7 +24,10 @@ use Throwable;
  * (origin, path) is one question and costs one request for the life of this instance.
  *
  * Redirects are deliberately not followed and HTTP errors deliberately not thrown, so the
- * response the origin itself returned is the one captured. TLS verification is left on:
+ * response the origin itself returned is the one captured. A caller asking about the page a
+ * browser would land on opts into following redirects that stay on the origin's host with
+ * probeFollowingSameHost(), which still makes every hop as one of these probes. TLS
+ * verification is left on:
  * turning it off would silently convert a broken certificate into a clean 200, which is
  * exactly the kind of false evidence this helper exists to prevent.
  *
@@ -51,6 +57,12 @@ final class OriginReachabilityChecker
 
     /** Bytes of the response body kept as evidence. */
     public const BODY_PREFIX_BYTES = 2048;
+
+    /** Redirects probeFollowingSameHost() follows by default, matching Guzzle's own limit. */
+    public const MAX_SAME_HOST_REDIRECTS = 5;
+
+    /** @var array<int, int> */
+    private const FOLLOWED_REDIRECT_STATUSES = [301, 302, 303, 307, 308];
 
     /**
      * cURL error numbers mapped onto the outcomes they mean.
@@ -193,6 +205,98 @@ final class OriginReachabilityChecker
         }
 
         return new OriginReachabilityReport($probes, $environment, $unusable);
+    }
+
+    /**
+     * Probe one path on one origin, following redirects for as long as they stay on its host.
+     *
+     * This is for a rule asking about the page a browser would end up rendering, such as the
+     * policy headers on a login page, where `/` answering 302 to `/login` or http answering
+     * 301 to https is the application handing over to itself. It is opt-in because the
+     * opposite question is just as common: a rule asking whether /.env is exposed must read
+     * a 302 to the login page as "not served", never as the login page's 200.
+     *
+     * Each hop is an ordinary probe, cached by URL and sent with TLS verification on, so a
+     * chain several rules walk costs one request per hop for the life of this instance. The
+     * chain ends at the first response that is not a same-host redirect. An off-host redirect
+     * therefore ends it as RedirectedOffHost, which keeps an identity-aware proxy's own login
+     * page from being read as the application's, including a proxy that first bounces the
+     * request through a path of its own on the same host.
+     *
+     * A scheme change on the same host is followed, so http that upgrades to https is graded
+     * over https. A revisited URL or the redirect limit ends the chain on the redirect that
+     * was left unfollowed, and the chain says which.
+     *
+     * @param  string  $path  the path to request first; the root by default
+     * @param  ProbeRequest|null  $request  the headers to send and whether to decode, on every hop
+     * @param  int  $maxRedirects  how many redirects to follow; Guzzle's own default
+     */
+    public function probeFollowingSameHost(DeclaredOrigin $origin, string $path = '/', ?ProbeRequest $request = null, int $maxRedirects = self::MAX_SAME_HOST_REDIRECTS): RedirectChain
+    {
+        $request ??= new ProbeRequest;
+
+        $probe = $this->probeOrigin($origin, $origin->origin.$this->normalizePath($path), $request);
+        $probes = [$probe];
+        $visited = [$probe->probedUrl => true];
+
+        while (($next = $this->sameHostRedirectTarget($probe)) !== null) {
+            if (isset($visited[$next['url']])) {
+                return new RedirectChain($probes, RedirectChain::STOPPED_AT_LOOP);
+            }
+
+            if (count($probes) > $maxRedirects) {
+                return new RedirectChain($probes, RedirectChain::STOPPED_AT_LIMIT);
+            }
+
+            // The hop keeps the declaration it came from: an http origin upgraded to https
+            // is still the origin app.url named, reached under the scheme it insists on.
+            $hopOrigin = $next['origin'] === $origin->origin
+                ? $origin
+                : new DeclaredOrigin($next['origin'], $origin->sources);
+
+            $probe = $this->probeOrigin($hopOrigin, $next['url'], $request);
+            $probes[] = $probe;
+            $visited[$next['url']] = true;
+        }
+
+        return new RedirectChain($probes);
+    }
+
+    /**
+     * The URL a same-host redirect points at, resolved against the URL that was probed.
+     *
+     * Only the statuses that send a client on to the Location are followed. A 300 offers a
+     * choice and a 304 is not a redirect at all, so either ends the chain as the non-2xx it
+     * is. The Location is resolved by RFC 3986 rules, so "../login" means what a browser
+     * takes it to mean, and the result goes back through the same origin and path
+     * normalisation as any other probe so a hop and a direct question share a cache entry.
+     *
+     * @return array{origin: string, url: string}|null
+     */
+    private function sameHostRedirectTarget(OriginProbeResult $probe): ?array
+    {
+        // RedirectedOffHost is excluded by the outcome itself, which is the off-host test.
+        if ($probe->outcome !== OriginOutcome::ConnectedNon2xx
+            || ! in_array($probe->statusCode, self::FOLLOWED_REDIRECT_STATUSES, true)
+            || $probe->redirectLocation === null
+        ) {
+            return null;
+        }
+
+        try {
+            $target = (string) UriResolver::resolve(new Uri($probe->probedUrl), new Uri($probe->redirectLocation));
+        } catch (InvalidArgumentException) {
+            // A Location that is not a URI names nowhere to go; the 3xx stays the answer.
+            return null;
+        }
+
+        $origin = DeclaredOriginResolver::normalizeOrigin($target, 'https');
+
+        if ($origin === null) {
+            return null;
+        }
+
+        return ['origin' => $origin, 'url' => $origin.$this->normalizePath($target)];
     }
 
     /**

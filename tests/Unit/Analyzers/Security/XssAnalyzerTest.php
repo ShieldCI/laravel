@@ -15,6 +15,7 @@ use Illuminate\Routing\Router;
 use Illuminate\Support\Facades\URL;
 use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class XssAnalyzerTest extends AnalyzerTestCase
@@ -31,7 +32,7 @@ class XssAnalyzerTest extends AnalyzerTestCase
             throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        return new XssAnalyzer($router, $kernel, $this->parser);
+        return new XssAnalyzer($router, $kernel, $this->parser, new OriginReachabilityChecker);
     }
 
     /**
@@ -62,17 +63,15 @@ class XssAnalyzerTest extends AnalyzerTestCase
             throw new \RuntimeException('Router or Kernel not available in test application');
         }
 
-        $analyzer = new XssAnalyzer($router, $kernel, $this->parser);
+        $mock = new MockHandler($responses);
+        $checker = new OriginReachabilityChecker(new Client(['handler' => HandlerStack::create($mock)]));
+
+        $analyzer = new XssAnalyzer($router, $kernel, $this->parser, $checker);
 
         // Explicitly mark as a web app so the HTTP header check is not skipped.
         // The test environment has no session routes, so without this override
         // isApiOnlyApp() would return true and bypass all HTTP header assertions.
         $analyzer->setStatelessOverride(false);
-
-        $mock = new MockHandler($responses);
-        $handlerStack = HandlerStack::create($mock);
-        $client = new Client(['handler' => $handlerStack]);
-        $analyzer->setHttpClient($client);
 
         return $analyzer;
     }
@@ -412,6 +411,217 @@ BLADE;
         $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
     }
 
+    public function test_fails_http_check_when_long_page_closes_its_head_without_a_csp(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // The head closes inside the captured prefix, so a missing meta policy is missing
+        // from the page even though the body runs well past what was captured.
+        $html = '<html><head><title>App</title></head><body>'
+            .str_repeat('<p>Content</p>', 400)
+            .'</body></html>';
+
+        $analyzer = $this->createAnalyzerWithHttpMock([new Response(200, [], $html)]);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
+    }
+
+    public function test_off_host_redirect_is_not_graded_as_the_application_csp(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // An identity-aware proxy answers the origin with a redirect to its own login page,
+        // which carries a policy of its own. Following it would grade the proxy's policy.
+        $responses = [
+            new Response(302, ['Location' => 'https://team.cloudflareaccess.com/cdn-cgi/access/login/example.com']),
+            new Response(200, [
+                'Content-Security-Policy' => "frame-ancestors 'none'; default-src https: 'unsafe-inline'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('could not be verified', $result->getMessage());
+        $this->assertStringContainsString('redirected off host', $result->getMessage());
+    }
+
+    public function test_grades_the_page_a_same_host_redirect_lands_on(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => '/login']),
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('headers verified', $result->getMessage());
+    }
+
+    public function test_fails_when_a_same_host_redirect_lands_on_a_page_without_a_csp(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => 'https://example.com/login']),
+            new Response(200, [], '<html><head></head><body></body></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
+    }
+
+    public function test_grades_the_https_page_an_http_login_url_upgrades_to(): void
+    {
+        config(['app.url' => 'http://example.com']);
+        config(['shieldci.guest_url' => '/login']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(301, ['Location' => 'https://example.com/login']),
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'unsafe-eval'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header is inadequate', $result);
+    }
+
+    public function test_does_not_grade_a_proxy_reached_through_a_same_host_hop(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // The proxy bounces through a path of its own on the application's host, then hands
+        // off to its login page elsewhere. That page's policy is never fetched.
+        $responses = [
+            new Response(302, ['Location' => '/oauth2/start']),
+            new Response(302, ['Location' => 'https://idp.example.net/authorize']),
+            new Response(200, ['Content-Security-Policy' => "default-src 'self'"], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString(
+            'example.com/ -> http://example.com/oauth2/start: redirected off host HTTP 302 to https://idp.example.net/authorize',
+            $result->getMessage()
+        );
+    }
+
+    public function test_warns_when_the_login_url_redirects_in_a_loop(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => '/login']),
+            new Response(302, ['Location' => '/']),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('redirect loop', $result->getMessage());
+    }
+
+    public function test_reports_tls_failure_as_unverified_csp(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new ConnectException(
+                'cURL error 60: SSL certificate problem: self-signed certificate',
+                new Request('GET', 'https://example.com')
+            ),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('TLS failure', $result->getMessage());
+    }
+
+    public function test_reports_unverified_csp_when_head_is_cut_off_before_a_meta_tag(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // Only a prefix of the body is kept, so a meta policy placed late in a long head is
+        // never seen. Its absence from the prefix is not evidence that the page has none.
+        $html = '<html><head>'
+            .str_repeat('<link rel="preload" href="/build/assets/chunk.js" as="script">', 60)
+            .'<meta http-equiv="Content-Security-Policy" content="default-src \'self\'">'
+            .'</head><body>Content</body></html>';
+
+        $analyzer = $this->createAnalyzerWithHttpMock([new Response(200, [], $html)]);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('could not be verified', $result->getMessage());
+    }
+
+    public function test_reports_unverified_csp_alongside_code_issues(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $tempDir = $this->createTempDirectory(['test.blade.php' => '<div>{!! request("name") !!}</div>']);
+
+        $responses = [
+            new ConnectException('Connection refused', new Request('GET', 'https://example.com')),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Unescaped blade output', $result);
+        $this->assertStringContainsString('Content-Security-Policy not verified', $result->getMessage());
+    }
+
     public function test_fails_http_check_when_csp_contains_unsafe_inline(): void
     {
         config(['app.url' => 'https://example.com']);
@@ -617,7 +827,7 @@ BLADE;
         $this->assertPassed($result);
     }
 
-    public function test_handles_network_errors_gracefully(): void
+    public function test_warns_when_origin_is_unreachable(): void
     {
         config(['app.url' => 'https://example.com']);
         config(['shieldci.guest_url' => '/']);
@@ -635,8 +845,10 @@ BLADE;
 
         $result = $analyzer->analyze();
 
-        // Should not fail due to network error
-        $this->assertPassed($result);
+        // Nothing was observed about the policy, so this neither passes nor accuses
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('timeout', $result->getMessage());
     }
 
     // ==========================================

@@ -899,7 +899,7 @@ PHP,
                 'composer.json' => $this->composerRequiring('laravel/nightwatch'),
                 '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=false",
             ],
-            [],
+            ['NIGHTWATCH_ENABLED' => null],
         );
 
         $this->assertWarning($result);
@@ -907,13 +907,40 @@ PHP,
 
     public function test_ignores_this_process_environment_for_another_project(): void
     {
-        putenv('NIGHTWATCH_ENABLED=false');
+        $result = $this->withProcessEnv(
+            ['NIGHTWATCH_ENABLED' => 'false'],
+            fn () => $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]),
+        );
 
-        try {
-            $result = $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]);
-        } finally {
-            putenv('NIGHTWATCH_ENABLED');
-        }
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_the_running_app_config_switches_off_nightwatch(): void
+    {
+        config(['nightwatch.enabled' => false]);
+
+        $result = $this->analyzeRunningApp(['composer.json' => $this->composerRequiring('laravel/nightwatch')], []);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_running_app_config_overrides_its_environment(): void
+    {
+        config(['nightwatch.enabled' => true]);
+
+        $result = $this->analyzeRunningApp(
+            ['composer.json' => $this->composerRequiring('laravel/nightwatch')],
+            ['NIGHTWATCH_ENABLED' => 'false'],
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_ignores_this_process_config_for_another_project(): void
+    {
+        config(['nightwatch.enabled' => false]);
+
+        $result = $this->analyzeProject(['composer.json' => $this->composerRequiring('laravel/nightwatch')]);
 
         $this->assertPassed($result);
     }
@@ -932,13 +959,10 @@ PHP,
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir.'/project');
 
-        putenv('NIGHTWATCH_ENABLED=false');
-
-        try {
-            $result = $this->withBasePath($tempDir.'/link', fn () => $analyzer->analyze());
-        } finally {
-            putenv('NIGHTWATCH_ENABLED');
-        }
+        $result = $this->withProcessEnv(
+            ['NIGHTWATCH_ENABLED' => 'false'],
+            fn () => $this->withBasePath($tempDir.'/link', fn () => $analyzer->analyze()),
+        );
 
         $this->assertWarning($result);
     }
@@ -1186,7 +1210,7 @@ PHP,
      * variables in this process's environment.
      *
      * @param  array<string, string>  $files
-     * @param  array<string, string>  $env
+     * @param  array<string, string|null>  $env
      */
     private function analyzeRunningApp(array $files, array $env): ResultInterface
     {
@@ -1195,15 +1219,53 @@ PHP,
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
 
+        return $this->withProcessEnv($env, fn () => $this->withBasePath($tempDir, fn () => $analyzer->analyze()));
+    }
+
+    /**
+     * Run $callback with the given variables set, or unset when null, everywhere Env's
+     * repository reads them, restoring whatever the process held before, so a variable the
+     * runner already exports neither overrides the test nor is lost after it.
+     *
+     * @template T
+     *
+     * @param  array<string, string|null>  $env
+     * @param  callable(): T  $callback
+     * @return T
+     */
+    private function withProcessEnv(array $env, callable $callback): mixed
+    {
+        $saved = [];
         foreach ($env as $key => $value) {
-            putenv("{$key}={$value}");
+            $saved[$key] = [getenv($key), array_key_exists($key, $_SERVER), $_SERVER[$key] ?? null, array_key_exists($key, $_ENV), $_ENV[$key] ?? null];
+
+            if ($value === null) {
+                putenv($key);
+                unset($_SERVER[$key], $_ENV[$key]);
+            } else {
+                putenv("{$key}={$value}");
+                $_SERVER[$key] = $value;
+                $_ENV[$key] = $value;
+            }
         }
 
         try {
-            return $this->withBasePath($tempDir, fn () => $analyzer->analyze());
+            return $callback();
         } finally {
-            foreach (array_keys($env) as $key) {
-                putenv($key);
+            foreach ($saved as $key => [$getenv, $inServer, $server, $inEnv, $envValue]) {
+                putenv($getenv === false ? $key : "{$key}={$getenv}");
+
+                if ($inServer) {
+                    $_SERVER[$key] = $server;
+                } else {
+                    unset($_SERVER[$key]);
+                }
+
+                if ($inEnv) {
+                    $_ENV[$key] = $envValue;
+                } else {
+                    unset($_ENV[$key]);
+                }
             }
         }
     }

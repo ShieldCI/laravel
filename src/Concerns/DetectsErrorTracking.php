@@ -134,17 +134,26 @@ trait DetectsErrorTracking
      * env('NIGHTWATCH_ENABLED', true) and env('NIGHTWATCH_TOKEN'), and an env() call in the
      * published file is taken to read that same variable.
      *
-     * Only explicit values count. A literal is read from the config file; an env() value only
-     * when the running application's environment or .env assigns it. Another project's server
-     * variables are not in this process, so for any other base path only .env is read, and a
-     * variable it leaves out may still come from the server, as Laravel Cloud and Vapor provide them.
+     * For the running application, a loaded 'nightwatch.enabled' decides, as it is the value
+     * Nightwatch reads, cached or not. The token is not taken from config, where an unset
+     * variable and one set to null both read as null.
+     *
+     * Otherwise only explicit values count. A literal is read from the config file; an env()
+     * value only when the running application's environment or .env assigns it. Another
+     * project's server variables are not in this process, so for any other base path only .env
+     * is read, and a variable it leaves out may still come from the server, as Laravel Cloud
+     * and Vapor provide them.
      */
     private function isNightwatchSwitchedOff(): bool
     {
         $config = $this->nightwatchConfig();
 
         $enabled = $config['enabled'] ?? null;
-        if ($enabled !== null && ! $enabled['isEnvCall']) {
+        if ($this->analyzesRunningApp() && config()->has('nightwatch.enabled')) {
+            if (config('nightwatch.enabled') === false) {
+                return true;
+            }
+        } elseif ($enabled !== null && ! $enabled['isEnvCall']) {
             if ($enabled['value'] === false) {
                 return true;
             }

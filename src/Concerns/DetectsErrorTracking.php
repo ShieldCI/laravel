@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Concerns;
 
+use Illuminate\Support\Env;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
@@ -127,26 +128,38 @@ trait DetectsErrorTracking
     }
 
     /**
-     * Whether Nightwatch's 'enabled' resolves to false or its 'token' to an empty value.
+     * Whether Nightwatch's 'enabled' resolves to a falsy value or its 'token' to an empty one.
      *
      * A key config/nightwatch.php does not publish keeps the package's stock value,
      * env('NIGHTWATCH_ENABLED', true) and env('NIGHTWATCH_TOKEN'), and an env() call in the
      * published file is taken to read that same variable.
      *
-     * Only explicit values count. A literal is read from the config file; an env() value only
-     * when .env assigns it, since a variable .env leaves out may still come from the server's
-     * environment, as Laravel Cloud and Vapor provide them.
+     * For the running application, a loaded 'nightwatch.enabled' decides, as it is the value
+     * Nightwatch reads, cached or not. The token is not taken from config, where an unset
+     * variable and one set to null both read as null.
+     *
+     * Otherwise only explicit values count. A literal is read from the config file; an env()
+     * value only when the running application's environment or .env assigns it. Another
+     * project's server variables are not in this process, so for any other base path only .env
+     * is read, and a variable it leaves out may still come from the server, as Laravel Cloud
+     * and Vapor provide them.
      */
     private function isNightwatchSwitchedOff(): bool
     {
         $config = $this->nightwatchConfig();
 
         $enabled = $config['enabled'] ?? null;
-        if ($enabled !== null && ! $enabled['isEnvCall']) {
-            if ($enabled['value'] === false) {
-                return true;
-            }
-        } elseif (in_array(strtolower((string) $this->envFileValue('NIGHTWATCH_ENABLED')), ['false', '(false)'], true)) {
+        if ($this->analyzesRunningApp() && config()->has('nightwatch.enabled')) {
+            $value = config('nightwatch.enabled');
+        } elseif ($enabled !== null && ! $enabled['isEnvCall']) {
+            $value = $enabled['value'];
+        } else {
+            $value = $this->asEnvReadsIt($this->envValue('NIGHTWATCH_ENABLED'));
+        }
+
+        // Nightwatch reads ($config['enabled'] ?? true) and returns it from a bool method in a
+        // file without strict types, so any falsy value but null switches it off: false, '0', ''
+        if ($value !== null && ! $value) {
             return true;
         }
 
@@ -155,7 +168,7 @@ trait DetectsErrorTracking
             return $token['value'] === '';
         }
 
-        $envToken = $this->envFileValue('NIGHTWATCH_TOKEN');
+        $envToken = $this->envValue('NIGHTWATCH_TOKEN');
 
         // env() reads these as null or an empty string
         return $envToken !== null && in_array(strtolower($envToken), ['', 'null', '(null)', 'empty', '(empty)'], true);
@@ -178,6 +191,46 @@ trait DetectsErrorTracking
         }
 
         return (new ConfigFileParser(app(AstParser::class)))->parseArray($configPath);
+    }
+
+    /**
+     * The value env() would read $key from, unconverted, or null when nothing assigns it.
+     *
+     * For the running application that is its environment repository first, where platform
+     * variables override .env as they do at runtime, then .env, which a cached config leaves
+     * unloaded. The repository is read raw because env() turns "(false)" into false and both
+     * "null" and an unset variable into null, so a token set to null would read as unset.
+     */
+    private function envValue(string $key): ?string
+    {
+        $value = $this->analyzesRunningApp() ? Env::getRepository()->get($key) : null;
+
+        return $value ?? $this->envFileValue($key);
+    }
+
+    /**
+     * A raw variable value as env() returns it, keywords converted and anything else unchanged.
+     */
+    private function asEnvReadsIt(?string $value): mixed
+    {
+        return match (strtolower((string) $value)) {
+            'true', '(true)' => true,
+            'false', '(false)' => false,
+            'empty', '(empty)' => '',
+            'null', '(null)' => null,
+            default => $value,
+        };
+    }
+
+    /**
+     * Whether the analyzed base path is the application running this analysis, compared
+     * resolved, since deploy and temporary directories are often reached through symlinks.
+     */
+    private function analyzesRunningApp(): bool
+    {
+        $running = realpath(base_path());
+
+        return $running !== false && $running === realpath($this->getBasePath());
     }
 
     /**

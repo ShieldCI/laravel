@@ -128,7 +128,7 @@ trait DetectsErrorTracking
     }
 
     /**
-     * Whether Nightwatch's 'enabled' resolves to false or its 'token' to an empty value.
+     * Whether Nightwatch's 'enabled' resolves to a falsy value or its 'token' to an empty one.
      *
      * A key config/nightwatch.php does not publish keeps the package's stock value,
      * env('NIGHTWATCH_ENABLED', true) and env('NIGHTWATCH_TOKEN'), and an env() call in the
@@ -150,14 +150,16 @@ trait DetectsErrorTracking
 
         $enabled = $config['enabled'] ?? null;
         if ($this->analyzesRunningApp() && config()->has('nightwatch.enabled')) {
-            if (config('nightwatch.enabled') === false) {
-                return true;
-            }
+            $value = config('nightwatch.enabled');
         } elseif ($enabled !== null && ! $enabled['isEnvCall']) {
-            if ($enabled['value'] === false) {
-                return true;
-            }
-        } elseif (in_array(strtolower((string) $this->envValue('NIGHTWATCH_ENABLED')), ['false', '(false)'], true)) {
+            $value = $enabled['value'];
+        } else {
+            $value = $this->asEnvReadsIt($this->envValue('NIGHTWATCH_ENABLED'));
+        }
+
+        // Nightwatch reads ($config['enabled'] ?? true) and returns it from a bool method in a
+        // file without strict types, so any falsy value but null switches it off: false, '0', ''
+        if ($value !== null && ! $value) {
             return true;
         }
 
@@ -204,6 +206,20 @@ trait DetectsErrorTracking
         $value = $this->analyzesRunningApp() ? Env::getRepository()->get($key) : null;
 
         return $value ?? $this->envFileValue($key);
+    }
+
+    /**
+     * A raw variable value as env() returns it, keywords converted and anything else unchanged.
+     */
+    private function asEnvReadsIt(?string $value): mixed
+    {
+        return match (strtolower((string) $value)) {
+            'true', '(true)' => true,
+            'false', '(false)' => false,
+            'empty', '(empty)' => '',
+            'null', '(null)' => null,
+            default => $value,
+        };
     }
 
     /**

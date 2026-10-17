@@ -936,6 +936,46 @@ PHP,
         $this->assertPassed($result);
     }
 
+    public function test_fails_when_the_running_app_config_holds_a_falsy_nightwatch_flag(): void
+    {
+        config(['nightwatch.enabled' => '0']);
+
+        $result = $this->analyzeRunningApp(['composer.json' => $this->composerRequiring('laravel/nightwatch')], []);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_the_running_app_environment_sets_nightwatch_enabled_to_zero(): void
+    {
+        $result = $this->analyzeRunningApp(
+            ['composer.json' => $this->composerRequiring('laravel/nightwatch')],
+            ['NIGHTWATCH_ENABLED' => '0'],
+        );
+
+        $this->assertWarning($result);
+    }
+
+    public function test_fails_when_config_hard_codes_a_zero_nightwatch_flag(): void
+    {
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            'config/nightwatch.php' => "<?php\n\nreturn ['enabled' => 0];\n",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
+    public function test_passes_when_env_file_sets_nightwatch_enabled_to_null(): void
+    {
+        // Nightwatch reads a null flag as its default, true
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=null\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_ignores_this_process_config_for_another_project(): void
     {
         config(['nightwatch.enabled' => false]);

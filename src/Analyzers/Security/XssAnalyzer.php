@@ -28,8 +28,8 @@ use ShieldCI\Concerns\FindsLoginRoute;
 use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\DeclaredOriginResolver;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
-use ShieldCI\Support\OriginReachability\OriginProbeResult;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\OriginReachability\RedirectChain;
 use Throwable;
 
 /**
@@ -103,8 +103,10 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The checker is a container singleton, so the login URL is probed once for the whole
-     * run however many analyzers ask about it. It never follows a redirect, which keeps an
-     * identity-aware proxy's login page from being graded as the application's policy.
+     * run however many analyzers ask about it. Redirects are followed only while they stay
+     * on the login URL's host, so `/` answering 302 to `/login` grades the login page, and
+     * an identity-aware proxy's own login page on another host is never graded as the
+     * application's policy.
      *
      * Certificate verification is the checker's and is left on, as it is for
      * env-http-accessibility: a header read over a connection whose peer was never
@@ -853,7 +855,8 @@ class XssAnalyzer extends AbstractFileAnalyzer
             return ['issues' => [], 'unobserved' => null];
         }
 
-        $probe = $this->probeLoginUrl($url);
+        $chain = $this->probeLoginUrl($url);
+        $probe = $chain?->final();
 
         // Only a 2xx from the origin itself is graded. hasEvidence() is not the test: it is
         // true for an off-host redirect, which is what an identity-aware proxy such as
@@ -861,7 +864,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
         if ($probe === null || $probe->outcome !== OriginOutcome::Connected2xx) {
             return [
                 'issues' => [],
-                'unobserved' => $probe?->describe() ?? sprintf('no http(s) origin could be read from %s', $url),
+                'unobserved' => $chain?->describe() ?? sprintf('no http(s) origin could be read from %s', $url),
             ];
         }
 
@@ -1026,9 +1029,10 @@ class XssAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Ask the checker about the login URL, on the origin that URL names.
+     * Ask the checker about the login URL, on the origin that URL names, following it to
+     * the page a browser would render for as long as it stays on that host.
      */
-    private function probeLoginUrl(string $url): ?OriginProbeResult
+    private function probeLoginUrl(string $url): ?RedirectChain
     {
         $scheme = parse_url($url, PHP_URL_SCHEME);
         $origin = DeclaredOriginResolver::normalizeOrigin($url, is_string($scheme) ? strtolower($scheme) : 'https');
@@ -1037,7 +1041,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        return $this->checker->probe([new DeclaredOrigin($origin)], null, [], $url)->probeFor($origin);
+        return $this->checker->probeFollowingSameHost(new DeclaredOrigin($origin), $url);
     }
 
     /**

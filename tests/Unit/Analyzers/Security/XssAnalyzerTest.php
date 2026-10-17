@@ -454,6 +454,108 @@ BLADE;
         $this->assertStringContainsString('redirected off host', $result->getMessage());
     }
 
+    public function test_grades_the_page_a_same_host_redirect_lands_on(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => '/login']),
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('headers verified', $result->getMessage());
+    }
+
+    public function test_fails_when_a_same_host_redirect_lands_on_a_page_without_a_csp(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => 'https://example.com/login']),
+            new Response(200, [], '<html><head></head><body></body></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header not set', $result);
+    }
+
+    public function test_grades_the_https_page_an_http_login_url_upgrades_to(): void
+    {
+        config(['app.url' => 'http://example.com']);
+        config(['shieldci.guest_url' => '/login']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(301, ['Location' => 'https://example.com/login']),
+            new Response(200, [
+                'Content-Security-Policy' => "default-src 'self'; script-src 'self' 'unsafe-eval'",
+            ], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Content-Security-Policy header is inadequate', $result);
+    }
+
+    public function test_does_not_grade_a_proxy_reached_through_a_same_host_hop(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        // The proxy bounces through a path of its own on the application's host, then hands
+        // off to its login page elsewhere. That page's policy is never fetched.
+        $responses = [
+            new Response(302, ['Location' => '/oauth2/start']),
+            new Response(302, ['Location' => 'https://idp.example.net/authorize']),
+            new Response(200, ['Content-Security-Policy' => "default-src 'self'"], '<html></html>'),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString(
+            'example.com/ -> http://example.com/oauth2/start: redirected off host HTTP 302 to https://idp.example.net/authorize',
+            $result->getMessage()
+        );
+    }
+
+    public function test_warns_when_the_login_url_redirects_in_a_loop(): void
+    {
+        config(['app.url' => 'https://example.com']);
+        config(['shieldci.guest_url' => '/']);
+        config(['shieldci.ci_mode' => false]);
+
+        $responses = [
+            new Response(302, ['Location' => '/login']),
+            new Response(302, ['Location' => '/']),
+        ];
+
+        $analyzer = $this->createAnalyzerWithHttpMock($responses);
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(0, $result->getIssues());
+        $this->assertStringContainsString('redirect loop', $result->getMessage());
+    }
+
     public function test_reports_tls_failure_as_unverified_csp(): void
     {
         config(['app.url' => 'https://example.com']);

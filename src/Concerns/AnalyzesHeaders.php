@@ -19,7 +19,7 @@ use GuzzleHttp\Exception\GuzzleException;
  *
  * @deprecated Use \ShieldCI\Support\OriginReachability\OriginReachabilityChecker instead, which
  *             does not follow redirects, keeps certificate verification on and names why no
- *             response was captured. This trait will be removed in v2.
+ *             response was captured.
  *
  * @phpstan-type GuzzleRequestOptions array{allow_redirects?: bool, connect_timeout?: int|float, headers?: array<string, string>, http_errors?: bool, timeout?: int|float, verify?: bool|string}
  */

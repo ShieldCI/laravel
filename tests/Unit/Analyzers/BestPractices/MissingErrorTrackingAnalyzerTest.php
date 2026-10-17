@@ -965,6 +965,17 @@ PHP,
         $this->assertWarning($result);
     }
 
+    public function test_fails_when_env_file_sets_nightwatch_enabled_to_empty(): void
+    {
+        // env() reads "(empty)" as an empty string, which Nightwatch takes as false
+        $result = $this->analyzeProject([
+            'composer.json' => $this->composerRequiring('laravel/nightwatch'),
+            '.env' => "APP_ENV=production\nNIGHTWATCH_ENABLED=(empty)\nNIGHTWATCH_TOKEN=abc123",
+        ]);
+
+        $this->assertWarning($result);
+    }
+
     public function test_passes_when_env_file_sets_nightwatch_enabled_to_null(): void
     {
         // Nightwatch reads a null flag as its default, true

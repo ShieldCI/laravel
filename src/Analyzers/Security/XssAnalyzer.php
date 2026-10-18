@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use GuzzleHttp\Client;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Routing\Router;
 use Illuminate\Support\Str;
@@ -15,7 +14,6 @@ use PhpParser\Node\Expr\Variable;
 use PhpParser\Node\Name;
 use PhpParser\Node\Stmt\Echo_;
 use PhpParser\NodeFinder;
-use Psr\Http\Message\ResponseInterface;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -25,9 +23,13 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
-use ShieldCI\Concerns\AnalyzesHeaders;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\FindsLoginRoute;
+use ShieldCI\Support\OriginReachability\DeclaredOrigin;
+use ShieldCI\Support\OriginReachability\DeclaredOriginResolver;
+use ShieldCI\Support\OriginReachability\OriginOutcome;
+use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\OriginReachability\RedirectChain;
 use Throwable;
 
 /**
@@ -46,7 +48,6 @@ use Throwable;
  */
 class XssAnalyzer extends AbstractFileAnalyzer
 {
-    use AnalyzesHeaders;
     use AnalyzesMiddleware;
     use FindsLoginRoute;
 
@@ -100,11 +101,26 @@ class XssAnalyzer extends AbstractFileAnalyzer
      */
     private const SUPERGLOBAL_NAMES = ['_GET', '_POST', '_REQUEST', '_COOKIE', '_FILES'];
 
-    public function __construct(Router $router, Kernel $kernel, private AstParser $parser)
-    {
+    /**
+     * The checker is a container singleton, so the login URL is probed once for the whole
+     * run however many analyzers ask about it. Redirects are followed only while they stay
+     * on the login URL's host, so `/` answering 302 to `/login` grades the login page, and
+     * an identity-aware proxy's own login page on another host is never graded as the
+     * application's policy.
+     *
+     * Certificate verification is the checker's and is left on, as it is for
+     * env-http-accessibility: a header read over a connection whose peer was never
+     * authenticated is a claim about a host nobody identified. A staging origin with a
+     * self-signed certificate now produces a warning that names the TLS failure.
+     */
+    public function __construct(
+        Router $router,
+        Kernel $kernel,
+        private AstParser $parser,
+        private OriginReachabilityChecker $checker,
+    ) {
         $this->router = $router;
         $this->kernel = $kernel;
-        $this->client = new Client;
 
         // Skip HTTP checks in CI mode
         $ciMode = config('shieldci.ci_mode', false);
@@ -132,6 +148,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $cspUnobserved = null;
 
         // PART 1: Static Code Analysis (always runs)
         $staticIssues = $this->analyzeCodePatterns();
@@ -140,12 +157,20 @@ class XssAnalyzer extends AbstractFileAnalyzer
         // PART 2: HTTP Header Analysis (production/staging only, non-CI)
         $headersVerified = false;
         if (! $this->skipHttpChecks && $this->isHttpCheckEnvironment() && ! $this->isApiOnlyApp()) {
-            $headerIssues = $this->analyzeHttpHeaders();
-            $issues = array_merge($issues, $headerIssues);
-            $headersVerified = true;
+            $headerCheck = $this->analyzeHttpHeaders();
+            $issues = array_merge($issues, $headerCheck['issues']);
+            $cspUnobserved = $headerCheck['unobserved'];
+            $headersVerified = $cspUnobserved === null;
         }
 
         if (empty($issues)) {
+            // Nothing found in code and nothing observed about the policy is not a clean bill of health.
+            if ($cspUnobserved !== null) {
+                return $this->warning(
+                    'No XSS vulnerabilities detected in code, but the Content-Security-Policy could not be verified: '.$cspUnobserved
+                );
+            }
+
             return $this->passed(
                 $headersVerified
                     ? 'No XSS vulnerabilities detected (code and headers verified)'
@@ -153,10 +178,13 @@ class XssAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        return $this->resultBySeverity(
-            sprintf('Found %d XSS issue(s)', count($issues)),
-            $issues
-        );
+        $summary = sprintf('Found %d XSS issue(s)', count($issues));
+
+        if ($cspUnobserved !== null) {
+            $summary .= sprintf(' (Content-Security-Policy not verified: %s)', $cspUnobserved);
+        }
+
+        return $this->resultBySeverity($summary, $issues);
     }
 
     /**
@@ -795,18 +823,21 @@ class XssAnalyzer extends AbstractFileAnalyzer
      * - Ensures script-src or default-src directive exists
      * - Validates no unsafe-inline or unsafe-eval directives
      *
-     * @return array<Issue>
+     * `unobserved` names why nothing was learned about the policy, when nothing was: the
+     * origin gave no 2xx, or the captured body stopped before the head ended.
+     *
+     * @return array{issues: array<Issue>, unobserved: string|null}
      */
     private function analyzeHttpHeaders(): array
     {
         // Skip CSP header check for stateless (API-only) applications — CSP is a
         // browser security mechanism and irrelevant to pure JSON APIs
         if ($this->isApiOnlyApp()) {
-            return [];
+            return ['issues' => [], 'unobserved' => null];
         }
 
         if (! $this->isHttpCheckEnvironment()) {
-            return [];
+            return ['issues' => [], 'unobserved' => null];
         }
 
         $issues = [];
@@ -816,27 +847,47 @@ class XssAnalyzer extends AbstractFileAnalyzer
 
         if ($url === null) {
             // Can't check headers without a URL (not a failure, just skip)
-            return [];
+            return ['issues' => [], 'unobserved' => null];
         }
 
         // Skip localhost URLs
         if (str_contains($url, 'localhost') || str_contains($url, '127.0.0.1')) {
-            return [];
+            return ['issues' => [], 'unobserved' => null];
         }
 
-        $response = $this->fetchHttpResponse($url);
+        $chain = $this->probeLoginUrl($url);
+        $probe = $chain?->final();
 
-        if ($response === null) {
-            return [];
+        // Only a 2xx from the origin itself is graded. hasEvidence() is not the test: it is
+        // true for an off-host redirect, which is what an identity-aware proxy such as
+        // Cloudflare Access answers with, and its login page's policy is not the application's.
+        if ($probe === null || $probe->outcome !== OriginOutcome::Connected2xx) {
+            return [
+                'issues' => [],
+                'unobserved' => $chain?->describe() ?? sprintf('no http(s) origin could be read from %s', $url),
+            ];
         }
 
-        $body = (string) $response->getBody();
-        $cspHeaders = $response->getHeader('Content-Security-Policy');
+        $body = $probe->bodyPrefix ?? '';
+        $cspHeaders = $probe->headerValues('Content-Security-Policy');
 
         // Check if CSP is set
         if (empty($cspHeaders)) {
             // Try meta tags as fallback
             $metaPolicy = $this->extractCspFromMetaTags($body);
+
+            // Only a prefix of the body is captured. A meta policy may sit beyond it when the
+            // head was cut off, so its absence there is not evidence that the page has none.
+            if (empty($metaPolicy) && $this->headWasCutOff($body)) {
+                return [
+                    'issues' => [],
+                    'unobserved' => sprintf(
+                        '%s sent no Content-Security-Policy header, and its <head> extends past the first %d bytes captured, so a meta policy could not be ruled out',
+                        $probe->probedUrl,
+                        OriginReachabilityChecker::BODY_PREFIX_BYTES
+                    ),
+                ];
+            }
 
             if (empty($metaPolicy)) {
                 $issues[] = $this->createIssue(
@@ -846,7 +897,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
                     recommendation: 'Set a Content-Security-Policy header with a script-src or default-src directive that excludes unsafe-eval and unsafe-inline to prevent script injection.'
                 );
 
-                return $issues;
+                return ['issues' => $issues, 'unobserved' => null];
             }
 
             $cspHeaders = [$metaPolicy];
@@ -873,7 +924,7 @@ class XssAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        return $issues;
+        return ['issues' => $issues, 'unobserved' => null];
     }
 
     /**
@@ -977,16 +1028,32 @@ class XssAnalyzer extends AbstractFileAnalyzer
         return array_values($files);
     }
 
-    private function fetchHttpResponse(string $url): ?ResponseInterface
+    /**
+     * Ask the checker about the login URL, on the origin that URL names, following it to
+     * the page a browser would render for as long as it stays on that host.
+     */
+    private function probeLoginUrl(string $url): ?RedirectChain
     {
-        try {
-            return $this->getClient()->get($url, [
-                'timeout' => 5,
-                'http_errors' => false,
-                'verify' => false,
-            ]);
-        } catch (Throwable) {
+        $scheme = parse_url($url, PHP_URL_SCHEME);
+        $origin = DeclaredOriginResolver::normalizeOrigin($url, is_string($scheme) ? strtolower($scheme) : 'https');
+
+        if ($origin === null) {
             return null;
         }
+
+        return $this->checker->probeFollowingSameHost(new DeclaredOrigin($origin), $url);
+    }
+
+    /**
+     * Whether the captured prefix stops before the document head was seen to end.
+     *
+     * A meta policy is only valid in the head. A body shorter than the prefix was captured
+     * whole, and once the head is seen to close (or the body to open), a meta tag missing
+     * from the prefix is missing from the page.
+     */
+    private function headWasCutOff(string $body): bool
+    {
+        return strlen($body) >= OriginReachabilityChecker::BODY_PREFIX_BYTES
+            && ! preg_match('/<\/head\s*>|<body[\s>]/i', $body);
     }
 }

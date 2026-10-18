@@ -22,6 +22,7 @@ use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Support\OriginReachability\ProbeRequest;
+use ShieldCI\Support\OriginReachability\RedirectChain;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 /**
@@ -1505,5 +1506,227 @@ class OriginReachabilityCheckerTest extends AnalyzerTestCase
         $checker->probe($origins, request: new ProbeRequest(['Accept' => '*/*'], decodeContent: true));
 
         $this->assertCount(1, $recorded);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_follows_a_same_host_redirect_to_the_page_it_names(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '/login']),
+            new Response(200, ['Content-Security-Policy' => "default-src 'self'"], 'login page'),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com', [DeclaredOrigin::SOURCE_APP_URL]));
+
+        $this->assertSame(1, $chain->redirectCount());
+        $this->assertNull($chain->stoppedBecause);
+        $this->assertSame(OriginOutcome::Connected2xx, $chain->final()->outcome);
+        $this->assertSame('https://example.com/login', $chain->final()->probedUrl);
+        $this->assertSame('login page', $chain->final()->bodyPrefix);
+        $this->assertSame([DeclaredOrigin::SOURCE_APP_URL], $chain->final()->declaredOrigin->sources);
+        $this->assertSame(['https://example.com/', 'https://example.com/login'], array_map(
+            static fn (RequestInterface $request): string => (string) $request->getUri(),
+            $recorded,
+        ));
+        $this->assertSame('https://example.com/ -> https://example.com/login: connected (2xx) HTTP 200', $chain->describe());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_follows_an_upgrade_to_https_on_the_same_host(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(301, ['Location' => 'https://example.com/login']),
+            new Response(200, [], 'ok'),
+        ]));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('http://example.com', [DeclaredOrigin::SOURCE_APP_URL]), '/login');
+
+        $this->assertSame(OriginOutcome::Connected2xx, $chain->final()->outcome);
+        $this->assertSame('https://example.com', $chain->final()->origin());
+        $this->assertSame([DeclaredOrigin::SOURCE_APP_URL], $chain->final()->declaredOrigin->sources);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_resolves_a_relative_location_against_the_url_that_was_probed(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '../login?next=%2Fadmin#form']),
+            new Response(200, [], 'ok'),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'), '/app/admin');
+
+        $this->assertSame('https://example.com/login?next=%2Fadmin', $chain->final()->probedUrl);
+        $this->assertCount(2, $recorded);
+    }
+
+    /**
+     * An identity-aware proxy may bounce the request through a path of its own on the
+     * application's host before handing it to its login page elsewhere. The chain ends at
+     * the hand-off, and the proxy's page is never fetched.
+     */
+    /** @test */
+    #[Test]
+    public function it_stops_at_the_first_redirect_off_the_host(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '/oauth2/start']),
+            new Response(302, ['Location' => 'https://idp.example.net/authorize']),
+            new Response(200, [], 'identity provider'),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(OriginOutcome::RedirectedOffHost, $chain->final()->outcome);
+        $this->assertNull($chain->stoppedBecause);
+        $this->assertCount(2, $recorded);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_follow_a_3xx_that_sends_nobody_on(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(304, ['Location' => '/elsewhere']),
+            new Response(200, [], 'never fetched'),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $chain->final()->outcome);
+        $this->assertSame(304, $chain->final()->statusCode);
+        $this->assertSame(0, $chain->redirectCount());
+        $this->assertCount(1, $recorded);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_follow_a_location_on_a_scheme_it_cannot_probe(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => 'ftp://example.com/files']),
+        ]));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $chain->final()->outcome);
+        $this->assertSame(0, $chain->redirectCount());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_follow_a_location_that_is_not_a_uri(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => 'http://:80']),
+        ]));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $chain->final()->outcome);
+        $this->assertSame(0, $chain->redirectCount());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_stops_at_a_redirect_loop_without_asking_again(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '/login']),
+            new Response(302, ['Location' => '/']),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(RedirectChain::STOPPED_AT_LOOP, $chain->stoppedBecause);
+        $this->assertSame(OriginOutcome::ConnectedNon2xx, $chain->final()->outcome);
+        $this->assertCount(2, $recorded);
+        $this->assertStringEndsWith(', redirect loop', $chain->describe());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_stops_at_the_redirect_limit(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '/1']),
+            new Response(302, ['Location' => '/2']),
+            new Response(302, ['Location' => '/3']),
+        ], $recorded));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'), maxRedirects: 2);
+
+        $this->assertSame(RedirectChain::STOPPED_AT_LIMIT, $chain->stoppedBecause);
+        $this->assertSame(2, $chain->redirectCount());
+        $this->assertCount(3, $recorded);
+        $this->assertStringEndsWith(', stopped after 2 same-host redirects', $chain->describe());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_follows_five_redirects_by_default(): void
+    {
+        $queue = [];
+
+        for ($hop = 1; $hop <= 5; $hop++) {
+            $queue[] = new Response(302, ['Location' => "/{$hop}"]);
+        }
+
+        $queue[] = new Response(200, [], 'ok');
+
+        $chain = (new OriginReachabilityChecker($this->clientReplaying($queue)))
+            ->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame(OriginOutcome::Connected2xx, $chain->final()->outcome);
+        $this->assertSame(5, $chain->redirectCount());
+    }
+
+    /**
+     * Each hop is an ordinary probe, so a second rule walking the same chain, or asking
+     * directly about a page the chain passed through, sends nothing new.
+     */
+    /** @test */
+    #[Test]
+    public function it_shares_each_hop_with_every_other_question_about_that_url(): void
+    {
+        $recorded = [];
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            new Response(302, ['Location' => '/login']),
+            new Response(200, [], 'ok'),
+        ], $recorded));
+
+        $origin = new DeclaredOrigin('https://example.com');
+
+        $checker->probeFollowingSameHost($origin);
+        $again = $checker->probeFollowingSameHost($origin);
+        $direct = $checker->probe([$origin], path: '/login')->probeFor('https://example.com');
+
+        $this->assertCount(2, $recorded);
+        $this->assertSame(OriginOutcome::Connected2xx, $again->final()->outcome);
+        $this->assertNotNull($direct);
+        $this->assertSame(OriginOutcome::Connected2xx, $direct->outcome);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_describes_a_chain_that_never_redirected_as_its_only_probe(): void
+    {
+        $checker = new OriginReachabilityChecker($this->clientReplaying([
+            $this->connectException('cURL error 28: Operation timed out'),
+        ]));
+
+        $chain = $checker->probeFollowingSameHost(new DeclaredOrigin('https://example.com'));
+
+        $this->assertSame($chain->final()->describe(), $chain->describe());
+        $this->assertSame(OriginOutcome::Timeout, $chain->final()->outcome);
     }
 }

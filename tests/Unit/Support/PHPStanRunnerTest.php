@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ReflectionClass;
 use ShieldCI\Support\PHPStanRunner;
@@ -583,6 +584,85 @@ class PHPStanRunnerTest extends TestCase
         $capturedConfig = $this->getCapturedConfig();
 
         $this->assertStringContainsString('level: 9', $capturedConfig);
+    }
+
+    public function test_config_passes_max_level_through_to_phpstan(): void
+    {
+        // PHPStan resolves 'max' to its own highest level, 9 on PHPStan 1 and 10 on
+        // PHPStan 2, so the keyword is written as is rather than guessed at here.
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 'max');
+
+        $this->assertStringContainsString("level: max\n", $this->getCapturedConfig());
+    }
+
+    public function test_installed_version_reads_composer_2_metadata(): void
+    {
+        $this->writeInstalledJson([
+            'packages' => [
+                ['name' => 'nikic/php-parser', 'version' => 'v5.6.1'],
+                ['name' => 'phpstan/phpstan', 'version' => '1.12.34'],
+            ],
+            'dev' => true,
+            'dev-package-names' => [],
+        ]);
+
+        $this->assertSame('1.12.34', (new PHPStanRunner($this->tempDir))->installedVersion());
+    }
+
+    public function test_installed_version_reads_composer_1_metadata(): void
+    {
+        // Composer 1 writes the package list itself rather than nesting it under "packages".
+        $this->writeInstalledJson([
+            ['name' => 'phpstan/phpstan', 'version' => '2.2.17'],
+        ]);
+
+        $this->assertSame('2.2.17', (new PHPStanRunner($this->tempDir))->installedVersion());
+    }
+
+    public function test_installed_version_is_null_without_composer_metadata(): void
+    {
+        $this->assertNull((new PHPStanRunner($this->tempDir))->installedVersion());
+    }
+
+    public function test_installed_version_is_null_for_unreadable_metadata(): void
+    {
+        @mkdir($this->tempDir.'/vendor/composer', 0755, true);
+        file_put_contents($this->tempDir.'/vendor/composer/installed.json', '{not json');
+
+        $this->assertNull((new PHPStanRunner($this->tempDir))->installedVersion());
+    }
+
+    public function test_installed_version_is_null_when_phpstan_is_not_listed(): void
+    {
+        $this->writeInstalledJson(['packages' => [['name' => 'nikic/php-parser', 'version' => 'v5.6.1']]]);
+
+        $this->assertNull((new PHPStanRunner($this->tempDir))->installedVersion());
+    }
+
+    /**
+     * @dataProvider highestLevelProvider
+     */
+    #[DataProvider('highestLevelProvider')]
+    public function test_highest_level_follows_the_installed_major_version(?string $version, int $expected): void
+    {
+        $this->assertSame($expected, PHPStanRunner::highestLevel($version));
+    }
+
+    /**
+     * @return array<string, array{?string, int}>
+     */
+    public static function highestLevelProvider(): array
+    {
+        return [
+            'PHPStan 1 release' => ['1.12.34', 9],
+            'PHPStan 1 branch alias' => ['1.12.x-dev', 9],
+            'PHPStan 2 release' => ['2.2.17', 10],
+            // The widest range composer.json admits, so no valid level is refused on a guess.
+            'unknown version' => [null, 10],
+        ];
     }
 
     public function test_cleans_up_temp_config_file(): void
@@ -1446,6 +1526,18 @@ class PHPStanRunnerTest extends TestCase
         $this->assertIsString($content, 'Captured config file should be readable');
 
         return $content;
+    }
+
+    /**
+     * Write Composer's installed-package metadata for the base path's vendor directory.
+     *
+     * @param  array<mixed>  $data
+     */
+    private function writeInstalledJson(array $data): void
+    {
+        @mkdir($this->tempDir.'/vendor/composer', 0755, true);
+
+        file_put_contents($this->tempDir.'/vendor/composer/installed.json', (string) json_encode($data));
     }
 
     /**

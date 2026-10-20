@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\ConstExprEvaluationException;
+use PhpParser\ConstExprEvaluator;
 use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\Exit_;
@@ -31,7 +33,7 @@ use ShieldCI\Concerns\ClassifiesFiles;
  * Checks for:
  * - APP_DEBUG=true in .env or config files
  * - dd(), dump(), var_dump() in production code
- * - print_r(), var_export() exposing data
+ * - print_r(), var_export() printing data (the $return = true form is not reported)
  * - Debug bar or telescope in production
  * - Stack traces exposed to users
  */
@@ -45,6 +47,9 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
     private const HIGH_SEVERITY_FUNCTIONS = ['dd', 'dump', 'var_dump', 'print_r'];
 
+    // Return their output instead of printing it when the second argument, $return, is truthy.
+    private const RETURNABLE_FUNCTIONS = ['print_r', 'var_export'];
+
     /** @var list<string> */
     private array $debugFunctions = [
         'dd',
@@ -52,7 +57,6 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
         'var_dump',
         'print_r',
         'var_export',
-        'debug_backtrace',
         'debug_print_backtrace',
         'debug_zval_dump',
         'ray',
@@ -280,7 +284,9 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 $functionName = strtolower($funcCall->name->toString());
 
                 // Check for debug functions
-                if (in_array($functionName, $this->debugFunctions, true)) {
+                if (in_array($functionName, $this->debugFunctions, true)
+                    && ! $this->returnsInsteadOfPrinting($funcCall, $functionName)
+                ) {
                     $severity = match ($functionName) {
                         'ray' => Severity::High,
                         default => in_array($functionName, self::HIGH_SEVERITY_FUNCTIONS, true)
@@ -346,6 +352,35 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
+    }
+
+    /**
+     * Whether a print_r() or var_export() call passes a constant truthy $return, so it
+     * returns the string instead of printing it. A non-constant flag cannot be decided
+     * statically, so the call stays reported.
+     */
+    private function returnsInsteadOfPrinting(FuncCall $funcCall, string $functionName): bool
+    {
+        if (! in_array($functionName, self::RETURNABLE_FUNCTIONS, true)) {
+            return false;
+        }
+
+        foreach ($funcCall->args as $position => $arg) {
+            if (! $arg instanceof Arg || $arg->unpack) {
+                continue;
+            }
+
+            // Named arguments match case-sensitively; a named `value` at position 1 means `return:` came first
+            if ($arg->name?->toString() === 'return' || $position === 1) {
+                try {
+                    return (bool) (new ConstExprEvaluator)->evaluateSilently($arg->value);
+                } catch (ConstExprEvaluationException) {
+                    return false;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\DebugModeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -517,7 +518,101 @@ PHP;
         $this->assertEquals(Severity::Medium, $issues[0]->severity);
     }
 
-    public function test_detects_debug_backtrace_function(): void
+    /** @dataProvider truthyReturnFlagCallsProvider */
+    #[DataProvider('truthyReturnFlagCallsProvider')]
+    public function test_ignores_returnable_debug_functions_with_truthy_return_flag(string $call): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Reports/Formatter.php' => "<?php\n\$text = {$call};\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function truthyReturnFlagCallsProvider(): array
+    {
+        return [
+            'var_export true' => ['var_export($order, true)'],
+            'print_r uppercase TRUE' => ['print_r($order, TRUE)'],
+            'var_export fully qualified true' => ['var_export($order, \true)'],
+            'print_r integer 1' => ['print_r($order, 1)'],
+            'var_export named return' => ['var_export($order, return: true)'],
+            'print_r named return first' => ['print_r(return: true, value: $order)'],
+            'fully qualified function name' => ['\print_r($order, true)'],
+        ];
+    }
+
+    /** @dataProvider printingReturnableCallsProvider */
+    #[DataProvider('printingReturnableCallsProvider')]
+    public function test_flags_returnable_debug_functions_without_constant_truthy_return_flag(string $call, string $function): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Reports/Formatter.php' => "<?php\n{$call};\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Debug function {$function}()", $result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function printingReturnableCallsProvider(): array
+    {
+        return [
+            'print_r false' => ['print_r($order, false)', 'print_r'],
+            'var_export integer 0' => ['var_export($order, 0)', 'var_export'],
+            'var_export variable flag' => ['var_export($order, $asString)', 'var_export'],
+            'print_r unpacked arguments' => ['print_r(...$arguments)', 'print_r'],
+            'print_r unpacked constant flag' => ['print_r($order, ...[false])', 'print_r'],
+            'print_r first-class callable' => ['$printer = print_r(...)', 'print_r'],
+            'var_export named return false' => ['var_export(return: false, value: $order)', 'var_export'],
+            'var_export named value only' => ['var_export(value: $order)', 'var_export'],
+        ];
+    }
+
+    public function test_return_flag_exemption_does_not_apply_to_variadic_dump_functions(): void
+    {
+        $code = <<<'PHP'
+<?php
+var_dump($order, true);
+dump($order, true);
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Reports/Formatter.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('Debug function var_dump()', $result);
+        $this->assertHasIssueContaining('Debug function dump()', $result);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertEquals(Severity::High, $issue->severity);
+        }
+    }
+
+    public function test_ignores_debug_backtrace_function(): void
     {
         $code = <<<'PHP'
 <?php
@@ -534,8 +629,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertWarning($result);
-        $this->assertHasIssueContaining('debug_backtrace()', $result);
+        $this->assertPassed($result);
     }
 
     public function test_detects_debug_print_backtrace_function(): void

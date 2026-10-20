@@ -360,7 +360,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Calls whose value reaches echo, print or <?= ?>, keyed by spl_object_id(). A
+     * Calls whose value reaches echo, print, <?= ?>, exit or die, keyed by spl_object_id(). A
      * returned print_r() or var_export() string is printed there all the same.
      *
      * @param  array<Node>  $ast
@@ -376,6 +376,13 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
         foreach ($nodeFinder->findInstanceOf($ast, Print_::class) as $print) {
             $printedExprs[] = $print->expr;
+        }
+
+        // exit() and die() print a string argument before terminating
+        foreach ($nodeFinder->findInstanceOf($ast, Exit_::class) as $exit) {
+            if ($exit->expr !== null) {
+                $printedExprs[] = $exit->expr;
+            }
         }
 
         $printed = [];

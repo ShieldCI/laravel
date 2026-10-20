@@ -591,6 +591,29 @@ PHP;
         ];
     }
 
+    public function test_flags_returned_debug_output_passed_to_exit_in_console_commands(): void
+    {
+        $code = <<<'PHP'
+<?php
+die(print_r($order, true));
+exit(var_export($order, true));
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Console/Commands/ExportOrders.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('Debug function print_r()', $result);
+        $this->assertHasIssueContaining('Debug function var_export()', $result);
+    }
+
     public function test_return_flag_exemption_does_not_apply_to_variadic_dump_functions(): void
     {
         $code = <<<'PHP'

@@ -548,6 +548,7 @@ PHP;
             'var_export named return' => ['var_export($order, return: true)'],
             'print_r named return first' => ['print_r(return: true, value: $order)'],
             'fully qualified function name' => ['\print_r($order, true)'],
+            'print_r passed to a logger' => ['\Illuminate\Support\Facades\Log::info(print_r($order, true))'],
         ];
     }
 
@@ -583,6 +584,10 @@ PHP;
             'print_r first-class callable' => ['$printer = print_r(...)', 'print_r'],
             'var_export named return false' => ['var_export(return: false, value: $order)', 'var_export'],
             'var_export named value only' => ['var_export(value: $order)', 'var_export'],
+            'print_r returned into echo' => ["echo '<pre>' . print_r(\$order, true) . '</pre>'", 'print_r'],
+            'var_export returned into print' => ['print var_export($order, true)', 'var_export'],
+            'print_r returned into short echo tag' => ['?><?= print_r($order, true) ?><?php ', 'print_r'],
+            'print_r returned through a call into echo' => ['echo strtoupper(print_r($order, true))', 'print_r'],
         ];
     }
 

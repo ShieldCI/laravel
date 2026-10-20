@@ -6,14 +6,17 @@ namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\ConstExprEvaluationException;
 use PhpParser\ConstExprEvaluator;
+use PhpParser\Node;
 use PhpParser\Node\Arg;
 use PhpParser\Node\Expr\ConstFetch;
 use PhpParser\Node\Expr\Exit_;
 use PhpParser\Node\Expr\FuncCall;
+use PhpParser\Node\Expr\Print_;
 use PhpParser\Node\Expr\UnaryMinus;
 use PhpParser\Node\Name;
 use PhpParser\Node\Scalar\LNumber;
 use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\Echo_;
 use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -33,7 +36,7 @@ use ShieldCI\Concerns\ClassifiesFiles;
  * Checks for:
  * - APP_DEBUG=true in .env or config files
  * - dd(), dump(), var_dump() in production code
- * - print_r(), var_export() printing data (the $return = true form is not reported)
+ * - print_r(), var_export() printing data (the $return = true form is reported only when echoed)
  * - Debug bar or telescope in production
  * - Stack traces exposed to users
  */
@@ -275,6 +278,7 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
             // Find debug function calls via FuncCall nodes
             /** @var FuncCall[] $funcCalls */
             $funcCalls = $nodeFinder->findInstanceOf($ast, FuncCall::class);
+            $printedCalls = $this->findPrintedCalls($nodeFinder, $ast);
 
             foreach ($funcCalls as $funcCall) {
                 if (! $funcCall->name instanceof Name) {
@@ -285,7 +289,8 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
                 // Check for debug functions
                 if (in_array($functionName, $this->debugFunctions, true)
-                    && ! $this->returnsInsteadOfPrinting($funcCall, $functionName)
+                    && (isset($printedCalls[spl_object_id($funcCall)])
+                        || ! $this->returnsInsteadOfPrinting($funcCall, $functionName))
                 ) {
                     $severity = match ($functionName) {
                         'ray' => Severity::High,
@@ -352,6 +357,34 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
+    }
+
+    /**
+     * Calls whose value reaches echo, print or <?= ?>, keyed by spl_object_id(). A
+     * returned print_r() or var_export() string is printed there all the same.
+     *
+     * @param  array<Node>  $ast
+     * @return array<int, true>
+     */
+    private function findPrintedCalls(NodeFinder $nodeFinder, array $ast): array
+    {
+        $printedExprs = [];
+
+        foreach ($nodeFinder->findInstanceOf($ast, Echo_::class) as $echo) {
+            array_push($printedExprs, ...$echo->exprs);
+        }
+
+        foreach ($nodeFinder->findInstanceOf($ast, Print_::class) as $print) {
+            $printedExprs[] = $print->expr;
+        }
+
+        $printed = [];
+
+        foreach ($nodeFinder->findInstanceOf($printedExprs, FuncCall::class) as $call) {
+            $printed[spl_object_id($call)] = true;
+        }
+
+        return $printed;
     }
 
     /**

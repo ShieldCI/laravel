@@ -467,8 +467,8 @@ PHP;
             'negative integer string' => ['-1', '-1'],
             // Shown as configured: the int cast saturates to PHP_INT_MAX.
             'integer string beyond the int range' => ['99999999999999999999', '99999999999999999999'],
-            // The int cast turns a float beyond the int range into 0, a level that exists.
-            'float beyond the int range' => [1e20, '1.0E+20'],
+            // 2^64: the int cast wraps it around to 0, a level that exists.
+            'float beyond the int range' => [1.8446744073709552E+19, '1.8446744073709552E+19'],
         ];
     }
 

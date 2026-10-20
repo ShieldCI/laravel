@@ -745,8 +745,8 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        // Kept one step outside the widest range before the cast, which turns a float
-        // beyond the int range into 0, a level that exists.
+        // Kept one step outside the widest range before the cast, which wraps a float
+        // beyond the int range around and can land on a level that exists (2^64 gives 0).
         return (int) max(-1.0, min($number, PHPStanRunner::highestLevel(null) + 1.0));
     }
 

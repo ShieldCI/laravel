@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Support\PlatformDetector;
@@ -114,6 +115,12 @@ class PHPStanRunner
      */
     public function analyze(string|array $paths, int|string $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
     {
+        // Written into the generated config verbatim, where any other string would reach
+        // PHPStan as an invalid level or as extra NEON.
+        if (is_string($level) && $level !== 'max') {
+            throw new \InvalidArgumentException("PHPStan level must be an integer or 'max', got ".var_export($level, true));
+        }
+
         $paths = is_array($paths) ? $paths : [$paths];
         $includes = $this->resolveIncludes();
 
@@ -649,31 +656,7 @@ class PHPStanRunner
      */
     public function installedVersion(): ?string
     {
-        $path = $this->basePath.'/vendor/composer/installed.json';
-
-        if (! is_file($path)) {
-            return null;
-        }
-
-        $content = @file_get_contents($path);
-        $data = is_string($content) ? json_decode($content, true) : null;
-
-        if (! is_array($data)) {
-            return null;
-        }
-
-        // Composer 2 nests the package list under "packages"; Composer 1 writes the list itself.
-        $packages = $data['packages'] ?? $data;
-
-        foreach (is_array($packages) ? $packages : [] as $package) {
-            if (is_array($package)
-                && ($package['name'] ?? null) === 'phpstan/phpstan'
-                && is_string($package['version'] ?? null)) {
-                return $package['version'];
-            }
-        }
-
-        return null;
+        return (new Composer(new Filesystem, $this->basePath))->installedVersion('phpstan/phpstan');
     }
 
     /**

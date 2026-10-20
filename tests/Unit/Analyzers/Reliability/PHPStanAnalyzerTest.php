@@ -386,6 +386,32 @@ PHP;
         $this->assertStringContainsString("level: 8\n", (string) $config);
     }
 
+    /**
+     * @dataProvider wholeNumberLevelProvider
+     */
+    #[DataProvider('wholeNumberLevelProvider')]
+    public function test_accepts_a_whole_number_level_in_any_numeric_form(float|string $level): void
+    {
+        [$result, $config] = $this->analyzeAtLevel($level, '2.2.17');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 8\n", (string) $config);
+    }
+
+    /**
+     * @return array<string, array{float|string}>
+     */
+    public static function wholeNumberLevelProvider(): array
+    {
+        return [
+            // A numeric cast such as (float) env(...) yields a float.
+            'whole float' => [8.0],
+            'whole decimal string' => ['8.0'],
+            // A quoted .env value keeps its spaces.
+            'padded integer string' => [' 8 '],
+        ];
+    }
+
     public function test_null_level_runs_at_the_default_level(): void
     {
         [$result, $config] = $this->analyzeAtLevel(null, '2.2.17');
@@ -418,7 +444,7 @@ PHP;
      * @dataProvider nonexistentLevelProvider
      */
     #[DataProvider('nonexistentLevelProvider')]
-    public function test_nonexistent_level_errors_without_running_phpstan(int|string $level, string $shown): void
+    public function test_nonexistent_level_errors_without_running_phpstan(int|float|string $level, string $shown): void
     {
         [$result, $config] = $this->analyzeAtLevel($level, '2.2.17');
 
@@ -431,7 +457,7 @@ PHP;
     }
 
     /**
-     * @return array<string, array{int|string, string}>
+     * @return array<string, array{int|float|string, string}>
      */
     public static function nonexistentLevelProvider(): array
     {
@@ -439,6 +465,10 @@ PHP;
             'above the highest level' => [11, '11'],
             'negative' => [-1, '-1'],
             'negative integer string' => ['-1', '-1'],
+            // Shown as configured: the int cast saturates to PHP_INT_MAX.
+            'integer string beyond the int range' => ['99999999999999999999', '99999999999999999999'],
+            // The int cast turns a float beyond the int range into 0, a level that exists.
+            'float beyond the int range' => [1e20, '1.0E+20'],
         ];
     }
 

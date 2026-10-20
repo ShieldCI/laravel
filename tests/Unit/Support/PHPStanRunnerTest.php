@@ -598,6 +598,40 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString("level: max\n", $this->getCapturedConfig());
     }
 
+    /**
+     * @dataProvider unknownLevelKeywordProvider
+     */
+    #[DataProvider('unknownLevelKeywordProvider')]
+    public function test_rejects_a_string_level_other_than_max(string $level): void
+    {
+        // Written into the generated config as is, so anything but PHPStan's keyword
+        // would reach it as an invalid level or as extra NEON.
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        try {
+            // @phpstan-ignore argument.type (the runtime guard for callers PHPStan does not check)
+            $runner->analyze(['app'], $level);
+            $this->fail('A string level other than max should be rejected');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame("PHPStan level must be an integer or 'max', got ".var_export($level, true), $e->getMessage());
+        }
+
+        $this->assertFileDoesNotExist($this->tempDir.'/captured_config.neon', 'PHPStan should not have been started');
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unknownLevelKeywordProvider(): array
+    {
+        return [
+            'uppercase keyword' => ['MAX'],
+            'integer followed by NEON' => ["5\nincludes:\n    - other.neon"],
+        ];
+    }
+
     public function test_installed_version_reads_composer_2_metadata(): void
     {
         $this->writeInstalledJson([

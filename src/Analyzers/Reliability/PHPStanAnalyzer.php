@@ -720,11 +720,12 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The configured level as PHPStan takes it, or null when it is not an integer.
+     * The configured level as PHPStan takes it, or null when it is not a whole number.
      *
-     * An integer string counts as the integer, because env() returns strings. A negative
-     * one is still parsed so that it is reported as out of range rather than as not an
-     * integer. 'max' is matched exactly, as PHPStan matches it.
+     * Any numeric form of a whole number counts, because env() returns strings and a cast
+     * such as (float) env(...) returns 8.0. A negative one is still parsed so that it is
+     * reported as out of range rather than as not an integer. 'max' is matched exactly,
+     * as PHPStan matches it.
      *
      * @return int|'max'|null
      */
@@ -734,11 +735,19 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             return $configured;
         }
 
-        if (is_string($configured) && preg_match('/^-?\d+$/', $configured) === 1) {
-            return (int) $configured;
+        if (! is_numeric($configured)) {
+            return null;
         }
 
-        return null;
+        $number = (float) $configured;
+
+        if (! is_finite($number) || $number !== floor($number)) {
+            return null;
+        }
+
+        // Kept one step outside the widest range before the cast, which turns a float
+        // beyond the int range into 0, a level that exists.
+        return (int) max(-1.0, min($number, PHPStanRunner::highestLevel(null) + 1.0));
     }
 
     /**
@@ -746,6 +755,9 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      */
     private function invalidLevelMessage(mixed $configured, ?int $level, ?string $installedVersion, int $highestLevel): string
     {
+        // As configured, since parseLevel() bounds a level far out of range
+        $shown = is_string($configured) ? trim($configured) : var_export($configured, true);
+
         $reason = match (true) {
             $level === null => sprintf(
                 'PHPStan level %s is not an integer',
@@ -756,11 +768,11 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
                 $installedVersion
             ),
             $installedVersion !== null => sprintf(
-                'PHPStan level %d does not exist in the installed PHPStan %s',
-                $level,
+                'PHPStan level %s does not exist in the installed PHPStan %s',
+                $shown,
                 $installedVersion
             ),
-            default => sprintf('PHPStan level %d does not exist', $level),
+            default => sprintf('PHPStan level %s does not exist', $shown),
         };
 
         return sprintf(

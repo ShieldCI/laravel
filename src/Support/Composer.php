@@ -93,20 +93,47 @@ class Composer extends BaseComposer
      */
     public function areDevPackagesInstalled(): bool
     {
+        return ($this->installedMetadata()['dev'] ?? true) === true;
+    }
+
+    /**
+     * The installed version of a package, or null when it cannot be read.
+     */
+    public function installedVersion(string $packageName): ?string
+    {
+        $data = $this->installedMetadata() ?? [];
+
+        // Composer 2 nests the package list under "packages"; Composer 1 writes the list itself.
+        $packages = $data['packages'] ?? $data;
+
+        foreach (is_array($packages) ? $packages : [] as $package) {
+            if (is_array($package)
+                && ($package['name'] ?? null) === $packageName
+                && is_string($package['version'] ?? null)) {
+                return $package['version'];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The decoded vendor/composer/installed.json, or null when it is missing or unreadable.
+     *
+     * @return array<mixed>|null
+     */
+    private function installedMetadata(): ?array
+    {
         $installedJsonPath = $this->workingPath.'/vendor/composer/installed.json';
 
-        if (! file_exists($installedJsonPath)) {
-            return true;
+        if (! is_file($installedJsonPath)) {
+            return null;
         }
 
         $content = @file_get_contents($installedJsonPath);
-        if ($content === false) {
-            return true;
-        }
+        $data = is_string($content) ? json_decode($content, true) : null;
 
-        $data = json_decode($content, true);
-
-        return (is_array($data) ? ($data['dev'] ?? true) : true) === true;
+        return is_array($data) ? $data : null;
     }
 
     /**

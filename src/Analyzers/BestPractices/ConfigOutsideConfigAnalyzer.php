@@ -175,6 +175,9 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var array<string> Environment marker names (matched with boundary-aware logic) */
     private const ENV_MARKERS = ['dev', 'staging', 'test', 'local', 'qa'];
 
+    /** @var array<string> Reserved TLDs that never resolve publicly: .test and .localhost (RFC 6761), .local (mDNS, RFC 6762) */
+    private const RESERVED_DEV_TLDS = ['test', 'localhost', 'local'];
+
     /** @var array<string> Path markers indicating environment-specific URLs */
     private const ENV_PATH_MARKERS = ['/dev/', '/staging/', '/test/', '/local/', '/sandbox/'];
 
@@ -377,14 +380,23 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // Check for environment markers in domain with boundary-aware matching
+        // A fully qualified host may end in a dot (dev.to.), which would leave an empty last label
+        $labels = explode('.', rtrim($host, '.'));
+
+        // A reserved TLD (e.g. a Valet myapp.test site) can only be a local environment
+        if (in_array(end($labels), self::RESERVED_DEV_TLDS, true)) {
+            return true;
+        }
+
+        // Count a marker only in a subdomain label: the last two labels are the site's own
+        // domain and TLD, so dev.to or test.io name a public site, not an environment.
         // Matches: dev.example.com, api.dev.example.com, api-dev.example.com
-        // Avoids false positives like: devon.example.com, devops.example.com
-        foreach (self::ENV_MARKERS as $marker) {
-            if (str_starts_with($host, $marker.'.')
-                || str_contains($host, '.'.$marker.'.')
-                || str_contains($host, '-'.$marker.'.')) {
-                return true;
+        // Avoids false positives like: dev.to, my-dev.to, devon.example.com, devops.example.com
+        foreach (array_slice($labels, 0, -2) as $label) {
+            foreach (self::ENV_MARKERS as $marker) {
+                if ($label === $marker || str_ends_with($label, '-'.$marker)) {
+                    return true;
+                }
             }
         }
 

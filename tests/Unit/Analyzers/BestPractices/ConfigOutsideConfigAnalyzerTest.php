@@ -1376,4 +1376,209 @@ PHP;
         $this->assertWarning($result);
         $this->assertHasIssueContaining('URL', $result);
     }
+
+    public function test_marker_named_registrable_domains_are_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LinkService
+{
+    private $articles = 'https://dev.to/someone/an-article';
+    private $api = 'https://api.dev.to/articles';
+    private $blog = 'https://my-dev.to/posts';
+    private $tool = 'https://test.io/pricing';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LinkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_marker_in_middle_subdomain_label_is_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api.dev.myapp.com/users';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_marker_before_two_label_domain_is_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://staging.myapp.co/webhook';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_hyphen_suffixed_subdomain_marker_is_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $url = 'https://api-dev.myapp.com/users';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('URL', $result);
+    }
+
+    public function test_marker_prefixed_words_are_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $shop = 'https://devon.myapp.com/shop';
+    private $ops = 'https://devops.myapp.com/runbooks';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_urls_on_reserved_dev_tlds_are_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class ApiService
+{
+    private $valet = 'http://myapp.test/api';
+    private $loopback = 'http://app.localhost/api';
+    private $mdns = 'http://printer.local/status';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/ApiService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(3, $result);
+    }
+
+    public function test_trailing_dot_hosts_are_read_like_their_dotless_form(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LinkService
+{
+    private $articles = 'https://dev.to./someone/an-article';
+    private $valet = 'http://myapp.test./api';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LinkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('myapp.test', $result);
+    }
+
+    public function test_public_dev_tld_is_not_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LinkService
+{
+    private $url = 'https://web.dev/articles/vitals';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LinkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
 }

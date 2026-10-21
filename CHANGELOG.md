@@ -6,10 +6,10 @@
 - `OriginReachabilityChecker::probeFollowingSameHost()` follows same-host redirects and returns a new `RedirectChain` (#499)
 
 ### Changed
-- `phpstan` errors on a level the installed PHPStan does not have, rather than running at level 5 (#504)
+- `phpstan` rejects a level the installed PHPStan does not have with an error naming the valid range, instead of PHPStan's "Level config file not found" (#504)
 
 ### Fixed
-- `missing-error-tracking` reads Nightwatch's flags from the running app's environment, so Vapor or Laravel Cloud installs without a `.env` count (#498)
+- `missing-error-tracking` reads Nightwatch's flags from the running app's environment, so `NIGHTWATCH_ENABLED=false` set on Vapor or Laravel Cloud is reported without a `.env` (#498)
 - `xss-vulnerabilities` no longer grades the CSP of an off-host redirect, such as a Cloudflare Access login page (#499)
 - `xss-vulnerabilities` warns when its CSP check cannot reach the origin, instead of passing (#499)
 - `phpstan` passes `'max'` through to PHPStan, instead of running at level 5 (#504)

@@ -594,9 +594,17 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        // Get configuration with proper type handling
-        $levelConfig = $this->config->get('shieldci.analyzers.reliability.phpstan.level', 5);
-        $level = is_int($levelConfig) ? $levelConfig : (is_numeric($levelConfig) ? (int) $levelConfig : 5);
+        // Checked before PHPStan starts. A value that used to fall back to level 5 ran a
+        // weaker analysis than the one asked for and could still pass, and a level the
+        // installed PHPStan lacks aborted it with a message that did not say why.
+        $configuredLevel = $this->config->get('shieldci.analyzers.reliability.phpstan.level') ?? 5;
+        $level = self::parseLevel($configuredLevel);
+        $installedVersion = $runner->installedVersion();
+        $highestLevel = PHPStanRunner::highestLevel($installedVersion);
+
+        if ($level === null || (is_int($level) && ($level < 0 || $level > $highestLevel))) {
+            return $this->error($this->invalidLevelMessage($configuredLevel, $level, $installedVersion, $highestLevel));
+        }
 
         $paths = $this->resolvePaths();
 
@@ -709,6 +717,69 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $metadata += $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
 
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
+    }
+
+    /**
+     * The configured level as PHPStan takes it, or null when it is not a whole number.
+     *
+     * Any numeric form of a whole number counts, because env() returns strings and a cast
+     * such as (float) env(...) returns 8.0. A negative one is still parsed so that it is
+     * reported as out of range rather than as not an integer. 'max' is matched exactly,
+     * as PHPStan matches it.
+     *
+     * @return int|'max'|null
+     */
+    private static function parseLevel(mixed $configured): int|string|null
+    {
+        if (is_int($configured) || $configured === 'max') {
+            return $configured;
+        }
+
+        if (! is_numeric($configured)) {
+            return null;
+        }
+
+        $number = (float) $configured;
+
+        if (! is_finite($number) || $number !== floor($number)) {
+            return null;
+        }
+
+        // Kept one step outside the widest range before the cast, which wraps a float
+        // beyond the int range around and can land on a level that exists (2^64 gives 0).
+        return (int) max(-1.0, min($number, PHPStanRunner::highestLevel(null) + 1.0));
+    }
+
+    /**
+     * Explain why the configured level cannot be run, and what to set instead.
+     */
+    private function invalidLevelMessage(mixed $configured, ?int $level, ?string $installedVersion, int $highestLevel): string
+    {
+        // As configured, since parseLevel() bounds a level far out of range
+        $shown = is_string($configured) ? trim($configured) : var_export($configured, true);
+
+        $reason = match (true) {
+            $level === null => sprintf(
+                'PHPStan level %s is not an integer',
+                is_scalar($configured) ? var_export($configured, true) : get_debug_type($configured)
+            ),
+            $level === 10 && $highestLevel === 9 => sprintf(
+                'PHPStan level 10 requires PHPStan 2, but the installed version is %s',
+                $installedVersion
+            ),
+            $installedVersion !== null => sprintf(
+                'PHPStan level %s does not exist in the installed PHPStan %s',
+                $shown,
+                $installedVersion
+            ),
+            default => sprintf('PHPStan level %s does not exist', $shown),
+        };
+
+        return sprintf(
+            "%s, so static analysis was not run. Set shieldci.analyzers.reliability.phpstan.level to 0-%d, or 'max'",
+            $reason,
+            $highestLevel
+        );
     }
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Support\PlatformDetector;
@@ -102,12 +103,24 @@ class PHPStanRunner
      * reportUnmatchedIgnoredErrors is sent as false unless a caller passes it, because this
      * run substitutes its own level for the user's and so cannot judge their ignore patterns.
      *
+     * $level is passed to PHPStan as is. 'max' is PHPStan's own keyword for its highest
+     * level, which it resolves itself (9 on PHPStan 1, 10 on PHPStan 2). A level the
+     * installed version does not have makes PHPStan abort, so callers check it against
+     * highestLevel() first.
+     *
      * @param  string|array<string>  $paths
+     * @param  int|'max'  $level
      * @param  array<string, bool>  $parameters
      * @return $this
      */
-    public function analyze(string|array $paths, int $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
+    public function analyze(string|array $paths, int|string $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
     {
+        // Written into the generated config verbatim, where any other string would reach
+        // PHPStan as an invalid level or as extra NEON.
+        if (is_string($level) && $level !== 'max') {
+            throw new \InvalidArgumentException("PHPStan level must be an integer or 'max', got ".var_export($level, true));
+        }
+
         $paths = is_array($paths) ? $paths : [$paths];
         $includes = $this->resolveIncludes();
 
@@ -151,9 +164,10 @@ class PHPStanRunner
      *
      * @param  list<string>  $includes
      * @param  array<string>  $paths
+     * @param  int|'max'  $level
      * @param  array<string, bool>  $parameters
      */
-    private function runPhpstan(array $includes, array $paths, int $level, int $timeout, ?string $memoryLimit, array $parameters): Process
+    private function runPhpstan(array $includes, array $paths, int|string $level, int $timeout, ?string $memoryLimit, array $parameters): Process
     {
         $configFile = $this->generateConfig($includes, $level, $parameters);
         $this->tempConfigFile = $configFile;
@@ -329,9 +343,10 @@ class PHPStanRunner
      * Generate a temporary PHPStan configuration file including the given config files.
      *
      * @param  list<string>  $includes
+     * @param  int|'max'  $level
      * @param  array<string, bool>  $parameters
      */
-    private function generateConfig(array $includes, int $level, array $parameters): string
+    private function generateConfig(array $includes, int|string $level, array $parameters): string
     {
         // The user's config is among the includes, but its level is replaced by ours, so their
         // ignoreErrors patterns are matched against a level they were never written for. At
@@ -372,9 +387,10 @@ class PHPStanRunner
      * ephemeral container filesystems.
      *
      * @param  array<string>  $includes
+     * @param  int|'max'  $level
      * @param  array<string, bool>  $parameters
      */
-    private function buildNeonConfig(array $includes, int $level, array $parameters = []): string
+    private function buildNeonConfig(array $includes, int|string $level, array $parameters = []): string
     {
         $lines = [];
 
@@ -629,6 +645,29 @@ class PHPStanRunner
     public function isAvailable(): bool
     {
         return file_exists($this->basePath.'/vendor/bin/phpstan');
+    }
+
+    /**
+     * The version of the PHPStan this runner launches, or null when it cannot be read.
+     *
+     * Read from the Composer metadata beside vendor/bin/phpstan rather than from
+     * Composer\InstalledVersions, which describes the vendor directory of the running
+     * process. Those are the same directory in an application, but need not be.
+     */
+    public function installedVersion(): ?string
+    {
+        return (new Composer(new Filesystem, $this->basePath))->installedVersion('phpstan/phpstan');
+    }
+
+    /**
+     * The highest rule level a PHPStan version has: 9 on PHPStan 1, 10 on PHPStan 2.
+     *
+     * An unknown version gets 10, the top of the range composer.json admits, so a level
+     * the installed PHPStan may well have is not refused on a guess.
+     */
+    public static function highestLevel(?string $version): int
+    {
+        return $version !== null && str_starts_with(ltrim($version, 'v'), '1.') ? 9 : 10;
     }
 
     /**

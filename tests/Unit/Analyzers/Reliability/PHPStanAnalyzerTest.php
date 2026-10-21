@@ -8,6 +8,7 @@ use Illuminate\Config\Repository;
 use Illuminate\Support\Facades\Artisan;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -35,7 +36,8 @@ class PHPStanAnalyzerTest extends AnalyzerTestCase
         $reliabilityConfig = [
             'enabled' => true,
             'phpstan' => [
-                'level' => $config['level'] ?? 5,
+                // array_key_exists rather than ??, so a test can configure an explicit null.
+                'level' => array_key_exists('level', $config) ? $config['level'] : 5,
                 'paths' => $config['paths'] ?? ['app'],
                 'categories' => $config['categories'] ?? [
                     'dead-code',
@@ -359,36 +361,169 @@ PHP;
 
     public function test_respects_custom_phpstan_level(): void
     {
-        $code = <<<'PHP'
-<?php
+        [$result, $config] = $this->analyzeAtLevel(8, '2.2.17');
 
-namespace App\Services;
-
-class StrictService
-{
-    public function process($input)
-    {
-        return strtoupper($input);
-    }
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory(['app/Services/StrictService.php' => $code]);
-
-        // Create mock PHPStan (no issues for this test - just verify level config)
-        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript([]));
-
-        // Use level 8 (stricter)
-        $analyzer = $this->createAnalyzer([
-            'level' => 8,
-        ]);
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $result = $analyzer->analyze();
-
-        // Verify that the analyzer ran successfully
         $this->assertPassed($result);
+        $this->assertStringContainsString("level: 8\n", (string) $config);
+    }
+
+    public function test_passes_max_level_through_to_phpstan(): void
+    {
+        // 'max' used to fail is_numeric() and quietly run at level 5, so asking for the
+        // strictest checks returned a pass from medium-strength ones.
+        [$result, $config] = $this->analyzeAtLevel('max', '1.12.34');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: max\n", (string) $config);
+    }
+
+    public function test_accepts_an_integer_string_level(): void
+    {
+        // env('SHIELDCI_PHPSTAN_LEVEL', 5) returns a string whenever the variable is set.
+        [$result, $config] = $this->analyzeAtLevel('8', '2.2.17');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 8\n", (string) $config);
+    }
+
+    /**
+     * @dataProvider wholeNumberLevelProvider
+     */
+    #[DataProvider('wholeNumberLevelProvider')]
+    public function test_accepts_a_whole_number_level_in_any_numeric_form(float|string $level): void
+    {
+        [$result, $config] = $this->analyzeAtLevel($level, '2.2.17');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 8\n", (string) $config);
+    }
+
+    /**
+     * @return array<string, array{float|string}>
+     */
+    public static function wholeNumberLevelProvider(): array
+    {
+        return [
+            // A numeric cast such as (float) env(...) yields a float.
+            'whole float' => [8.0],
+            'whole decimal string' => ['8.0'],
+            // A quoted .env value keeps its spaces.
+            'padded integer string' => [' 8 '],
+        ];
+    }
+
+    public function test_null_level_runs_at_the_default_level(): void
+    {
+        [$result, $config] = $this->analyzeAtLevel(null, '2.2.17');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 5\n", (string) $config);
+    }
+
+    public function test_level_10_runs_on_phpstan_2(): void
+    {
+        [$result, $config] = $this->analyzeAtLevel(10, '2.2.17');
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 10\n", (string) $config);
+    }
+
+    public function test_level_10_on_phpstan_1_errors_without_running_phpstan(): void
+    {
+        [$result, $config] = $this->analyzeAtLevel(10, '1.12.34');
+
+        $this->assertError($result);
+        $this->assertNull($config, 'PHPStan should not have been started');
+        $this->assertSame(
+            "PHPStan level 10 requires PHPStan 2, but the installed version is 1.12.34, so static analysis was not run. Set shieldci.analyzers.reliability.phpstan.level to 0-9, or 'max'",
+            $result->getMessage()
+        );
+    }
+
+    /**
+     * @dataProvider nonexistentLevelProvider
+     */
+    #[DataProvider('nonexistentLevelProvider')]
+    public function test_nonexistent_level_errors_without_running_phpstan(int|float|string $level, string $shown): void
+    {
+        [$result, $config] = $this->analyzeAtLevel($level, '2.2.17');
+
+        $this->assertError($result);
+        $this->assertNull($config, 'PHPStan should not have been started');
+        $this->assertSame(
+            "PHPStan level {$shown} does not exist in the installed PHPStan 2.2.17, so static analysis was not run. Set shieldci.analyzers.reliability.phpstan.level to 0-10, or 'max'",
+            $result->getMessage()
+        );
+    }
+
+    /**
+     * @return array<string, array{int|float|string, string}>
+     */
+    public static function nonexistentLevelProvider(): array
+    {
+        return [
+            'above the highest level' => [11, '11'],
+            'negative' => [-1, '-1'],
+            'negative integer string' => ['-1', '-1'],
+            // Shown as configured: the int cast saturates to PHP_INT_MAX.
+            'integer string beyond the int range' => ['99999999999999999999', '99999999999999999999'],
+            // 2^64: the int cast wraps it around to 0, a level that exists.
+            'float beyond the int range' => [1.8446744073709552E+19, '1.8446744073709552E+19'],
+        ];
+    }
+
+    /**
+     * @dataProvider nonIntegerLevelProvider
+     */
+    #[DataProvider('nonIntegerLevelProvider')]
+    public function test_non_integer_level_errors_without_running_phpstan(mixed $level, string $shown): void
+    {
+        [$result, $config] = $this->analyzeAtLevel($level, '2.2.17');
+
+        $this->assertError($result);
+        $this->assertNull($config, 'PHPStan should not have been started');
+        $this->assertSame(
+            "PHPStan level {$shown} is not an integer, so static analysis was not run. Set shieldci.analyzers.reliability.phpstan.level to 0-10, or 'max'",
+            $result->getMessage()
+        );
+    }
+
+    /**
+     * @return array<string, array{mixed, string}>
+     */
+    public static function nonIntegerLevelProvider(): array
+    {
+        return [
+            'word' => ['eight', "'eight'"],
+            // Decimals used to be truncated without notice.
+            'float' => [8.9, '8.9'],
+            'decimal string' => ['8.9', "'8.9'"],
+            // PHPStan itself only knows the lowercase keyword.
+            'uppercase keyword' => ['MAX', "'MAX'"],
+            'boolean' => [true, 'true'],
+            'array' => [[8], 'array'],
+        ];
+    }
+
+    public function test_level_10_runs_when_the_installed_version_is_unknown(): void
+    {
+        // Without Composer's metadata no level inside the supported range is refused.
+        [$result, $config] = $this->analyzeAtLevel(10, null);
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString("level: 10\n", (string) $config);
+    }
+
+    public function test_nonexistent_level_errors_when_the_installed_version_is_unknown(): void
+    {
+        [$result, $config] = $this->analyzeAtLevel(11, null);
+
+        $this->assertError($result);
+        $this->assertNull($config, 'PHPStan should not have been started');
+        $this->assertSame(
+            "PHPStan level 11 does not exist, so static analysis was not run. Set shieldci.analyzers.reliability.phpstan.level to 0-10, or 'max'",
+            $result->getMessage()
+        );
     }
 
     public function test_respects_custom_paths(): void
@@ -1614,6 +1749,55 @@ PHP;
         @mkdir($tempDir.'/vendor/bin', 0755, true);
 
         file_put_contents($tempDir.'/vendor/bin/phpstan', "<?php\n\n".$php);
+    }
+
+    /**
+     * Run the analyzer at a configured level and return the result with the config PHPStan got.
+     *
+     * The runner deletes its generated config once PHPStan exits, so the stub copies it
+     * aside. A null config means PHPStan was never started. A null version leaves out
+     * Composer's metadata, as a vendor directory without it would.
+     *
+     * @return array{ResultInterface, ?string}
+     */
+    private function analyzeAtLevel(mixed $level, ?string $installedVersion): array
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Services/AppService.php' => "<?php\n\nnamespace App\\Services;\n\nclass AppService {}\n",
+        ]);
+
+        if ($installedVersion !== null) {
+            @mkdir($tempDir.'/vendor/composer', 0755, true);
+            file_put_contents($tempDir.'/vendor/composer/installed.json', (string) json_encode([
+                'packages' => [['name' => 'phpstan/phpstan', 'version' => $installedVersion]],
+                'dev' => true,
+                'dev-package-names' => [],
+            ]));
+        }
+
+        $captured = $tempDir.'/captured_config.neon';
+
+        $this->writePHPStanStub($tempDir, sprintf(
+            <<<'PHP'
+            foreach (array_slice($argv, 1) as $arg) {
+                if (str_starts_with($arg, '--configuration=') && is_file(substr($arg, 16))) {
+                    copy(substr($arg, 16), %s);
+                }
+            }
+
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($captured, true)
+        ));
+
+        $analyzer = $this->createAnalyzer(['level' => $level]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        return [$result, is_file($captured) ? (string) file_get_contents($captured) : null];
     }
 
     /**

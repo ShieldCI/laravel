@@ -1463,7 +1463,7 @@ namespace App\Services;
 
 class ApiService
 {
-    private $url = 'https://api.dev.myapp.com/users';
+    private $url = 'https://api-dev.myapp.com/users';
 }
 PHP;
 
@@ -1529,6 +1529,33 @@ PHP;
 
         $this->assertWarning($result);
         $this->assertIssueCount(3, $result);
+    }
+
+    public function test_trailing_dot_hosts_are_read_like_their_dotless_form(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LinkService
+{
+    private $articles = 'https://dev.to./someone/an-article';
+    private $valet = 'http://myapp.test./api';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/LinkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('myapp.test', $result);
     }
 
     public function test_public_dev_tld_is_not_flagged(): void

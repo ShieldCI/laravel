@@ -380,7 +380,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        $labels = explode('.', $host);
+        // A fully qualified host may end in a dot (dev.to.), which would leave an empty last label
+        $labels = explode('.', rtrim($host, '.'));
 
         // A reserved TLD (e.g. a Valet myapp.test site) can only be a local environment
         if (in_array(end($labels), self::RESERVED_DEV_TLDS, true)) {

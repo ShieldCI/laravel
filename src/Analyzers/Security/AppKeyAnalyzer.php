@@ -238,8 +238,8 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
         $cipher = strtolower($cipherEntry['value']);
 
-        // Laravel supports AES-128-CBC and AES-256-CBC
-        if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
+        // The ciphers Illuminate\Encryption\Encrypter accepts on every supported Laravel version
+        if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc', 'aes-128-gcm', 'aes-256-gcm'], true)) {
             $issues[] = $this->createIssueWithSnippet(
                 message: $cipher === ''
                     ? 'Cipher is empty in config/app.php'
@@ -247,7 +247,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 filePath: $appConfig,
                 lineNumber: $cipherEntry['line'],
                 severity: Severity::High,
-                recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
+                recommendation: 'Use a cipher Laravel\'s encrypter supports: AES-256-GCM, AES-128-GCM, AES-256-CBC or AES-128-CBC. The GCM modes also authenticate the encrypted payload.',
                 metadata: [
                     'file' => 'app.php',
                     'config_key' => 'cipher',

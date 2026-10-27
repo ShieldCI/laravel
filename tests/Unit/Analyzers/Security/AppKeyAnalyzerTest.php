@@ -230,6 +230,36 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Unsupported or weak cipher', $result);
+        $this->assertStringContainsString('AES-256-GCM', $result->getIssues()[0]->recommendation);
+    }
+
+    /** @dataProvider supportedCipherProvider */
+    #[DataProvider('supportedCipherProvider')]
+    public function test_passes_with_every_cipher_laravel_supports(string $cipher): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => '{$cipher}',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function supportedCipherProvider(): array
+    {
+        return [
+            'AES-128-CBC' => ['AES-128-CBC'],
+            'AES-256-CBC' => ['AES-256-CBC'],
+            'AES-128-GCM' => ['AES-128-GCM'],
+            'AES-256-GCM' => ['AES-256-GCM'],
+            'lowercase aes-256-gcm' => ['aes-256-gcm'],
+        ];
     }
 
     public function test_passes_with_aes_128_cbc_cipher(): void

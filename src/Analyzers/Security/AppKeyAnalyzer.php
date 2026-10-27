@@ -8,7 +8,9 @@ use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -208,64 +210,50 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $content = FileParser::readFile($appConfig);
-        if ($content === null) {
+        // Read the returned array rather than the raw lines, so a commented-out entry or one
+        // nested under another key is not mistaken for app.key or app.cipher.
+        $config = (new ConfigFileParser(app(AstParser::class)))->parseArray($appConfig);
+
+        $key = $config['key'] ?? null;
+
+        if ($key !== null && is_string($key['value']) && $key['value'] !== '') {
+            $issues[] = $this->createIssueWithSnippet(
+                message: 'Application key is hardcoded in config/app.php instead of using environment variable',
+                filePath: $appConfig,
+                lineNumber: $key['line'],
+                severity: Severity::Critical,
+                recommendation: 'Reference the APP_KEY environment variable in config/app.php rather than hardcoding the key directly in the configuration file.',
+                metadata: [
+                    'file' => 'app.php',
+                    'config_key' => 'key',
+                ]
+            );
+        }
+
+        $cipherEntry = $config['cipher'] ?? null;
+
+        if ($cipherEntry === null || ! is_string($cipherEntry['value'])) {
             return;
         }
 
-        $lines = FileParser::getLines($appConfig);
+        $cipher = strtolower($cipherEntry['value']);
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Check for hardcoded key (security issue)
-            // Skip if it's using env()
-            if (preg_match('/["\']key["\']\s*=>\s*env\s*\(/i', $line)) {
-                continue;
-            }
-
-            // Check for hardcoded key value
-            if (preg_match('/["\']key["\']\s*=>\s*["\'][^"\']+["\']/i', $line)) {
-                // Check if it's a real hardcoded key (not a comment or documentation)
-                if (! preg_match('/^\s*\/\/|^\s*\*/', $line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Application key is hardcoded in config/app.php instead of using environment variable',
-                        filePath: $appConfig,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Reference the APP_KEY environment variable in config/app.php rather than hardcoding the key directly in the configuration file.',
-                        metadata: [
-                            'file' => 'app.php',
-                            'config_key' => 'key',
-                        ]
-                    );
-                }
-            }
-
-            // Check for insecure cipher configuration
-            if (preg_match('/["\']cipher["\']\s*=>\s*["\']([^"\']+)["\']/i', $line, $matches)) {
-
-                $cipher = strtolower($matches[1]);
-
-                // Laravel supports AES-128-CBC and AES-256-CBC
-                if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
-                        filePath: $appConfig,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
-                        metadata: [
-                            'file' => 'app.php',
-                            'config_key' => 'cipher',
-                            'cipher' => $cipher,
-                        ]
-                    );
-                }
-
-            }
+        // Laravel supports AES-128-CBC and AES-256-CBC
+        if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
+            $issues[] = $this->createIssueWithSnippet(
+                message: $cipher === ''
+                    ? 'Cipher is empty in config/app.php'
+                    : sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
+                filePath: $appConfig,
+                lineNumber: $cipherEntry['line'],
+                severity: Severity::High,
+                recommendation: 'Use "AES-256-CBC" or "AES-128-CBC" cipher',
+                metadata: [
+                    'file' => 'app.php',
+                    'config_key' => 'cipher',
+                    'cipher' => $cipher,
+                ]
+            );
         }
     }
 

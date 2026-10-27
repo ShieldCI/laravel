@@ -96,7 +96,8 @@
                 "PKSA-w7xr-vk7n-rstm": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
                 "PKSA-mdq4-51ck-6kdq": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
                 "PKSA-q46n-4fdk-zjr4": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
-                "PKSA-qzrn-rnz3-85w1": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions"
+                "PKSA-qzrn-rnz3-85w1": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions",
+                "PKSA-b41t-wbzk-9q51": "Dev-only: Laravel framework advisory pulled via orchestra/testbench for testing older Laravel versions"
             }
         }
     },

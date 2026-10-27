@@ -397,6 +397,116 @@ PHP;
         $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
+    /** @dataProvider commentedHardcodedDebugProvider */
+    #[DataProvider('commentedHardcodedDebugProvider')]
+    public function test_ignores_hardcoded_debug_true_in_comments(string $commented): void
+    {
+        $appConfig = "<?php\n\nreturn [\n{$commented}\n    'debug' => (bool) env('APP_DEBUG', false),\n];\n";
+
+        $tempDir = $this->createTempDirectory([
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function commentedHardcodedDebugProvider(): array
+    {
+        return [
+            'double-slash comment' => ["    // 'debug' => true,"],
+            'hash comment' => ["    # 'debug' => true,"],
+            'docblock prose' => ["    /*\n     * Never ship 'debug' => true to a live server.\n     */"],
+            'inline block comment' => ["    /* 'debug' => true, */"],
+        ];
+    }
+
+    public function test_detects_hardcoded_debug_true_with_env_in_trailing_comment(): void
+    {
+        $appConfig = <<<'PHP'
+<?php
+
+return [
+    'name' => 'Inventory',
+    'debug' => true, // restore 'debug' => env('APP_DEBUG') before release
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('Debug mode hardcoded to true in config/app.php', $issues[0]->message);
+        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertSame(5, $issues[0]->location?->line);
+    }
+
+    public function test_ignores_debug_key_nested_under_another_config_key(): void
+    {
+        $appConfig = <<<'PHP'
+<?php
+
+return [
+    'debug' => (bool) env('APP_DEBUG', false),
+    'reporting' => [
+        'debug' => true,
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_reports_hardcoded_debug_on_the_key_line(): void
+    {
+        $appConfig = <<<'PHP'
+<?php
+
+return [
+    'name' => env('APP_NAME', 'Inventory'),
+
+    'env' => env('APP_ENV', 'production'),
+
+    'debug' => true,
+
+    'url' => env('APP_URL', 'http://localhost'),
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Debug mode hardcoded to true in config/app.php', $issues[0]->message);
+        $this->assertSame(8, $issues[0]->location?->line);
+    }
+
     // =================================================================
     // Debug Function Tests
     // =================================================================

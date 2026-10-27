@@ -24,6 +24,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\ConfigFileHelper;
+use ShieldCI\AnalyzersCore\Support\ConfigFileParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
@@ -222,34 +223,30 @@ class DebugModeAnalyzer extends AbstractFileAnalyzer
 
         // Check app.php for hardcoded debug=true
         $appConfig = ConfigFileHelper::getConfigPath($basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-        if (file_exists($appConfig)) {
-            $lines = FileParser::getLines($appConfig);
-
-            foreach ($lines as $lineNumber => $line) {
-                if (! is_string($line)) {
-                    continue;
-                }
-
-                if (preg_match('/["\']debug["\']\s*=>\s*env\s*\(/i', $line)) {
-                    continue;
-                }
-
-                if (preg_match('/["\']debug["\']\s*=>\s*true\b/i', $line)) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Debug mode hardcoded to true in config/app.php',
-                        filePath: $appConfig,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Reference the APP_DEBUG environment variable in config/app.php instead of hardcoding the debug flag. Default it to false so production deployments are safe without explicit configuration.',
-                        metadata: [
-                            'file' => 'app.php',
-                            'config_key' => 'debug',
-                            'value' => 'true',
-                        ]
-                    );
-                }
-            }
+        if (! file_exists($appConfig)) {
+            return;
         }
+
+        // Read the returned array rather than the raw lines, so a commented-out entry or one
+        // nested under another key is not mistaken for app.debug.
+        $debug = (new ConfigFileParser($this->parser))->parseArray($appConfig)['debug'] ?? null;
+
+        if ($debug === null || $debug['value'] !== true) {
+            return;
+        }
+
+        $issues[] = $this->createIssueWithSnippet(
+            message: 'Debug mode hardcoded to true in config/app.php',
+            filePath: $appConfig,
+            lineNumber: $debug['line'],
+            severity: Severity::Critical,
+            recommendation: 'Reference the APP_DEBUG environment variable in config/app.php instead of hardcoding the debug flag. Default it to false so production deployments are safe without explicit configuration.',
+            metadata: [
+                'file' => 'app.php',
+                'config_key' => 'debug',
+                'value' => 'true',
+            ]
+        );
     }
 
     /**

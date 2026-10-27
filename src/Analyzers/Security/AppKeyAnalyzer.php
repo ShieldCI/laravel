@@ -241,7 +241,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         // Laravel supports AES-128-CBC and AES-256-CBC
         if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc'], true)) {
             $issues[] = $this->createIssueWithSnippet(
-                message: sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
+                message: $cipher === ''
+                    ? 'Cipher is empty in config/app.php'
+                    : sprintf('Unsupported or weak cipher algorithm: %s', $cipher),
                 filePath: $appConfig,
                 lineNumber: $cipherEntry['line'],
                 severity: Severity::High,

@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\AppKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class AppKeyAnalyzerTest extends AnalyzerTestCase
@@ -775,6 +776,39 @@ PHP;
         $this->assertSame(6, $issues[0]->location?->line);
         $this->assertSame('Unsupported or weak cipher algorithm: des', $issues[1]->message);
         $this->assertSame(8, $issues[1]->location?->line);
+    }
+
+    public function test_fails_when_cipher_is_empty_string(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => '',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Cipher is empty in config/app.php', $issues[0]->message);
+        $this->assertSame(5, $issues[0]->location?->line);
+    }
+
+    public function test_records_unparseable_app_config_on_the_shared_parser(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => 'base64:c3RhbGUta2V5LWZyb20tYW4tb2xkLWRlcGxveQ==',\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+
+        // The report's parse_failures section reads this log, so the broken file is surfaced there
+        $this->assertTrue(app(AstParser::class)->hasFailure($tempDir.'/config/app.php'));
     }
 
     public function test_passes_with_valid_aes_256_key(): void

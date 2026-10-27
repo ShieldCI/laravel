@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\AppKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -657,6 +658,123 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    /** @dataProvider commentedConfigEntryProvider */
+    #[DataProvider('commentedConfigEntryProvider')]
+    public function test_ignores_hardcoded_entries_in_comments(string $commented): void
+    {
+        $configContent = "<?php\n\nreturn [\n{$commented}\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n";
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function commentedConfigEntryProvider(): array
+    {
+        return [
+            'hash comment key' => ["    # 'key' => 'base64:c3RhbGUta2V5LWZyb20tYW4tb2xkLWRlcGxveQ==',"],
+            'inline block comment key' => ["    /* 'key' => 'base64:c3RhbGUta2V5LWZyb20tYW4tb2xkLWRlcGxveQ==', */"],
+            'docblock prose key' => ["    /*\n     * Never write 'key' => 'base64:...' here.\n     */"],
+            'double-slash comment cipher' => ["    // 'cipher' => 'DES',"],
+            'hash comment cipher' => ["    # 'cipher' => 'RC4',"],
+        ];
+    }
+
+    public function test_fails_when_hardcoded_key_has_env_in_trailing_comment(): void
+    {
+        $configContent = <<<'PHP'
+<?php
+
+return [
+    'name' => 'Inventory',
+    'key' => 'base64:c3RhbGUta2V5LWZyb20tYW4tb2xkLWRlcGxveQ==', // was 'key' => env('APP_KEY'),
+    'cipher' => 'AES-256-CBC',
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('Application key is hardcoded in config/app.php instead of using environment variable', $issues[0]->message);
+        $this->assertSame(5, $issues[0]->location?->line);
+    }
+
+    public function test_ignores_key_and_cipher_nested_under_another_config_key(): void
+    {
+        $configContent = <<<'PHP'
+<?php
+
+return [
+    'key' => env('APP_KEY'),
+    'cipher' => 'AES-256-CBC',
+    'reporting' => [
+        'key' => 'abc123',
+        'cipher' => 'none',
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_reports_hardcoded_key_and_weak_cipher_on_their_key_lines(): void
+    {
+        $configContent = <<<'PHP'
+<?php
+
+return [
+    'name' => env('APP_NAME', 'Inventory'),
+
+    'key' => 'base64:c3RhbGUta2V5LWZyb20tYW4tb2xkLWRlcGxveQ==',
+
+    'cipher' => 'DES',
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => $configContent,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(2, $issues);
+        $this->assertSame('Application key is hardcoded in config/app.php instead of using environment variable', $issues[0]->message);
+        $this->assertSame(6, $issues[0]->location?->line);
+        $this->assertSame('Unsupported or weak cipher algorithm: des', $issues[1]->message);
+        $this->assertSame(8, $issues[1]->location?->line);
     }
 
     public function test_passes_with_valid_aes_256_key(): void

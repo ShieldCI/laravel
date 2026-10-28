@@ -23,6 +23,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - APP_KEY is set in .env files
  * - APP_KEY is not the default/example value
  * - APP_KEY follows proper format (base64: prefix)
+ * - APP_KEY is the size the configured cipher needs
  * - config/app.php has proper key configuration
  */
 class AppKeyAnalyzer extends AbstractFileAnalyzer
@@ -31,6 +32,17 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * App key configuration is environment-specific, not applicable in CI.
      */
     public static bool $runInCI = false;
+
+    /**
+     * Key size in bytes for each cipher Illuminate\Encryption\Encrypter accepts, on every
+     * supported Laravel version. The encrypter rejects a key of any other size.
+     */
+    private const CIPHER_KEY_BYTES = [
+        'aes-128-cbc' => 16,
+        'aes-256-cbc' => 32,
+        'aes-128-gcm' => 16,
+        'aes-256-gcm' => 32,
+    ];
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -61,11 +73,21 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
 
+        $appConfig = ConfigFileHelper::getConfigPath($this->getBasePath(), 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
+
+        // Read the returned array rather than the raw lines, so a commented-out entry or one
+        // nested under another key is not mistaken for app.key or app.cipher.
+        $config = file_exists($appConfig)
+            ? (new ConfigFileParser(app(AstParser::class)))->parseArray($appConfig)
+            : null;
+
         // Check .env file for APP_KEY
-        $this->checkEnvFile($issues);
+        $this->checkEnvFile($issues, $this->effectiveCipher($appConfig, $config));
 
         // Check config/app.php
-        $this->checkAppConfig($issues);
+        if ($config !== null) {
+            $this->checkAppConfig($issues, $appConfig, $config);
+        }
 
         $summary = empty($issues)
             ? 'Application encryption key is properly configured'
@@ -79,9 +101,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * Check .env file for APP_KEY configuration.
      *
      * @param  array<int, mixed>  &$issues
+     * @param  string|null  $cipher  The cipher the encrypter runs with, or null when it cannot be read
      */
-    private function checkEnvFile(array &$issues): void
+    private function checkEnvFile(array &$issues, ?string $cipher): void
     {
+        $requiredBytes = $cipher === null ? null : self::CIPHER_KEY_BYTES[$cipher];
+
         $envFile = $this->buildPath('.env');
 
         if (! file_exists($envFile)) {
@@ -168,16 +193,31 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                     );
                 }
                 // Validate APP_KEY format and strength
-                elseif (! $this->isValidAppKey($appKeyValue)) {
+                elseif (! $this->isValidAppKey($appKeyValue, $requiredBytes)) {
                     $issues[] = $this->createIssue(
                         message: 'APP_KEY does not follow the expected format or is too short',
                         location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
                         severity: Severity::High,
-                        recommendation: 'Ensure APP_KEY is properly generated with "php artisan key:generate". Valid keys must be at least 32 characters or use base64: prefix with properly encoded content (minimum 16 bytes decoded).',
+                        recommendation: 'Regenerate APP_KEY with "php artisan key:generate". Laravel\'s encrypter needs a key of exactly the cipher\'s size: a base64: key that decodes to 32 bytes for the AES-256 ciphers or 16 bytes for the AES-128 ciphers.',
                         metadata: [
                             'file' => basename($envFile),
                             'provided_length' => strlen($normalizedValue),
-                            'minimum_length' => 32,
+                            'minimum_length' => $requiredBytes ?? 32,
+                        ]
+                    );
+                }
+                // Validate APP_KEY size against the cipher the encrypter runs with
+                elseif ($cipher !== null && ($keyBytes = $this->keyByteLength($normalizedValue)) !== $requiredBytes) {
+                    $issues[] = $this->createIssue(
+                        message: sprintf('APP_KEY is %d bytes but the %s cipher needs a %d-byte key', $keyBytes, strtoupper($cipher), $requiredBytes),
+                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
+                        severity: Severity::Critical,
+                        recommendation: 'Laravel\'s encrypter only accepts a key of exactly the cipher\'s size and throws on any other, which fails every request that touches an encrypted cookie. Generate a key for the configured cipher with "php artisan key:generate", or set the cipher back to the one this key was generated for so existing encrypted data stays readable.',
+                        metadata: [
+                            'file' => basename($envFile),
+                            'cipher' => $cipher,
+                            'key_bytes' => $keyBytes,
+                            'required_bytes' => $requiredBytes,
                         ]
                     );
                 }
@@ -200,20 +240,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * Check config/app.php for key configuration.
      *
      * @param  array<int, mixed>  &$issues
+     * @param  array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>  $config
      */
-    private function checkAppConfig(array &$issues): void
+    private function checkAppConfig(array &$issues, string $appConfig, array $config): void
     {
-        $basePath = $this->getBasePath();
-        $appConfig = ConfigFileHelper::getConfigPath($basePath, 'app.php', fn ($file) => function_exists('config_path') ? config_path($file) : null);
-
-        if (! file_exists($appConfig)) {
-            return;
-        }
-
-        // Read the returned array rather than the raw lines, so a commented-out entry or one
-        // nested under another key is not mistaken for app.key or app.cipher.
-        $config = (new ConfigFileParser(app(AstParser::class)))->parseArray($appConfig);
-
         $key = $config['key'] ?? null;
 
         if ($key !== null && is_string($key['value']) && $key['value'] !== '') {
@@ -238,8 +268,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
         $cipher = strtolower($cipherEntry['value']);
 
-        // The ciphers Illuminate\Encryption\Encrypter accepts on every supported Laravel version
-        if (! in_array($cipher, ['aes-128-cbc', 'aes-256-cbc', 'aes-128-gcm', 'aes-256-gcm'], true)) {
+        if (! isset(self::CIPHER_KEY_BYTES[$cipher])) {
             $issues[] = $this->createIssueWithSnippet(
                 message: $cipher === ''
                     ? 'Cipher is empty in config/app.php'
@@ -255,6 +284,38 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 ]
             );
         }
+    }
+
+    /**
+     * The cipher the encrypter runs with, lowercased, or null when config/app.php does not say.
+     *
+     * An unpublished config/app.php, or one without a cipher entry, runs on the framework default.
+     * A file that would not parse, a cipher read from env() or any other expression, and a cipher
+     * the encrypter does not support all answer null, so the key is not sized against a guess.
+     *
+     * @param  array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>|null  $config
+     */
+    private function effectiveCipher(string $appConfig, ?array $config): ?string
+    {
+        if ($config === null) {
+            return 'aes-256-cbc';
+        }
+
+        if (app(AstParser::class)->hasFailure($appConfig)) {
+            return null;
+        }
+
+        if (! isset($config['cipher'])) {
+            return 'aes-256-cbc';
+        }
+
+        $cipher = $config['cipher']['value'];
+
+        if (! is_string($cipher) || ! isset(self::CIPHER_KEY_BYTES[strtolower($cipher)])) {
+            return null;
+        }
+
+        return strtolower($cipher);
     }
 
     /**
@@ -330,8 +391,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Validate APP_KEY format and strength.
+     *
+     * @param  int|null  $requiredBytes  The cipher's key size, or null when the cipher is unknown
      */
-    private function isValidAppKey(string $value): bool
+    private function isValidAppKey(string $value, ?int $requiredBytes): bool
     {
         $normalized = $this->normalizeKeyValue($value);
 
@@ -340,8 +403,21 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return $this->validateBase64Key($normalized);
         }
 
-        // Keys without base64: prefix should be at least 32 characters
-        return strlen($normalized) >= 32;
+        // Keys without base64: prefix should be at least the cipher's size, or 32 characters
+        // when the cipher is unknown
+        return strlen($normalized) >= ($requiredBytes ?? 32);
+    }
+
+    /**
+     * Size in bytes of the key the encrypter receives from an APP_KEY that passed isValidAppKey().
+     */
+    private function keyByteLength(string $normalized): int
+    {
+        if (str_starts_with($normalized, 'base64:')) {
+            return strlen((string) base64_decode(substr($normalized, 7), true));
+        }
+
+        return strlen($normalized);
     }
 
     /**

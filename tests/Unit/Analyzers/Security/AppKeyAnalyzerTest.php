@@ -1171,6 +1171,35 @@ ENV;
         $this->assertSame('Unsupported or weak cipher algorithm: des', $issues[0]->message);
     }
 
+    /** @dataProvider cipherOutsideLiteralKeysProvider */
+    #[DataProvider('cipherOutsideLiteralKeysProvider')]
+    public function test_skips_key_size_check_when_cipher_may_be_set_outside_literal_keys(string $appConfig): void
+    {
+        // shared.php sets the AES-128 cipher this 16-byte key was generated for
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/shared.php' => "<?php\n\nreturn ['cipher' => 'AES-128-CBC'];\n",
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function cipherOutsideLiteralKeysProvider(): array
+    {
+        return [
+            'non-literal return' => ["<?php\n\nreturn array_merge(require __DIR__.'/shared.php', [\n    'key' => env('APP_KEY'),\n]);\n"],
+            'spread entry' => ["<?php\n\nreturn [\n    ...require __DIR__.'/shared.php',\n    'key' => env('APP_KEY'),\n];\n"],
+            'computed key' => ["<?php\n\n\$cipherKey = 'cipher';\n\nreturn [\n    'key' => env('APP_KEY'),\n    \$cipherKey => 'AES-128-CBC',\n];\n"],
+        ];
+    }
+
     public function test_short_key_keeps_format_message_rather_than_size_message(): void
     {
         $tempDir = $this->createTempDirectory([

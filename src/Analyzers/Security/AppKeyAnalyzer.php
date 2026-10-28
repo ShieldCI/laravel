@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\Expr\Array_;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt\Return_;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -290,8 +294,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * The cipher the encrypter runs with, lowercased, or null when config/app.php does not say.
      *
      * An unpublished config/app.php, or one without a cipher entry, runs on the framework default.
-     * A file that would not parse, a cipher read from env() or any other expression, and a cipher
-     * the encrypter does not support all answer null, so the key is not sized against a guess.
+     * A file that would not parse, one whose cipher could come from a spread, a computed key or a
+     * non-literal return, a cipher read from env() or any other expression, and a cipher the
+     * encrypter does not support all answer null, so the key is not sized against a guess.
      *
      * @param  array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>|null  $config
      */
@@ -306,7 +311,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         }
 
         if (! isset($config['cipher'])) {
-            return 'aes-256-cbc';
+            return $this->returnsOnlyLiteralKeys($appConfig) ? 'aes-256-cbc' : null;
         }
 
         $cipher = $config['cipher']['value'];
@@ -316,6 +321,29 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         }
 
         return strtolower($cipher);
+    }
+
+    /**
+     * Whether config/app.php returns an array literal whose every entry has a literal string key.
+     *
+     * Only then is a cipher missing from the parsed entries truly absent: a spread, a computed key
+     * or a non-literal return such as array_merge() can still set it.
+     */
+    private function returnsOnlyLiteralKeys(string $appConfig): bool
+    {
+        $return = (new NodeFinder)->findFirstInstanceOf(app(AstParser::class)->parseFile($appConfig), Return_::class);
+
+        if (! $return instanceof Return_ || ! $return->expr instanceof Array_) {
+            return false;
+        }
+
+        foreach ($return->expr->items as $item) {
+            if (! $item->key instanceof String_) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

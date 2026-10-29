@@ -9,6 +9,7 @@ use ShieldCI\Analyzers\Security\AppKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class AppKeyAnalyzerTest extends AnalyzerTestCase
@@ -1236,6 +1237,227 @@ ENV;
         $this->assertCount(1, $issues);
         $this->assertSame('APP_KEY does not follow the expected format or is too short', $issues[0]->message);
         $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    // ==================== PREVIOUS KEYS AGAINST CIPHER ====================
+
+    private const KEY_16 = 'base64:MDEyMzQ1Njc4OWFiY2RlZg==';
+
+    private const OTHER_KEY_16 = 'base64:ZmVkY2JhOTg3NjU0MzIxMA==';
+
+    private const KEY_32 = 'base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=';
+
+    private const FRAMEWORK_PREVIOUS_KEYS = "    'previous_keys' => [\n        ...array_filter(\n            explode(',', env('APP_PREVIOUS_KEYS', ''))\n        ),\n    ],\n";
+
+    public function test_fails_when_previous_key_size_does_not_match_cipher(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $issues = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig());
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_PREVIOUS_KEYS entry 1 is 32 bytes but the AES-128-GCM cipher needs a 16-byte key', $issues[0]->message);
+        $this->assertSame(Severity::Critical, $issues[0]->severity);
+        $this->assertSame(3, $issues[0]->location?->line);
+        $this->assertSame('.env', $issues[0]->metadata['file']);
+        $this->assertSame(1, $issues[0]->metadata['entry']);
+        $this->assertSame('aes-128-gcm', $issues[0]->metadata['cipher']);
+        $this->assertSame(32, $issues[0]->metadata['key_bytes']);
+        $this->assertSame(16, $issues[0]->metadata['required_bytes']);
+    }
+
+    /**
+     * @dataProvider previousKeysValueProvider
+     *
+     * @param  array<int, string>  $expectedMessages
+     */
+    #[DataProvider('previousKeysValueProvider')]
+    public function test_sizes_each_previous_key_the_way_laravel_parses_the_list(string $value, array $expectedMessages): void
+    {
+        $this->skipBelowLaravel11();
+
+        $issues = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.$value, self::aes128GcmConfig());
+
+        $this->assertSame($expectedMessages, array_map(fn ($issue) => $issue->message, $issues));
+    }
+
+    /**
+     * @return array<string, array{string, array<int, string>}>
+     */
+    public static function previousKeysValueProvider(): array
+    {
+        $wrongSize = fn (int $entry, int $bytes) => sprintf('APP_PREVIOUS_KEYS entry %d is %d bytes but the AES-128-GCM cipher needs a 16-byte key', $entry, $bytes);
+
+        return [
+            'every entry the right size' => [self::KEY_16.','.self::OTHER_KEY_16, []],
+            'second entry the wrong size' => [self::KEY_16.','.self::KEY_32, [$wrongSize(2, 32)]],
+            'every entry the wrong size' => [self::KEY_32.','.self::KEY_32, [$wrongSize(1, 32), $wrongSize(2, 32)]],
+            'an empty entry keeps the raw position' => [self::KEY_16.',,'.self::KEY_32, [$wrongSize(3, 32)]],
+            'trailing comma' => [self::KEY_16.',', []],
+            // No trim: the space hides the base64: prefix, so the 33 raw characters are the key
+            'space after a comma' => [self::KEY_16.', '.self::OTHER_KEY_16, [$wrongSize(2, 32)]],
+            'quoted list' => ['"'.self::KEY_16.','.self::KEY_32.'"', [$wrongSize(2, 32)]],
+            'inline comment' => [self::KEY_32.' # rotated out', [$wrongSize(1, 32)]],
+            'raw key' => ['0123456789abcdef0123456789abcdef', [$wrongSize(1, 32)]],
+            // The framework decodes leniently, dropping the stray character, so this is 16 bytes
+            'stray character in base64' => ['base64:MDEyMzQ1Njc4!OWFiY2RlZg==', []],
+            'empty value' => ['', []],
+            'null' => ['null', []],
+            'empty keyword' => ['(empty)', []],
+            'false' => ['false', []],
+            // env() turns true into a boolean, which explode() reads as "1"
+            'true' => ['true', [$wrongSize(1, 1)]],
+            'interpolated value' => ['${APP_OLD_KEY}', []],
+        ];
+    }
+
+    public function test_sizes_previous_keys_against_default_cipher_when_config_is_unpublished(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY='.self::KEY_32."\nAPP_PREVIOUS_KEYS=".self::KEY_16."\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_PREVIOUS_KEYS entry 1 is 16 bytes but the AES-256-CBC cipher needs a 32-byte key', $issues[0]->message);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    /** @dataProvider previousKeysFromEnvConfigProvider */
+    #[DataProvider('previousKeysFromEnvConfigProvider')]
+    public function test_sizes_previous_keys_when_published_config_reads_them_from_env(string $previousKeys): void
+    {
+        $this->skipBelowLaravel11();
+
+        $issues = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig($previousKeys));
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_PREVIOUS_KEYS entry 1 is 32 bytes but the AES-128-GCM cipher needs a 16-byte key', $issues[0]->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function previousKeysFromEnvConfigProvider(): array
+    {
+        return [
+            // The framework's own entry is merged into a published file that leaves it out
+            'no previous_keys entry' => [''],
+            'framework entry' => [self::FRAMEWORK_PREVIOUS_KEYS],
+            'framework entry with a string cast' => ["    'previous_keys' => [...array_filter(explode(',', (string) env('APP_PREVIOUS_KEYS', '')))],\n"],
+            'framework entry in double quotes' => ["    \"previous_keys\" => [...array_filter(explode(\",\", env(\"APP_PREVIOUS_KEYS\", \"\")))],\n"],
+        ];
+    }
+
+    /** @dataProvider previousKeysNotFromEnvConfigProvider */
+    #[DataProvider('previousKeysNotFromEnvConfigProvider')]
+    public function test_skips_previous_keys_when_config_may_not_read_them_from_env(string $appConfig): void
+    {
+        $this->skipBelowLaravel11();
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY='.self::KEY_16."\nAPP_PREVIOUS_KEYS=".self::KEY_32."\n",
+            'config/shared.php' => "<?php\n\nreturn ['previous_keys' => []];\n",
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function previousKeysNotFromEnvConfigProvider(): array
+    {
+        return [
+            'literal list' => [self::aes128GcmConfig("    'previous_keys' => [],\n")],
+            'another env variable' => [self::aes128GcmConfig("    'previous_keys' => [...array_filter(explode(',', env('OLD_APP_KEYS', '')))],\n")],
+            'spread after previous_keys' => ["<?php\n\nreturn [\n".self::FRAMEWORK_PREVIOUS_KEYS."    ...require __DIR__.'/shared.php',\n    'cipher' => 'AES-128-GCM',\n];\n"],
+            'computed key after previous_keys' => ["<?php\n\n\$previous = 'previous_keys';\n\nreturn [\n".self::FRAMEWORK_PREVIOUS_KEYS."    \$previous => [],\n    'cipher' => 'AES-128-GCM',\n];\n"],
+            'cipher from env' => ["<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => env('APP_CIPHER', 'AES-128-GCM'),\n];\n"],
+        ];
+    }
+
+    public function test_skips_previous_keys_when_framework_config_is_not_merged(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $app = app();
+
+        if (! method_exists($app, 'dontMergeFrameworkConfiguration')) {
+            $this->markTestSkipped('Running on Laravel '.$app->version().', which always merges the framework configuration.');
+        }
+
+        $app->dontMergeFrameworkConfiguration();
+
+        $this->assertSame([], $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig()));
+    }
+
+    public function test_ignores_commented_out_previous_keys(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $this->assertSame([], $this->analyzePreviousKeys('# APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig()));
+    }
+
+    public function test_sizes_the_last_previous_keys_definition(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $passing = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32."\nAPP_PREVIOUS_KEYS=".self::KEY_16, self::aes128GcmConfig());
+        $failing = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_16."\nAPP_PREVIOUS_KEYS=".self::KEY_32, self::aes128GcmConfig());
+
+        $this->assertSame([], $passing);
+        $this->assertCount(1, $failing);
+        $this->assertSame(4, $failing[0]->location?->line);
+    }
+
+    public function test_ignores_previous_keys_before_laravel_11(): void
+    {
+        if (version_compare(app()->version(), '11.0.0', '>=')) {
+            $this->markTestSkipped('Running on Laravel '.app()->version().', which reads APP_PREVIOUS_KEYS.');
+        }
+
+        $this->assertSame([], $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig()));
+    }
+
+    private function skipBelowLaravel11(): void
+    {
+        if (version_compare(app()->version(), '11.0.0', '<')) {
+            $this->markTestSkipped('Running on Laravel '.app()->version().', which does not read APP_PREVIOUS_KEYS.');
+        }
+    }
+
+    private static function aes128GcmConfig(string $entries = ''): string
+    {
+        return "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-128-GCM',\n{$entries}];\n";
+    }
+
+    /**
+     * Analyze a .env whose 16-byte APP_KEY suits AES-128 and whose third line is $previousKeysLine.
+     *
+     * @return array<int, Issue>
+     */
+    private function analyzePreviousKeys(string $previousKeysLine, string $appConfig): array
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => "APP_NAME=Inventory\nAPP_KEY=".self::KEY_16."\n{$previousKeysLine}\n",
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze()->getIssues();
     }
 
     // ==================== SHOULD RUN TESTS ====================

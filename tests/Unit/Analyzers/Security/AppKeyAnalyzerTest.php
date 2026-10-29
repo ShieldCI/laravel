@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\AppKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -235,10 +236,10 @@ PHP;
 
     /** @dataProvider supportedCipherProvider */
     #[DataProvider('supportedCipherProvider')]
-    public function test_passes_with_every_cipher_laravel_supports(string $cipher): void
+    public function test_passes_with_every_cipher_laravel_supports(string $cipher, string $key): void
     {
         $tempDir = $this->createTempDirectory([
-            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            '.env' => 'APP_KEY='.$key,
             'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => '{$cipher}',\n];\n",
         ]);
 
@@ -249,23 +250,23 @@ PHP;
     }
 
     /**
-     * @return array<string, array{string}>
+     * @return array<string, array{string, string}>
      */
     public static function supportedCipherProvider(): array
     {
         return [
-            'AES-128-CBC' => ['AES-128-CBC'],
-            'AES-256-CBC' => ['AES-256-CBC'],
-            'AES-128-GCM' => ['AES-128-GCM'],
-            'AES-256-GCM' => ['AES-256-GCM'],
-            'lowercase aes-256-gcm' => ['aes-256-gcm'],
+            'AES-128-CBC' => ['AES-128-CBC', 'base64:MDEyMzQ1Njc4OWFiY2RlZg=='],
+            'AES-256-CBC' => ['AES-256-CBC', 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA='],
+            'AES-128-GCM' => ['AES-128-GCM', 'base64:MDEyMzQ1Njc4OWFiY2RlZg=='],
+            'AES-256-GCM' => ['AES-256-GCM', 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA='],
+            'lowercase aes-256-gcm' => ['aes-256-gcm', 'base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA='],
         ];
     }
 
     public function test_passes_with_aes_128_cbc_cipher(): void
     {
         $envContent = <<<'ENV'
-APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=
+APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==
 ENV;
 
         $configContent = <<<'PHP'
@@ -869,6 +870,7 @@ ENV;
 
         $tempDir = $this->createTempDirectory([
             '.env' => $envContent,
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-128-CBC',\n];\n",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -996,6 +998,7 @@ ENV;
 
         $tempDir = $this->createTempDirectory([
             '.env' => $envContent,
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-128-CBC',\n];\n",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1008,9 +1011,9 @@ ENV;
 
     public function test_passes_with_no_padding(): void
     {
-        // Valid key that doesn't require padding (24 bytes = 32 chars, no padding needed)
+        // A 32-byte key with its trailing padding removed still decodes to 32 bytes
         $envContent = <<<'ENV'
-APP_KEY=base64:YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4
+APP_KEY=base64:5jIQITq0dF4pGlRzzvExUkqoGtkl9mvEE/Y+Itia/fM
 ENV;
 
         $tempDir = $this->createTempDirectory([
@@ -1023,6 +1026,216 @@ ENV;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // ==================== KEY SIZE AGAINST CIPHER ====================
+
+    /** @dataProvider keySizeMismatchProvider */
+    #[DataProvider('keySizeMismatchProvider')]
+    public function test_fails_when_key_size_does_not_match_cipher(?string $cipher, string $key, string $expectedMessage): void
+    {
+        $files = ['.env' => "APP_NAME=Inventory\nAPP_KEY={$key}\n"];
+
+        if ($cipher !== null) {
+            $files['config/app.php'] = "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => '{$cipher}',\n];\n";
+        }
+
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+        $issues = $result->getIssues();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame($expectedMessage, $issues[0]->message);
+        $this->assertSame(Severity::Critical, $issues[0]->severity);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{?string, string, string}>
+     */
+    public static function keySizeMismatchProvider(): array
+    {
+        return [
+            '16-byte base64 key with AES-256-CBC' => [
+                'AES-256-CBC',
+                'base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+                'APP_KEY is 16 bytes but the AES-256-CBC cipher needs a 32-byte key',
+            ],
+            '64-byte base64 key with AES-256-CBC' => [
+                'AES-256-CBC',
+                'base64:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==',
+                'APP_KEY is 64 bytes but the AES-256-CBC cipher needs a 32-byte key',
+            ],
+            '32-byte base64 key with AES-128-GCM' => [
+                'AES-128-GCM',
+                'base64:ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=',
+                'APP_KEY is 32 bytes but the AES-128-GCM cipher needs a 16-byte key',
+            ],
+            '16-byte base64 key with no config/app.php' => [
+                null,
+                'base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+                'APP_KEY is 16 bytes but the AES-256-CBC cipher needs a 32-byte key',
+            ],
+            '40-character raw key with AES-256-CBC' => [
+                'AES-256-CBC',
+                'abcdefghijklmnopqrstuvwxyz0123456789ABCD',
+                'APP_KEY is 40 bytes but the AES-256-CBC cipher needs a 32-byte key',
+            ],
+            '32-character raw key with AES-128-CBC' => [
+                'AES-128-CBC',
+                'abcdefghijklmnopqrstuvwxyz123456',
+                'APP_KEY is 32 bytes but the AES-128-CBC cipher needs a 16-byte key',
+            ],
+            'lowercase cipher is named in upper case' => [
+                'aes-128-gcm',
+                'base64:ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=',
+                'APP_KEY is 32 bytes but the AES-128-GCM cipher needs a 16-byte key',
+            ],
+        ];
+    }
+
+    public function test_passes_with_16_character_raw_key_and_aes_128_cipher(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=abcdefghijklmnop',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-128-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_fails_against_default_cipher_when_config_omits_cipher(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is 16 bytes but the AES-256-CBC cipher needs a 32-byte key', $issues[0]->message);
+    }
+
+    public function test_skips_key_size_check_when_cipher_comes_from_env(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:/AvmHMmBChdiKxwxReS4zWfHKXAfl0vsbJIf2fT3gHA=',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => env('APP_CIPHER', 'AES-128-CBC'),\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_skips_key_size_check_when_app_config_does_not_parse(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/app.php' => "<?php\n\nreturn [\n    'cipher' => 'AES-128-CBC',\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+        $this->assertTrue(app(AstParser::class)->hasFailure($tempDir.'/config/app.php'));
+    }
+
+    public function test_reports_only_unsupported_cipher_when_key_cannot_be_sized(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'DES',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Unsupported or weak cipher algorithm: des', $issues[0]->message);
+    }
+
+    /** @dataProvider cipherOutsideLiteralKeysProvider */
+    #[DataProvider('cipherOutsideLiteralKeysProvider')]
+    public function test_skips_key_size_check_when_cipher_may_be_set_outside_literal_keys(string $appConfig): void
+    {
+        // shared.php sets the AES-128 cipher this 16-byte key was generated for
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/shared.php' => "<?php\n\nreturn ['cipher' => 'AES-128-CBC'];\n",
+            'config/app.php' => $appConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function cipherOutsideLiteralKeysProvider(): array
+    {
+        return [
+            'non-literal return' => ["<?php\n\nreturn array_merge(require __DIR__.'/shared.php', [\n    'key' => env('APP_KEY'),\n]);\n"],
+            'spread entry' => ["<?php\n\nreturn [\n    ...require __DIR__.'/shared.php',\n    'key' => env('APP_KEY'),\n];\n"],
+            'computed key' => ["<?php\n\n\$cipherKey = 'cipher';\n\nreturn [\n    'key' => env('APP_KEY'),\n    \$cipherKey => 'AES-128-CBC',\n];\n"],
+            'spread after a literal cipher' => ["<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n    ...require __DIR__.'/shared.php',\n];\n"],
+            'computed key after a literal cipher' => ["<?php\n\n\$cipherKey = 'cipher';\n\nreturn [\n    'cipher' => 'AES-256-CBC',\n    \$cipherKey => 'AES-128-CBC',\n];\n"],
+        ];
+    }
+
+    public function test_sizes_key_against_literal_cipher_that_follows_a_spread(): void
+    {
+        // The literal cipher comes last, so it overrides whatever shared.php sets
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/shared.php' => "<?php\n\nreturn ['cipher' => 'AES-128-CBC'];\n",
+            'config/app.php' => "<?php\n\nreturn [\n    ...require __DIR__.'/shared.php',\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is 16 bytes but the AES-256-CBC cipher needs a 32-byte key', $issues[0]->message);
+    }
+
+    public function test_short_key_keeps_format_message_rather_than_size_message(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:c2hvcnQ=',
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        // The message is part of the baseline hash, so a key flagged before #515 keeps its wording
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY does not follow the expected format or is too short', $issues[0]->message);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 
     // ==================== SHOULD RUN TESTS ====================

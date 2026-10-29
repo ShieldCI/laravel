@@ -1197,7 +1197,27 @@ ENV;
             'non-literal return' => ["<?php\n\nreturn array_merge(require __DIR__.'/shared.php', [\n    'key' => env('APP_KEY'),\n]);\n"],
             'spread entry' => ["<?php\n\nreturn [\n    ...require __DIR__.'/shared.php',\n    'key' => env('APP_KEY'),\n];\n"],
             'computed key' => ["<?php\n\n\$cipherKey = 'cipher';\n\nreturn [\n    'key' => env('APP_KEY'),\n    \$cipherKey => 'AES-128-CBC',\n];\n"],
+            'spread after a literal cipher' => ["<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n    ...require __DIR__.'/shared.php',\n];\n"],
+            'computed key after a literal cipher' => ["<?php\n\n\$cipherKey = 'cipher';\n\nreturn [\n    'cipher' => 'AES-256-CBC',\n    \$cipherKey => 'AES-128-CBC',\n];\n"],
         ];
+    }
+
+    public function test_sizes_key_against_literal_cipher_that_follows_a_spread(): void
+    {
+        // The literal cipher comes last, so it overrides whatever shared.php sets
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_KEY=base64:MDEyMzQ1Njc4OWFiY2RlZg==',
+            'config/shared.php' => "<?php\n\nreturn ['cipher' => 'AES-128-CBC'];\n",
+            'config/app.php' => "<?php\n\nreturn [\n    ...require __DIR__.'/shared.php',\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $issues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is 16 bytes but the AES-256-CBC cipher needs a 32-byte key', $issues[0]->message);
     }
 
     public function test_short_key_keeps_format_message_rather_than_size_message(): void

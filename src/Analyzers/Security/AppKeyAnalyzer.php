@@ -294,9 +294,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * The cipher the encrypter runs with, lowercased, or null when config/app.php does not say.
      *
      * An unpublished config/app.php, or one without a cipher entry, runs on the framework default.
-     * A file that would not parse, one whose cipher could come from a spread, a computed key or a
-     * non-literal return, a cipher read from env() or any other expression, and a cipher the
-     * encrypter does not support all answer null, so the key is not sized against a guess.
+     * A file that would not parse, one whose cipher a spread, a computed key or a non-literal
+     * return could set or override, a cipher read from env() or any other expression, and a
+     * cipher the encrypter does not support all answer null, so the key is not sized against a
+     * guess.
      *
      * @param  array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>|null  $config
      */
@@ -310,8 +311,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
+        if (! $this->literalKeysDecideCipher($appConfig)) {
+            return null;
+        }
+
         if (! isset($config['cipher'])) {
-            return $this->returnsOnlyLiteralKeys($appConfig) ? 'aes-256-cbc' : null;
+            return 'aes-256-cbc';
         }
 
         $cipher = $config['cipher']['value'];
@@ -324,12 +329,14 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether config/app.php returns an array literal whose every entry has a literal string key.
+     * Whether the parsed entries of config/app.php are the last word on the cipher.
      *
-     * Only then is a cipher missing from the parsed entries truly absent: a spread, a computed key
-     * or a non-literal return such as array_merge() can still set it.
+     * The returned array has to be a literal, and no entry after the last literal cipher key, or
+     * after any entry at all when there is none, may be a spread or a computed key: either can
+     * set the cipher in a way the parsed entries do not show. A non-literal return such as
+     * array_merge() is never decided by them.
      */
-    private function returnsOnlyLiteralKeys(string $appConfig): bool
+    private function literalKeysDecideCipher(string $appConfig): bool
     {
         $return = (new NodeFinder)->findFirstInstanceOf(app(AstParser::class)->parseFile($appConfig), Return_::class);
 
@@ -337,9 +344,15 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        foreach ($return->expr->items as $item) {
+        // Walk back from the end: a later entry overrides an earlier one, so only the entries
+        // after the literal cipher can change it
+        foreach (array_reverse($return->expr->items) as $item) {
             if (! $item->key instanceof String_) {
                 return false;
+            }
+
+            if ($item->key->value === 'cipher') {
+                return true;
             }
         }
 

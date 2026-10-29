@@ -1421,6 +1421,28 @@ ENV;
         $this->assertSame(4, $failing[0]->location?->line);
     }
 
+    public function test_sizes_previous_keys_defined_with_export(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $issues = $this->analyzePreviousKeys('export APP_PREVIOUS_KEYS='.self::KEY_32, self::aes128GcmConfig());
+
+        $this->assertCount(1, $issues);
+        $this->assertSame(3, $issues[0]->location?->line);
+    }
+
+    public function test_ignores_previous_keys_under_another_case(): void
+    {
+        $this->skipBelowLaravel11();
+
+        $passing = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_16."\napp_previous_keys=".self::KEY_32, self::aes128GcmConfig());
+        $failing = $this->analyzePreviousKeys('APP_PREVIOUS_KEYS='.self::KEY_32."\napp_previous_keys=".self::KEY_16, self::aes128GcmConfig());
+
+        $this->assertSame([], $passing);
+        $this->assertCount(1, $failing);
+        $this->assertSame(3, $failing[0]->location?->line);
+    }
+
     public function test_ignores_previous_keys_before_laravel_11(): void
     {
         if (version_compare(app()->version(), '11.0.0', '>=')) {

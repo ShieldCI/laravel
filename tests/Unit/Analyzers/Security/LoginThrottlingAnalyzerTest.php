@@ -2203,7 +2203,77 @@ PHP;
             'global append' => ['$middleware->append(\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class);'],
             'global prepend' => ["\$middleware->prepend('throttle:60,1');"],
             'global use' => ["\$middleware->use([\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':60,1']);"],
+            'web append using' => ["\$middleware->web(append: [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::using('login')]);"],
+            'appendToGroup with' => ["\$middleware->appendToGroup('web', \\Illuminate\\Routing\\Middleware\\ThrottleRequests::with(5, 1));"],
+            'chained after alias' => ["\$middleware->alias(['admin' => \\App\\Http\\Middleware\\Admin::class])->web(append: ['throttle:60,1']);"],
         ];
+    }
+
+    public function test_web_throttle_under_an_aliased_import_in_bootstrap_clears_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap(
+                '$middleware->web(append: [Throttle::class]);',
+                'use Illuminate\\Routing\\Middleware\\ThrottleRequests as Throttle;',
+            ),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_web_throttle_under_an_aliased_import_in_kernel_clears_web_login(): void
+    {
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+use Illuminate\Routing\Middleware\ThrottleRequests as Throttle;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+            Throttle::class.':60,1',
+        ],
+    ];
+}
+PHP;
+
+        // No RouteServiceProvider registers routes/web.php in the 'web' group, so the
+        // route-level group resolution has nothing to read and only the group check
+        // can clear the login.
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => $kernel,
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_chained_throttle_removed_from_web_group_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->alias([])->web(remove: ['throttle:60,1']);"),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_chained_api_group_throttle_does_not_clear_web_login(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->laravel11Bootstrap("\$middleware->alias([])->api(append: ['throttle:60,1']);"),
+            'routes/web.php' => $this->unthrottledWebLogin(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
     public function test_api_group_throttle_appended_in_bootstrap_does_not_clear_web_login(): void
@@ -3256,13 +3326,14 @@ class RouteServiceProvider extends ServiceProvider
 PHP;
     }
 
-    private function laravel11Bootstrap(string $middlewareBody): string
+    private function laravel11Bootstrap(string $middlewareBody, string $imports = ''): string
     {
         return <<<PHP
 <?php
 
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Middleware;
+{$imports}
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(

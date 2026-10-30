@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\ArrayItem;
 use PhpParser\Node\Expr\Array_;
 use PhpParser\Node\Scalar\String_;
 use PhpParser\Node\Stmt\Return_;
 use PhpParser\NodeFinder;
+use PhpParser\PrettyPrinter\Standard;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -19,6 +21,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 
 /**
  * Validates that the application encryption key is properly configured.
@@ -28,10 +31,13 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
  * - APP_KEY is not the default/example value
  * - APP_KEY follows proper format (base64: prefix)
  * - APP_KEY is the size the configured cipher needs
+ * - each APP_PREVIOUS_KEYS entry is the size the configured cipher needs (Laravel 11+)
  * - config/app.php has proper key configuration
  */
 class AppKeyAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+
     /**
      * App key configuration is environment-specific, not applicable in CI.
      */
@@ -46,6 +52,15 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         'aes-256-cbc' => 32,
         'aes-128-gcm' => 16,
         'aes-256-gcm' => 32,
+    ];
+
+    /**
+     * The previous_keys entry of the framework's config/app.php, printed with single quotes:
+     * Laravel 11 writes the first, Laravel 12 and later the second.
+     */
+    private const ENV_PREVIOUS_KEYS_ENTRIES = [
+        "[...array_filter(explode(',', env('APP_PREVIOUS_KEYS', '')))]",
+        "[...array_filter(explode(',', (string) env('APP_PREVIOUS_KEYS', '')))]",
     ];
 
     protected function metadata(): AnalyzerMetadata
@@ -85,8 +100,15 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             ? (new ConfigFileParser(app(AstParser::class)))->parseArray($appConfig)
             : null;
 
+        $cipher = $this->effectiveCipher($appConfig, $config);
+
         // Check .env file for APP_KEY
-        $this->checkEnvFile($issues, $this->effectiveCipher($appConfig, $config));
+        $this->checkEnvFile($issues, $cipher);
+
+        // Check .env file for APP_PREVIOUS_KEYS
+        if ($cipher !== null && $this->previousKeysComeFromEnv($appConfig, $config)) {
+            $this->checkPreviousKeys($issues, $cipher);
+        }
 
         // Check config/app.php
         if ($config !== null) {
@@ -241,6 +263,108 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Check each APP_PREVIOUS_KEYS entry in .env against the size the cipher needs.
+     *
+     * The list is split the way the framework's config/app.php splits it, with no trimming,
+     * and the last definition is the one read, as the dotenv loader lets a later line win. Names
+     * match as dotenv reads them: case-sensitive, with an optional export prefix.
+     *
+     * @param  array<int, mixed>  &$issues
+     */
+    private function checkPreviousKeys(array &$issues, string $cipher): void
+    {
+        $envFile = $this->buildPath('.env');
+
+        if (! file_exists($envFile)) {
+            return;
+        }
+
+        $value = null;
+        $definitionLine = 0;
+
+        foreach (FileParser::getLines($envFile) as $lineNumber => $line) {
+            if (is_string($line) && preg_match('/^(?:export\s+)?APP_PREVIOUS_KEYS\s*=\s*(.*)$/', trim($line), $matches)) {
+                $value = $this->normalizeKeyValue($this->stripInlineComment($matches[1]));
+                $definitionLine = $lineNumber + 1;
+            }
+        }
+
+        // An interpolated value cannot be sized from the file
+        if ($value === null || str_contains($value, '${')) {
+            return;
+        }
+
+        // env() turns these words into booleans or null before explode() reads them
+        $value = match (strtolower($value)) {
+            'true', '(true)' => '1',
+            'false', '(false)', 'empty', '(empty)', 'null', '(null)' => '',
+            default => $value,
+        };
+
+        $requiredBytes = self::CIPHER_KEY_BYTES[$cipher];
+
+        foreach (array_filter(explode(',', $value)) as $index => $entry) {
+            $keyBytes = $this->keyByteLength($entry);
+
+            if ($keyBytes === $requiredBytes) {
+                continue;
+            }
+
+            $issues[] = $this->createIssue(
+                message: sprintf('APP_PREVIOUS_KEYS entry %d is %d bytes but the %s cipher needs a %d-byte key', $index + 1, $keyBytes, strtoupper($cipher), $requiredBytes),
+                location: new Location($this->getRelativePath($envFile), $definitionLine),
+                severity: Severity::Critical,
+                recommendation: 'Laravel checks every previous key against the configured cipher and throws on one of any other size, which fails every request that touches an encrypted cookie. Remove this key from APP_PREVIOUS_KEYS: the encrypter decrypts with the configured cipher whatever the key, so a key generated for another cipher cannot read the data it encrypted anyway.',
+                metadata: [
+                    'file' => basename($envFile),
+                    'entry' => $index + 1,
+                    'cipher' => $cipher,
+                    'key_bytes' => $keyBytes,
+                    'required_bytes' => $requiredBytes,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Whether the encrypter receives APP_PREVIOUS_KEYS as the framework's config/app.php reads it.
+     *
+     * Laravel passes previous keys to the encrypter from 11.0. A published config/app.php that
+     * leaves the entry out still gets the framework's through the configuration merge, unless the
+     * application turned that merge off. An entry in any other form, or one a spread or a
+     * computed key could override, is not read as APP_PREVIOUS_KEYS.
+     *
+     * @param  array<string, array{value: mixed, line: int, isEnvCall: bool, envDefault: mixed, envHasDefault: bool}>|null  $config
+     */
+    private function previousKeysComeFromEnv(string $appConfig, ?array $config): bool
+    {
+        if (! $this->isLaravel11OrNewer()) {
+            return false;
+        }
+
+        if ($config !== null) {
+            $return = $this->returnedArray($appConfig);
+
+            if ($return === null || ! $this->literalKeysDecide($return, 'previous_keys')) {
+                return false;
+            }
+
+            $entry = $this->lastEntry($return, 'previous_keys');
+
+            if ($entry !== null) {
+                $printed = str_replace('"', "'", (new Standard)->prettyPrintExpr($entry->value));
+
+                return in_array($printed, self::ENV_PREVIOUS_KEYS_ENTRIES, true);
+            }
+        }
+
+        // The same guard LoadConfiguration applies: the opt-out arrived after Laravel 11.0
+        $app = app();
+
+        return ! method_exists($app, 'shouldMergeFrameworkConfiguration') || $app->shouldMergeFrameworkConfiguration();
+    }
+
+    /**
      * Check config/app.php for key configuration.
      *
      * @param  array<int, mixed>  &$issues
@@ -311,7 +435,9 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        if (! $this->literalKeysDecideCipher($appConfig)) {
+        $return = $this->returnedArray($appConfig);
+
+        if ($return === null || ! $this->literalKeysDecide($return, 'cipher')) {
             return null;
         }
 
@@ -329,34 +455,51 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether the parsed entries of config/app.php are the last word on the cipher.
-     *
-     * The returned array has to be a literal, and no entry after the last literal cipher key, or
-     * after any entry at all when there is none, may be a spread or a computed key: either can
-     * set the cipher in a way the parsed entries do not show. A non-literal return such as
-     * array_merge() is never decided by them.
+     * The array literal config/app.php returns, or null when it returns anything else, such as
+     * array_merge(): its entries are then never the last word on any key.
      */
-    private function literalKeysDecideCipher(string $appConfig): bool
+    private function returnedArray(string $appConfig): ?Array_
     {
         $return = (new NodeFinder)->findFirstInstanceOf(app(AstParser::class)->parseFile($appConfig), Return_::class);
 
-        if (! $return instanceof Return_ || ! $return->expr instanceof Array_) {
-            return false;
-        }
+        return $return instanceof Return_ && $return->expr instanceof Array_ ? $return->expr : null;
+    }
 
+    /**
+     * Whether the literal entries of the returned array are the last word on $key.
+     *
+     * No entry after the last literal $key, or after any entry at all when there is none, may be
+     * a spread or a computed key: either can set $key in a way the literal entries do not show.
+     */
+    private function literalKeysDecide(Array_ $return, string $key): bool
+    {
         // Walk back from the end: a later entry overrides an earlier one, so only the entries
-        // after the literal cipher can change it
-        foreach (array_reverse($return->expr->items) as $item) {
+        // after the literal key can change it
+        foreach (array_reverse($return->items) as $item) {
             if (! $item->key instanceof String_) {
                 return false;
             }
 
-            if ($item->key->value === 'cipher') {
+            if ($item->key->value === $key) {
                 return true;
             }
         }
 
         return true;
+    }
+
+    /**
+     * The last entry of the returned array under the literal $key, the one that wins.
+     */
+    private function lastEntry(Array_ $return, string $key): ?ArrayItem
+    {
+        foreach (array_reverse($return->items) as $item) {
+            if ($item->key instanceof String_ && $item->key->value === $key) {
+                return $item;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -450,12 +593,13 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Size in bytes of the key the encrypter receives from an APP_KEY that passed isValidAppKey().
+     * Size in bytes of the key the encrypter receives, decoded as EncryptionServiceProvider does:
+     * a base64: prefix is decoded leniently, anything else is the key itself.
      */
     private function keyByteLength(string $normalized): int
     {
         if (str_starts_with($normalized, 'base64:')) {
-            return strlen((string) base64_decode(substr($normalized, 7), true));
+            return strlen(base64_decode(substr($normalized, 7)));
         }
 
         return strlen($normalized);

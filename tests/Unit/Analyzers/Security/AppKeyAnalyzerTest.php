@@ -931,6 +931,72 @@ ENV;
         $this->assertCount(2, $duplicateIssues);
     }
 
+    // ==================== DOTENV NAME RULES ====================
+
+    /** @dataProvider exportPrefixProvider */
+    #[DataProvider('exportPrefixProvider')]
+    public function test_reads_app_key_defined_with_export(string $prefix): void
+    {
+        $this->assertSame([], $this->analyzeEnv("APP_NAME=Inventory\n{$prefix}APP_KEY=".self::KEY_32."\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function exportPrefixProvider(): array
+    {
+        return [
+            'space' => ['export '],
+            'tab' => ["export\t"],
+        ];
+    }
+
+    public function test_validates_app_key_defined_with_export(): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\nexport APP_KEY=\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not set or is empty', $issues[0]->message);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    public function test_ignores_app_key_under_another_case(): void
+    {
+        $passing = $this->analyzeEnv("app_key=short\nAPP_KEY=".self::KEY_32."\n");
+        $failing = $this->analyzeEnv('app_key='.self::KEY_32."\n");
+
+        $this->assertSame([], $passing);
+        $this->assertCount(1, $failing);
+        $this->assertSame('APP_KEY is not defined in .env file', $failing[0]->message);
+    }
+
+    public function test_counts_export_line_as_duplicate_app_key(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY='.self::KEY_32."\nexport APP_KEY=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Multiple APP_KEY definitions found (first at line 1, duplicate at line 2)', $issues[0]->message);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    /**
+     * Analyze $envContent against a config/app.php that reads APP_KEY with the AES-256-CBC cipher.
+     *
+     * @return array<int, Issue>
+     */
+    private function analyzeEnv(string $envContent): array
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze()->getIssues();
+    }
+
     // ==================== BASE64 PADDING VALIDATION TESTS ====================
 
     public function test_fails_with_too_many_padding_equals(): void

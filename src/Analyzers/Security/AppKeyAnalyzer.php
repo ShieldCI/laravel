@@ -166,7 +166,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             }
 
             // Check for APP_KEY setting
-            if (preg_match('/^APP_KEY\s*=\s*(.*)$/i', $trimmedLine, $matches)) {
+            if (($assignment = $this->envAssignment($trimmedLine, 'APP_KEY')) !== null) {
                 $appKeyCount++;
 
                 if ($appKeyCount === 1) {
@@ -175,9 +175,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
 
                 $hasAppKey = true;
 
-                // Extract match result
-
-                $rawValue = $this->stripInlineComment($matches[1]);
+                $rawValue = $this->stripInlineComment($assignment);
                 $appKeyValue = $this->normalizeKeyValue($rawValue);
 
                 // Detect multiple APP_KEY definitions
@@ -266,8 +264,7 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      * Check each APP_PREVIOUS_KEYS entry in .env against the size the cipher needs.
      *
      * The list is split the way the framework's config/app.php splits it, with no trimming,
-     * and the last definition is the one read, as the dotenv loader lets a later line win. Names
-     * match as dotenv reads them: case-sensitive, with an optional export prefix.
+     * and the last definition is the one read, as the dotenv loader lets a later line win.
      *
      * @param  array<int, mixed>  &$issues
      */
@@ -283,8 +280,8 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         $definitionLine = 0;
 
         foreach (FileParser::getLines($envFile) as $lineNumber => $line) {
-            if (is_string($line) && preg_match('/^(?:export\s+)?APP_PREVIOUS_KEYS\s*=\s*(.*)$/', trim($line), $matches)) {
-                $value = $this->normalizeKeyValue($this->stripInlineComment($matches[1]));
+            if (is_string($line) && ($assignment = $this->envAssignment(trim($line), 'APP_PREVIOUS_KEYS')) !== null) {
+                $value = $this->normalizeKeyValue($this->stripInlineComment($assignment));
                 $definitionLine = $lineNumber + 1;
             }
         }
@@ -500,6 +497,16 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         }
 
         return null;
+    }
+
+    /**
+     * The raw value this .env line assigns to $name, or null when it assigns another name.
+     *
+     * Names match as dotenv reads them: case-sensitive, with an optional export prefix.
+     */
+    private function envAssignment(string $line, string $name): ?string
+    {
+        return preg_match('/^(?:export\s+)?'.preg_quote($name, '/').'\s*=\s*(.*)$/', $line, $matches) === 1 ? $matches[1] : null;
     }
 
     /**

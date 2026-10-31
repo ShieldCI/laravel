@@ -31,7 +31,7 @@ use PhpParser\NodeVisitor\NameResolver;
  * what the table saves them is the second walk over every file and the resolution this pass
  * leaves in the shared parse cache.
  *
- * Four callers remain, and none was one of the three. unguarded-models matches class names
+ * Four callers remain, none of them among those three. unguarded-models matches class names
  * from a findNodes() query rather than a walk, so there is no traversal for an import table
  * to piggyback on. authentication-authorization reads route files with a visitor that reaches
  * down from an ancestor, and its middleware alias maps with findNodes() queries, so it needs

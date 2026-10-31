@@ -1006,6 +1006,76 @@ ENV;
         $this->assertSame(2, $issues[0]->location?->line);
     }
 
+    // ==================== LAST DEFINITION WINS ====================
+
+    public function test_validates_last_app_key_definition(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY='.self::KEY_32."\nAPP_NAME=Inventory\nAPP_KEY=\n");
+        $messages = array_map(fn (Issue $issue): string => $issue->message, $issues);
+
+        $this->assertSame([
+            'Multiple APP_KEY definitions found (first at line 1, duplicate at line 3)',
+            'APP_KEY is not set or is empty',
+        ], $messages);
+        $this->assertSame(3, $issues[1]->location?->line);
+    }
+
+    public function test_ignores_invalid_app_key_overridden_by_later_definition(): void
+    {
+        $issues = $this->analyzeEnv("APP_KEY=short\nAPP_KEY=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Multiple APP_KEY definitions found (first at line 1, duplicate at line 2)', $issues[0]->message);
+    }
+
+    // ==================== KEY:GENERATE REWRITE ====================
+
+    /** @dataProvider unrewritableKeyLineProvider */
+    #[DataProvider('unrewritableKeyLineProvider')]
+    public function test_recommends_plain_line_when_key_generate_cannot_rewrite_it(string $line): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\n{$line}\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('First rewrite this line as a plain, unquoted APP_KEY= line', $issues[0]->recommendation);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unrewritableKeyLineProvider(): array
+    {
+        return [
+            'export prefix' => ['export APP_KEY='],
+            'quoted name' => ['"APP_KEY"=SomeRandomString'],
+            'quoted value' => ['APP_KEY="base64:c2hvcnQ="'],
+            'space around equals' => ['APP_KEY = base64:c2hvcnQ='],
+            'indented' => ['  APP_KEY='],
+        ];
+    }
+
+    /** @dataProvider rewritableKeyLineProvider */
+    #[DataProvider('rewritableKeyLineProvider')]
+    public function test_keeps_key_generate_recommendation_when_it_can_rewrite_the_line(string $line): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\n{$line}\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertStringNotContainsString('First rewrite this line', $issues[0]->recommendation);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function rewritableKeyLineProvider(): array
+    {
+        return [
+            'empty' => ['APP_KEY='],
+            'placeholder' => ['APP_KEY=SomeRandomString'],
+            'inline comment' => ['APP_KEY=base64:c2hvcnQ= # rotated'],
+        ];
+    }
+
     /**
      * Analyze $envContent against a config/app.php that reads APP_KEY with the AES-256-CBC cipher.
      *

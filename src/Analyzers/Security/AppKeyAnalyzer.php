@@ -146,10 +146,11 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
         }
 
         $lines = FileParser::getLines($envFile);
-        $hasAppKey = false;
-        $appKeyValue = null;
         $appKeyCount = 0;
         $firstKeyLine = 0;
+        $keyLine = 0;
+        $keyLineText = '';
+        $appKeyValue = '';
 
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
@@ -173,10 +174,10 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                     $firstKeyLine = $lineNumber;
                 }
 
-                $hasAppKey = true;
-
-                $rawValue = $this->stripInlineComment($assignment);
-                $appKeyValue = $this->normalizeKeyValue($rawValue);
+                // The dotenv loader lets a later line win, so the last definition is the key Laravel reads
+                $keyLine = $lineNumber;
+                $keyLineText = $line;
+                $appKeyValue = $this->normalizeKeyValue($this->stripInlineComment($assignment));
 
                 // Detect multiple APP_KEY definitions
                 if ($appKeyCount > 1) {
@@ -187,69 +188,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                         recommendation: 'Remove duplicate APP_KEY definitions. Only one APP_KEY should be defined per file.',
                         metadata: ['duplicate_count' => $appKeyCount]
                     );
-
-                    continue; // Skip validation for duplicate entries
-                }
-
-                $normalizedValue = $this->normalizeKeyValue($appKeyValue);
-
-                // Check if APP_KEY is empty or whitespace
-                if ($normalizedValue === '') {
-                    $issues[] = $this->createIssue(
-                        message: 'APP_KEY is not set or is empty',
-                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
-                        severity: Severity::Critical,
-                        recommendation: 'Run "php artisan key:generate" to generate a secure application key',
-                        metadata: ['file' => basename($envFile)]
-                    );
-                }
-                // Check if APP_KEY is a placeholder (case-insensitive)
-                elseif ($this->isPlaceholderValue($appKeyValue)) {
-                    $issues[] = $this->createIssue(
-                        message: 'APP_KEY is set to a placeholder/example value',
-                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
-                        severity: Severity::Critical,
-                        recommendation: 'Replace the placeholder value by running "php artisan key:generate" to generate a real application key',
-                        metadata: [
-                            'file' => basename($envFile),
-                            'placeholder_detected' => $normalizedValue,
-                        ]
-                    );
-                }
-                // Validate APP_KEY format and strength
-                elseif (! $this->isValidAppKey($appKeyValue, $requiredBytes)) {
-                    $issues[] = $this->createIssue(
-                        message: 'APP_KEY does not follow the expected format or is too short',
-                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
-                        severity: Severity::High,
-                        recommendation: 'Regenerate APP_KEY with "php artisan key:generate". Laravel\'s encrypter needs a key of exactly the cipher\'s size: a base64: key that decodes to 32 bytes for the AES-256 ciphers or 16 bytes for the AES-128 ciphers.',
-                        metadata: [
-                            'file' => basename($envFile),
-                            'provided_length' => strlen($normalizedValue),
-                            'minimum_length' => $requiredBytes ?? 32,
-                        ]
-                    );
-                }
-                // Validate APP_KEY size against the cipher the encrypter runs with
-                elseif ($cipher !== null && ($keyBytes = $this->keyByteLength($normalizedValue)) !== $requiredBytes) {
-                    $issues[] = $this->createIssue(
-                        message: sprintf('APP_KEY is %d bytes but the %s cipher needs a %d-byte key', $keyBytes, strtoupper($cipher), $requiredBytes),
-                        location: new Location($this->getRelativePath($envFile), $lineNumber + 1),
-                        severity: Severity::Critical,
-                        recommendation: 'Laravel\'s encrypter only accepts a key of exactly the cipher\'s size and throws on any other, which fails every request that touches an encrypted cookie. Generate a key for the configured cipher with "php artisan key:generate", or set the cipher back to the one this key was generated for so existing encrypted data stays readable.',
-                        metadata: [
-                            'file' => basename($envFile),
-                            'cipher' => $cipher,
-                            'key_bytes' => $keyBytes,
-                            'required_bytes' => $requiredBytes,
-                        ]
-                    );
                 }
             }
         }
 
         // Flag missing APP_KEY
-        if (! $hasAppKey) {
+        if ($appKeyCount === 0) {
             $issues[] = $this->createIssue(
                 message: 'APP_KEY is not defined in .env file',
                 location: new Location($this->getRelativePath($envFile)),
@@ -257,7 +201,78 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
                 recommendation: 'Add APP_KEY to your .env file and run "php artisan key:generate"',
                 metadata: ['file' => basename($envFile)]
             );
+
+            return;
         }
+
+        $normalizedValue = $this->normalizeKeyValue($appKeyValue);
+        $rewriteFirst = $this->keyGenerateCanRewrite($keyLineText, $appKeyValue)
+            ? ''
+            : ' First rewrite this line as a plain, unquoted APP_KEY= line with no export prefix, as "php artisan key:generate" only rewrites a line that starts with APP_KEY= followed by the current value.';
+
+        // Check if APP_KEY is empty or whitespace
+        if ($normalizedValue === '') {
+            $issues[] = $this->createIssue(
+                message: 'APP_KEY is not set or is empty',
+                location: new Location($this->getRelativePath($envFile), $keyLine + 1),
+                severity: Severity::Critical,
+                recommendation: 'Run "php artisan key:generate" to generate a secure application key.'.$rewriteFirst,
+                metadata: ['file' => basename($envFile)]
+            );
+        }
+        // Check if APP_KEY is a placeholder (case-insensitive)
+        elseif ($this->isPlaceholderValue($appKeyValue)) {
+            $issues[] = $this->createIssue(
+                message: 'APP_KEY is set to a placeholder/example value',
+                location: new Location($this->getRelativePath($envFile), $keyLine + 1),
+                severity: Severity::Critical,
+                recommendation: 'Replace the placeholder value by running "php artisan key:generate" to generate a real application key.'.$rewriteFirst,
+                metadata: [
+                    'file' => basename($envFile),
+                    'placeholder_detected' => $normalizedValue,
+                ]
+            );
+        }
+        // Validate APP_KEY format and strength
+        elseif (! $this->isValidAppKey($appKeyValue, $requiredBytes)) {
+            $issues[] = $this->createIssue(
+                message: 'APP_KEY does not follow the expected format or is too short',
+                location: new Location($this->getRelativePath($envFile), $keyLine + 1),
+                severity: Severity::High,
+                recommendation: 'Regenerate APP_KEY with "php artisan key:generate". Laravel\'s encrypter needs a key of exactly the cipher\'s size: a base64: key that decodes to 32 bytes for the AES-256 ciphers or 16 bytes for the AES-128 ciphers.'.$rewriteFirst,
+                metadata: [
+                    'file' => basename($envFile),
+                    'provided_length' => strlen($normalizedValue),
+                    'minimum_length' => $requiredBytes ?? 32,
+                ]
+            );
+        }
+        // Validate APP_KEY size against the cipher the encrypter runs with
+        elseif ($cipher !== null && ($keyBytes = $this->keyByteLength($normalizedValue)) !== $requiredBytes) {
+            $issues[] = $this->createIssue(
+                message: sprintf('APP_KEY is %d bytes but the %s cipher needs a %d-byte key', $keyBytes, strtoupper($cipher), $requiredBytes),
+                location: new Location($this->getRelativePath($envFile), $keyLine + 1),
+                severity: Severity::Critical,
+                recommendation: 'Laravel\'s encrypter only accepts a key of exactly the cipher\'s size and throws on any other, which fails every request that touches an encrypted cookie. Generate a key for the configured cipher with "php artisan key:generate", or set the cipher back to the one this key was generated for so existing encrypted data stays readable.'.$rewriteFirst,
+                metadata: [
+                    'file' => basename($envFile),
+                    'cipher' => $cipher,
+                    'key_bytes' => $keyBytes,
+                    'required_bytes' => $requiredBytes,
+                ]
+            );
+        }
+    }
+
+    /**
+     * Whether "php artisan key:generate" can rewrite this .env line.
+     *
+     * The command replaces /^APP_KEY=<current key>/m, so the line must start with APP_KEY= followed
+     * by the value as Laravel read it: no export prefix, quotes, indentation or spaces around =.
+     */
+    private function keyGenerateCanRewrite(string $line, string $value): bool
+    {
+        return str_starts_with($line, 'APP_KEY='.$value);
     }
 
     /**

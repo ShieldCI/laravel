@@ -502,11 +502,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
     /**
      * The raw value this .env line assigns to $name, or null when it assigns another name.
      *
-     * Names match as dotenv reads them: case-sensitive, with an optional export prefix.
+     * Names match as dotenv reads them: case-sensitive, with an optional export prefix and
+     * optional matching single or double quotes.
      */
     private function envAssignment(string $line, string $name): ?string
     {
-        return preg_match('/^(?:export\s+)?'.preg_quote($name, '/').'\s*=\s*(.*)$/', $line, $matches) === 1 ? $matches[1] : null;
+        return preg_match('/^(?:export\s+)?(["\']?)'.preg_quote($name, '/').'\1\s*=\s*(.*)$/', $line, $matches) === 1 ? $matches[2] : null;
     }
 
     /**

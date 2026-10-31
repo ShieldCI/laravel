@@ -951,6 +951,33 @@ ENV;
         ];
     }
 
+    /** @dataProvider quotedNameProvider */
+    #[DataProvider('quotedNameProvider')]
+    public function test_reads_app_key_defined_with_quoted_name(string $name): void
+    {
+        $this->assertSame([], $this->analyzeEnv("APP_NAME=Inventory\n{$name}=".self::KEY_32."\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function quotedNameProvider(): array
+    {
+        return [
+            'double quotes' => ['"APP_KEY"'],
+            'single quotes' => ["'APP_KEY'"],
+            'export and quotes' => ['export "APP_KEY"'],
+        ];
+    }
+
+    public function test_ignores_app_key_with_mismatched_quotes(): void
+    {
+        $issues = $this->analyzeEnv("\"APP_KEY'=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not defined in .env file', $issues[0]->message);
+    }
+
     public function test_validates_app_key_defined_with_export(): void
     {
         $issues = $this->analyzeEnv("APP_NAME=Inventory\nexport APP_KEY=\n");

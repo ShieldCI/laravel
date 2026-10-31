@@ -269,12 +269,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      *
      * The command replaces /^APP_KEY=<current key>/m, so the line must start with APP_KEY= followed
      * by the value as Laravel read it: no export prefix, quotes, indentation or spaces around =.
-     * The value must also end the line or be followed by whitespace, as the command leaves anything
-     * else in place, so APP_KEY="" becomes APP_KEY=<new key>"" and the new key reads with the quotes.
+     * The value must also end the line or be followed by whitespace or a comment, as the command leaves
+     * anything else in place, so APP_KEY="" becomes APP_KEY=<new key>"" and the new key reads with the quotes.
      */
     private function keyGenerateCanRewrite(string $line, string $value): bool
     {
-        return preg_match('/^APP_KEY='.preg_quote($value, '/').'(?:\s|$)/', $line) === 1;
+        return preg_match('/^APP_KEY='.preg_quote($value, '/').'(?:[\s#]|$)/', $line) === 1;
     }
 
     /**
@@ -539,9 +539,16 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
             return $value;
         }
 
-        // In .env files, only `#` starts an inline comment, and only when preceded
-        // by whitespace. Base64 keys can contain `//`, `+`, and `/`, so those must
-        // never be treated as comment delimiters.
+        // The dotenv parser ends an unquoted value at the first `#`, with or without
+        // whitespace before it, so a value that starts with one is empty. Base64 keys
+        // never contain `#`, but can contain `//`, `+`, and `/`, so those must never
+        // be treated as comment delimiters.
+        if (! str_starts_with($value, '"') && ! str_starts_with($value, "'")) {
+            $beforeComment = strstr($value, '#', true);
+
+            return $beforeComment === false ? $value : rtrim($beforeComment);
+        }
+
         return preg_replace('/\s+#.*$/', '', $value) ?? $value;
     }
 

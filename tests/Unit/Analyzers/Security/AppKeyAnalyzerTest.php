@@ -1075,7 +1075,33 @@ ENV;
             'empty' => ['APP_KEY='],
             'placeholder' => ['APP_KEY=SomeRandomString'],
             'inline comment' => ['APP_KEY=base64:c2hvcnQ= # rotated'],
+            'empty with inline comment' => ['APP_KEY= # rotated'],
+            'inline comment without whitespace' => ['APP_KEY=base64:c2hvcnQ=#rotated'],
+            'empty with inline comment without whitespace' => ['APP_KEY=#rotated'],
         ];
+    }
+
+    // ==================== DOTENV COMMENT RULES ====================
+
+    public function test_reads_comment_only_app_key_as_empty(): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\nAPP_KEY= # rotated\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not set or is empty', $issues[0]->message);
+    }
+
+    public function test_strips_inline_comment_without_preceding_whitespace(): void
+    {
+        $this->assertSame([], $this->analyzeEnv('APP_KEY='.self::KEY_32."#rotated\n"));
+    }
+
+    public function test_keeps_hash_inside_quoted_app_key(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY="'.self::KEY_32."#rotated\"\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY does not follow the expected format or is too short', $issues[0]->message);
     }
 
     /**

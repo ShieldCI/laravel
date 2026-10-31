@@ -931,6 +931,197 @@ ENV;
         $this->assertCount(2, $duplicateIssues);
     }
 
+    // ==================== DOTENV NAME RULES ====================
+
+    /** @dataProvider exportPrefixProvider */
+    #[DataProvider('exportPrefixProvider')]
+    public function test_reads_app_key_defined_with_export(string $prefix): void
+    {
+        $this->assertSame([], $this->analyzeEnv("APP_NAME=Inventory\n{$prefix}APP_KEY=".self::KEY_32."\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function exportPrefixProvider(): array
+    {
+        return [
+            'space' => ['export '],
+            'tab' => ["export\t"],
+        ];
+    }
+
+    /** @dataProvider quotedNameProvider */
+    #[DataProvider('quotedNameProvider')]
+    public function test_reads_app_key_defined_with_quoted_name(string $name): void
+    {
+        $this->assertSame([], $this->analyzeEnv("APP_NAME=Inventory\n{$name}=".self::KEY_32."\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function quotedNameProvider(): array
+    {
+        return [
+            'double quotes' => ['"APP_KEY"'],
+            'single quotes' => ["'APP_KEY'"],
+            'export and quotes' => ['export "APP_KEY"'],
+        ];
+    }
+
+    public function test_ignores_app_key_with_mismatched_quotes(): void
+    {
+        $issues = $this->analyzeEnv("\"APP_KEY'=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not defined in .env file', $issues[0]->message);
+    }
+
+    public function test_validates_app_key_defined_with_export(): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\nexport APP_KEY=\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not set or is empty', $issues[0]->message);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    public function test_ignores_app_key_under_another_case(): void
+    {
+        $passing = $this->analyzeEnv("app_key=short\nAPP_KEY=".self::KEY_32."\n");
+        $failing = $this->analyzeEnv('app_key='.self::KEY_32."\n");
+
+        $this->assertSame([], $passing);
+        $this->assertCount(1, $failing);
+        $this->assertSame('APP_KEY is not defined in .env file', $failing[0]->message);
+    }
+
+    public function test_counts_export_line_as_duplicate_app_key(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY='.self::KEY_32."\nexport APP_KEY=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Multiple APP_KEY definitions found (first at line 1, duplicate at line 2)', $issues[0]->message);
+        $this->assertSame(2, $issues[0]->location?->line);
+    }
+
+    // ==================== LAST DEFINITION WINS ====================
+
+    public function test_validates_last_app_key_definition(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY='.self::KEY_32."\nAPP_NAME=Inventory\nAPP_KEY=\n");
+        $messages = array_map(fn (Issue $issue): string => $issue->message, $issues);
+
+        $this->assertSame([
+            'Multiple APP_KEY definitions found (first at line 1, duplicate at line 3)',
+            'APP_KEY is not set or is empty',
+        ], $messages);
+        $this->assertSame(3, $issues[1]->location?->line);
+    }
+
+    public function test_ignores_invalid_app_key_overridden_by_later_definition(): void
+    {
+        $issues = $this->analyzeEnv("APP_KEY=short\nAPP_KEY=".self::KEY_32."\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('Multiple APP_KEY definitions found (first at line 1, duplicate at line 2)', $issues[0]->message);
+    }
+
+    // ==================== KEY:GENERATE REWRITE ====================
+
+    /** @dataProvider unrewritableKeyLineProvider */
+    #[DataProvider('unrewritableKeyLineProvider')]
+    public function test_recommends_plain_line_when_key_generate_cannot_rewrite_it(string $line): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\n{$line}\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('First rewrite this line as a plain, unquoted APP_KEY= line', $issues[0]->recommendation);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unrewritableKeyLineProvider(): array
+    {
+        return [
+            'export prefix' => ['export APP_KEY='],
+            'quoted name' => ['"APP_KEY"=SomeRandomString'],
+            'quoted value' => ['APP_KEY="base64:c2hvcnQ="'],
+            'space around equals' => ['APP_KEY = base64:c2hvcnQ='],
+            'indented' => ['  APP_KEY='],
+            'empty double-quoted value' => ['APP_KEY=""'],
+            'empty single-quoted value' => ["APP_KEY=''"],
+        ];
+    }
+
+    /** @dataProvider rewritableKeyLineProvider */
+    #[DataProvider('rewritableKeyLineProvider')]
+    public function test_keeps_key_generate_recommendation_when_it_can_rewrite_the_line(string $line): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\n{$line}\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertStringNotContainsString('First rewrite this line', $issues[0]->recommendation);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function rewritableKeyLineProvider(): array
+    {
+        return [
+            'empty' => ['APP_KEY='],
+            'placeholder' => ['APP_KEY=SomeRandomString'],
+            'inline comment' => ['APP_KEY=base64:c2hvcnQ= # rotated'],
+            'empty with inline comment' => ['APP_KEY= # rotated'],
+            'inline comment without whitespace' => ['APP_KEY=base64:c2hvcnQ=#rotated'],
+            'empty with inline comment without whitespace' => ['APP_KEY=#rotated'],
+        ];
+    }
+
+    // ==================== DOTENV COMMENT RULES ====================
+
+    public function test_reads_comment_only_app_key_as_empty(): void
+    {
+        $issues = $this->analyzeEnv("APP_NAME=Inventory\nAPP_KEY= # rotated\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY is not set or is empty', $issues[0]->message);
+    }
+
+    public function test_strips_inline_comment_without_preceding_whitespace(): void
+    {
+        $this->assertSame([], $this->analyzeEnv('APP_KEY='.self::KEY_32."#rotated\n"));
+    }
+
+    public function test_keeps_hash_inside_quoted_app_key(): void
+    {
+        $issues = $this->analyzeEnv('APP_KEY="'.self::KEY_32."#rotated\"\n");
+
+        $this->assertCount(1, $issues);
+        $this->assertSame('APP_KEY does not follow the expected format or is too short', $issues[0]->message);
+    }
+
+    /**
+     * Analyze $envContent against a config/app.php that reads APP_KEY with the AES-256-CBC cipher.
+     *
+     * @return array<int, Issue>
+     */
+    private function analyzeEnv(string $envContent): array
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => $envContent,
+            'config/app.php' => "<?php\n\nreturn [\n    'key' => env('APP_KEY'),\n    'cipher' => 'AES-256-CBC',\n];\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze()->getIssues();
+    }
+
     // ==================== BASE64 PADDING VALIDATION TESTS ====================
 
     public function test_fails_with_too_many_padding_equals(): void

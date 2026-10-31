@@ -1328,6 +1328,7 @@ PHP;
             'aliased import' => ['use Illuminate\\Routing\\Middleware\\ThrottleRequests as Cap;', "Route::middleware(Cap::class)->group({$file});"],
             'array-form group on a class' => [$import, "Route::group(['middleware' => ThrottleRequests::class], {$file});"],
             'array-form group on a string' => ['', "Route::group(['middleware' => ['api', 'throttle:5,1']], {$file});"],
+            'variadic names' => ['', "Route::middleware('api', 'throttle:5,1')->group({$file});"],
         ];
     }
 
@@ -1467,6 +1468,7 @@ PHP;
             'fluent ::class' => ['Route::middleware(ThrottleRequests::class)->group(function () {'],
             'fluent aliased ::using() in a list' => ["Route::middleware(['web', Cap::using('login')])->group(function () {"],
             'fluent ::with() after another middleware' => ["Route::middleware('auth')->middleware(ThrottleRequests::with(5, 1))->group(function () {"],
+            'fluent variadic' => ["Route::middleware('auth', ThrottleRequests::class)->group(function () {"],
             'array form ::class' => ["Route::group(['middleware' => ThrottleRequests::class], function () {"],
             'array form aliased list' => ["Route::group(['middleware' => ['auth', Cap::class.':5,1']], function () {"],
         ];

@@ -2758,16 +2758,103 @@ PHP;
         $this->assertSame(['Login route "/account/signin" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
-    public function test_unterminated_route_reads_its_chain_to_the_end_of_the_file(): void
+    public function test_route_file_that_does_not_parse_is_left_to_the_parse_failure_notice(): void
     {
+        // No analyzer reads a file that does not parse, and the report says so: a
+        // verdict read from its text would be a guess about code PHP cannot run.
         $routes = <<<'PHP'
 <?php
 
 Route::post('/account/signin', [AccountController::class, 'signin'])
-    ->middleware('throttle:6,1')
 PHP;
 
         $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_middleware_name_that_only_starts_with_throttle_does_not_clear_the_login_route(): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store'])->middleware('throttles.audit');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_app_class_named_throttle_requests_does_not_clear_the_login_route(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class ThrottleRequests
+{
+    public function handle($request, $next)
+    {
+        return $next($request);
+    }
+}
+PHP;
+        $routes = <<<'PHP'
+<?php
+
+use App\Support\ThrottleRequests;
+
+Route::post('/session/login', [SessionController::class, 'store'])->middleware(ThrottleRequests::class);
+PHP;
+
+        $result = $this->analyzeRoutesOnly([
+            'app/Support/ThrottleRequests.php' => $middleware,
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    /**
+     * @dataProvider variadicThrottleRouteProvider
+     */
+    #[DataProvider('variadicThrottleRouteProvider')]
+    public function test_variadic_throttle_middleware_clears_the_route_and_the_controller(string $routes): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => "<?php\n\n".$routes."\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function variadicThrottleRouteProvider(): array
+    {
+        return [
+            'after the verb' => ["Route::post('/session/login', [LoginController::class, 'login'])->middleware('auth', 'throttle:6,1');"],
+            'before the verb' => ["Route::middleware('auth', 'throttle:6,1')->post('/session/login', [LoginController::class, 'login']);"],
+            'on the group' => ["Route::middleware('auth', 'throttle:6,1')->group(function () {\n    Route::post('/session/login', [LoginController::class, 'login']);\n});"],
+        ];
+    }
+
+    public function test_auth_routes_in_a_throttled_group_clear_the_login_controller(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:6,1')->group(function () {
+    Auth::routes();
+});
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => $routes,
+        ]);
 
         $this->assertPassed($result);
     }

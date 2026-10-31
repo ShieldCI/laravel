@@ -763,17 +763,19 @@ class BootstrapRouteParser
 
     /**
      * Walks a method-call chain (right to left) looking for a ->middleware(...)
-     * whose value is, or lists, a throttle MiddlewareThrottleDetector recognises:
+     * one of whose arguments is, or lists, a throttle MiddlewareThrottleDetector recognises:
      *   ->middleware('throttle:5,1')
      *   ->middleware(['api', ThrottleRequests::using('api')])
+     *   ->middleware('api', 'throttle:5,1')
      */
     private function chainContainsThrottleMiddleware(Node $node): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
             if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
-                $firstArg = $node->args[0] ?? null;
-                if ($firstArg instanceof Node\Arg && $this->throttles->expressionIsThrottle($firstArg->value)) {
-                    return true;
+                foreach ($node->args as $arg) {
+                    if ($arg instanceof Node\Arg && $this->throttles->expressionIsThrottle($arg->value)) {
+                        return true;
+                    }
                 }
             }
             if ($node instanceof MethodCall) {

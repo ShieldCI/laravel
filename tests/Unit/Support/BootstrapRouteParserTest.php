@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Support;
 
 use PhpParser\Node\Expr\MethodCall;
 use PhpParser\Node\Expr\StaticCall;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\BootstrapRouteParser;
@@ -1284,6 +1285,210 @@ PHP;
         } finally {
             $this->removeDir($tempDir);
         }
+    }
+
+    // ==================== Throttle class forms ====================
+
+    /**
+     * @dataProvider throttleClassRegistrationProvider
+     */
+    #[DataProvider('throttleClassRegistrationProvider')]
+    public function test_throttle_protected_route_files_recognise_throttle_class_forms(string $imports, string $registration): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering($imports, $registration),
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function throttleClassRegistrationProvider(): array
+    {
+        $import = 'use Illuminate\\Routing\\Middleware\\ThrottleRequests;';
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'fully qualified ::class' => ['', "Route::middleware(\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class)->group({$file});"],
+            '::class with parameters' => [$import, "Route::middleware(ThrottleRequests::class.':5,1')->group({$file});"],
+            '::using() in a list' => [$import, "Route::middleware(['api', ThrottleRequests::using('partner')])->group({$file});"],
+            '::with()' => [$import, "Route::middleware(ThrottleRequests::with(5, 1))->group({$file});"],
+            'Redis variant' => ['use Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis;', "Route::middleware(ThrottleRequestsWithRedis::class)->group({$file});"],
+            'aliased import' => ['use Illuminate\\Routing\\Middleware\\ThrottleRequests as Cap;', "Route::middleware(Cap::class)->group({$file});"],
+            'array-form group on a class' => [$import, "Route::group(['middleware' => ThrottleRequests::class], {$file});"],
+            'array-form group on a string' => ['', "Route::group(['middleware' => ['api', 'throttle:5,1']], {$file});"],
+        ];
+    }
+
+    /**
+     * @dataProvider unthrottledRegistrationProvider
+     */
+    #[DataProvider('unthrottledRegistrationProvider')]
+    public function test_throttle_protected_route_files_ignore_names_that_only_look_like_a_throttle(string $registration): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getThrottleProtectedRouteFiles());
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unthrottledRegistrationProvider(): array
+    {
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'app class with the name in it' => ["Route::middleware(\\App\\Http\\Middleware\\ThrottleRequestsAudit::class)->group({$file});"],
+            'alias that only starts with throttle' => ["Route::middleware('throttles.audit')->group({$file});"],
+            'array-form group without a throttle' => ["Route::group(['middleware' => 'auth'], {$file});"],
+        ];
+    }
+
+    public function test_throttle_protected_route_files_resolve_class_names_against_the_provider_imports(): void
+    {
+        // The unimported short name resolves into the provider's own namespace, so it
+        // names App\Providers\ThrottleRequests rather than the framework's class.
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Routing\Middleware\ThrottleRequests as Cap;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware(Cap::class)->group(base_path('routes/partner.php'));
+        Route::middleware(ThrottleRequests::class)->group(base_path('routes/admin.php'));
+    }
+}
+PHP;
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/partner.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttle_judge_decides_which_middleware_names_throttle(): void
+    {
+        $registrations = "Route::middleware('signin.cap')->group(base_path('routes/partner.php'));\n"
+            ."            Route::middleware(ThrottleRequests::class)->group(base_path('routes/admin.php'));";
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('use Illuminate\\Routing\\Middleware\\ThrottleRequests;', $registrations),
+            'routes/partner.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $judged = [];
+            $parser = new BootstrapRouteParser($tempDir, $this->parser, function (string $name) use (&$judged): bool {
+                $judged[] = $name;
+
+                return $name === 'signin.cap';
+            });
+            $result = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+            $this->assertContains('signin.cap', $judged);
+            $this->assertContains('\\Illuminate\\Routing\\Middleware\\ThrottleRequests', $judged);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @dataProvider throttleClassGroupProvider
+     */
+    #[DataProvider('throttleClassGroupProvider')]
+    public function test_throttled_group_ranges_recognise_throttle_class_forms(string $groupOpening): void
+    {
+        $routes = <<<PHP
+<?php
+
+use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Routing\Middleware\ThrottleRequests as Cap;
+
+{$groupOpening}
+    Route::post('/session/login', [SessionController::class, 'store']);
+});
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([['start' => 6, 'end' => 8]], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function throttleClassGroupProvider(): array
+    {
+        return [
+            'fluent ::class' => ['Route::middleware(ThrottleRequests::class)->group(function () {'],
+            'fluent aliased ::using() in a list' => ["Route::middleware(['web', Cap::using('login')])->group(function () {"],
+            'fluent ::with() after another middleware' => ["Route::middleware('auth')->middleware(ThrottleRequests::with(5, 1))->group(function () {"],
+            'array form ::class' => ["Route::group(['middleware' => ThrottleRequests::class], function () {"],
+            'array form aliased list' => ["Route::group(['middleware' => ['auth', Cap::class.':5,1']], function () {"],
+        ];
+    }
+
+    private function bootstrapRegistering(string $imports, string $registration): string
+    {
+        return <<<PHP
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+{$imports}
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
     }
 
     /**

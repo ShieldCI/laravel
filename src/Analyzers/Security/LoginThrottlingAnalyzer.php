@@ -90,6 +90,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
         $this->throttlingClasses = [];
+        // Judging a middleware class reads its file against its own imports and then puts
+        // the caller's table back, so a table has to exist before any file is tracked: a
+        // provider's route group is judged before the first route file is read.
+        $this->startTrackingImports();
         $this->middlewareAliases = $this->readMiddlewareAliases();
         $this->middlewareGroups = $this->readMiddlewareGroups();
 
@@ -340,7 +344,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // Files registered in the 'web' group are judged against the web-group
         // throttle: that includes routes/web.php itself on every real install,
         // and being in the web group says nothing about whether it is throttled.
-        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
+        // A group's middleware is judged as a route's own is.
+        $bootstrapParser = new BootstrapRouteParser($this->getBasePath(), $this->parser, $this->middlewareNameThrottles(...));
         $throttledFiles = $bootstrapParser->getThrottleProtectedRouteFiles();
         $apiGroupFiles = $bootstrapParser->getApiRegisteredRouteFiles();
         $fileGroups = $this->fileGroupMiddleware($bootstrapParser);

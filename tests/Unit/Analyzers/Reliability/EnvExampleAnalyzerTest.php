@@ -556,9 +556,35 @@ app_name=lowercase';
 
         $result = $analyzer->analyze();
 
-        // app_name (lowercase) won't be parsed as it doesn't match the regex
-        // Only APP_NAME should be recognized, which is documented
-        $this->assertPassed($result);
+        // dotenv loads app_name as its own variable, distinct from the documented APP_NAME
+        $this->assertWarning($result);
+        $this->assertSame(['app_name'], $result->getIssues()[0]->metadata['undocumented_variables']);
+    }
+
+    public function test_export_and_quoted_example_names_document_env_names(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => "EXPORTED_NAME=1\nQUOTED_NAME=2",
+            '.env.example' => "export EXPORTED_NAME=\n'QUOTED_NAME'=",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_multiline_value_lines_are_not_reported_as_undocumented(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => "SIGNING_KEY=\"-----BEGIN KEY-----\nabcDEF12==\nINNER_LINE=part of the value\n-----END KEY-----\"",
+            '.env.example' => 'SIGNING_KEY=',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
     }
 
     // =========================================================================
@@ -908,5 +934,20 @@ app_name=lowercase';
         $codes = array_map(static fn ($issue) => $issue->metadata['code'], $issues);
         $this->assertContains('undocumented-config-key', $codes);
         $this->assertContains('undocumented-variables', $codes);
+    }
+
+    public function test_export_and_quoted_example_names_document_config_keys(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "APP_NAME=Laravel\nexport ACME_API_KEY=\n# \"ACME_SECRET\"=",
+            '.env' => "APP_NAME=MyApp\nACME_API_KEY=key",
+            'config/acme.php' => "<?php\n\nreturn ['key' => env('ACME_API_KEY'), 'secret' => env('ACME_SECRET')];",
+            'vendor/laravel/framework/config/app.php' => self::FRAMEWORK_STUB,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
     }
 }

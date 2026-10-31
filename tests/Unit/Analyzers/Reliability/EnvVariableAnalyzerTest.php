@@ -1082,4 +1082,36 @@ PHP;
         $this->assertPassed($result);
         $this->assertEmpty($result->getIssues());
     }
+
+    public function test_export_quoted_and_lowercase_env_lines_satisfy_example_names(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "EXPORTED_NAME=\nQUOTED_NAME=\nlower_name=",
+            '.env' => "export EXPORTED_NAME=1\n'QUOTED_NAME'=2\nlower_name=3",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_commented_lowercase_name_is_reported_as_commented_not_missing(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "UPPER_NAME=\nlower_name=",
+            '.env' => "UPPER_NAME=1\n# lower_name=2",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('commented-variables', $issues[0]->metadata['code']);
+        $this->assertSame(['lower_name'], $issues[0]->metadata['commented_variables']);
+    }
 }

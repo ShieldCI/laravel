@@ -50,7 +50,7 @@ trait AnalyzesEnvFiles
         $variables = [];
         $values = [];
 
-        foreach ($lines as $line) {
+        foreach ($this->envEntries($lines) as $line) {
             $line = trim($line);
 
             // Skip empty lines and comments
@@ -58,9 +58,9 @@ trait AnalyzesEnvFiles
                 continue;
             }
 
-            // Parse KEY=VALUE format
-            if (preg_match('/^([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
-                $key = $matches[1];
+            $key = $this->envEntryName($line);
+
+            if ($key !== null) {
                 $variables[$key] = $line;
                 $values[$key] = $this->extractEnvValue($line);
             }
@@ -91,17 +91,17 @@ trait AnalyzesEnvFiles
 
         $commentedVars = [];
 
-        foreach ($lines as $line) {
+        foreach ($this->envEntries($lines) as $line) {
             $line = trim($line);
 
-            // Skip empty lines
-            if ($line === '') {
+            // Look for commented variable definitions: # KEY=VALUE or #KEY=VALUE
+            if (! str_starts_with($line, '#')) {
                 continue;
             }
 
-            // Look for commented variable definitions: # KEY=VALUE or #KEY=VALUE
-            if (preg_match('/^#\s*([A-Z_][A-Z0-9_]*)\s*=/', $line, $matches)) {
-                $key = $matches[1];
+            $key = $this->envEntryName(ltrim(substr($line, 1)));
+
+            if ($key !== null) {
                 $commentedVars[$key] = $line;
             }
         }
@@ -267,6 +267,76 @@ trait AnalyzesEnvFiles
         }
 
         return [true, null]; // complex expression: a default exists, its value is unknown
+    }
+
+    /**
+     * Group raw .env lines into entries as dotenv's Lines::process does: a line that
+     * opens a double-quoted value without closing it runs on until a line holding an
+     * unescaped quote, so lines inside a multi-line value are never read as definitions.
+     * A value still open at the end of the file is dropped, as dotenv drops it.
+     *
+     * @param  array<int, string>  $lines
+     * @return list<string>
+     */
+    private function envEntries(array $lines): array
+    {
+        $entries = [];
+        $buffer = null;
+
+        foreach ($lines as $line) {
+            $line = rtrim($line, "\r\n");
+
+            if ($buffer !== null) {
+                $buffer .= "\n".$line;
+
+                if ($line === '"' || $this->unescapedQuotes($line) >= 1) {
+                    $entries[] = $buffer;
+                    $buffer = null;
+                }
+
+                continue;
+            }
+
+            $open = strpos($line, '="');
+            $hash = strpos($line, '#');
+
+            if ($open !== false && ($hash === false || $hash > $open) && $this->unescapedQuotes($line) <= 1) {
+                $buffer = $line;
+
+                continue;
+            }
+
+            $entries[] = $line;
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Count the quotes dotenv treats as unescaped when finding where a multi-line value ends.
+     */
+    private function unescapedQuotes(string $line): int
+    {
+        return (int) preg_match_all('/(?=([^\\\\]"))/', str_replace('\\\\', '', $line));
+    }
+
+    /**
+     * The variable name a KEY=VALUE entry assigns, or null when dotenv would reject it.
+     *
+     * Mirrors dotenv's EntryParser: the name before the first `=`, with an optional
+     * export prefix and optional matching quotes, made of letters, digits, `_` and `.`.
+     */
+    private function envEntryName(string $line): ?string
+    {
+        $equals = strpos($line, '=');
+
+        if ($equals === false) {
+            return null;
+        }
+
+        $name = trim(substr($line, 0, $equals));
+
+        return preg_match('/\A(?:export\s+)?(["\']?)([\p{Ll}\p{Lu}\p{M}\p{N}_.]+)\1\z/u', $name, $matches) === 1 ? $matches[2] : null;
     }
 
     /**

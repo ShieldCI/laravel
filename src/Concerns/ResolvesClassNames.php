@@ -31,12 +31,13 @@ use PhpParser\NodeVisitor\NameResolver;
  * what the table saves them is the second walk over every file and the resolution this pass
  * leaves in the shared parse cache.
  *
- * Three callers remain, and none was one of the three. unguarded-models matches class names
+ * Four callers remain, none of them among those three. unguarded-models matches class names
  * from a findNodes() query rather than a walk, so there is no traversal for an import table
  * to piggyback on. authentication-authorization reads route files with a visitor that reaches
  * down from an ancestor, and its middleware alias maps with findNodes() queries, so it needs
  * the whole file annotated before it looks. MiddlewareThrottleDetector reads the Kernel's
- * properties and the bootstrap/app.php configurator calls with findNodes() queries too.
+ * properties and the bootstrap/app.php configurator calls with findNodes() queries too, and
+ * BootstrapRouteParser hands it the route groups it finds the same way.
  */
 trait ResolvesClassNames
 {

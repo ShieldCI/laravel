@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Closure;
 use PhpParser\Node;
 use PhpParser\Node\Expr\BinaryOp\Concat;
 use PhpParser\Node\Expr\FuncCall;
@@ -14,6 +15,7 @@ use PhpParser\Node\Identifier;
 use PhpParser\Node\Scalar\MagicConst\Dir;
 use PhpParser\Node\Scalar\String_;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\Concerns\ResolvesClassNames;
 
 /**
  * Detects route files covered by web or API middleware through external registration.
@@ -28,13 +30,30 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
  * the line spans of throttled Route::...->group(Closure) blocks declared directly
  * inside a route file (fluent and array forms), used to tell whether a given route
  * line is covered by group-level throttling.
+ *
+ * A group counts as throttled by the middleware MiddlewareThrottleDetector recognises,
+ * with class names resolved against the imports of the file that declares the group.
  */
 class BootstrapRouteParser
 {
+    use ResolvesClassNames;
+
+    private readonly MiddlewareThrottleDetector $throttles;
+
+    /**
+     * The judge, $nameThrottles, says whether one middleware name throttles, as
+     * {@see MiddlewareThrottleDetector::__construct()} describes. Without one, only the
+     * framework's throttle classes and the 'throttle' alias Laravel registers count.
+     *
+     * @param  (Closure(string): bool)|null  $nameThrottles
+     */
     public function __construct(
         private readonly string $basePath,
         private readonly ParserInterface $parser,
-    ) {}
+        ?Closure $nameThrottles = null,
+    ) {
+        $this->throttles = new MiddlewareThrottleDetector($basePath, $parser, $nameThrottles);
+    }
 
     /**
      * Returns absolute paths of route files covered by 'web' middleware
@@ -128,9 +147,14 @@ class BootstrapRouteParser
 
     /**
      * Returns absolute paths of route files registered with a throttle middleware
-     * directly on their group in bootstrap/app.php or app/Providers/*.php.
+     * directly on their group in bootstrap/app.php or app/Providers/*.php, through
+     * Route::middleware(...)->group(base_path('...')) or
+     * Route::group(['middleware' => ...], base_path('...')).
      *
-     * Matches any throttle variant: 'throttle:5,1', 'throttle:api.rest', etc.
+     * Matches any throttle variant: 'throttle:5,1', ThrottleRequests::class,
+     * ThrottleRequests::class.':5,1', ThrottleRequests::using('login') or
+     * ThrottleRequests::with(5, 1), under any import alias, or an app alias the
+     * judge resolves to one.
      *
      * @return array<string>
      */
@@ -205,7 +229,8 @@ class BootstrapRouteParser
      * Returns the line ranges of throttled Route::...->group(Closure) blocks
      * declared inside the given route file. Covers both the fluent form
      * (Route::middleware([...'throttle'...])->group(fn)) and the array form
-     * (Route::group(['middleware' => 'throttle...'], fn)), and is nesting-safe:
+     * (Route::group(['middleware' => 'throttle...'], fn)), with the throttle
+     * variants {@see self::getThrottleProtectedRouteFiles()} matches, and is nesting-safe:
      * overlapping ranges are returned as-is, so a route line inside any range
      * is treated as covered. Path-argument groups (->group(base_path(...))) open
      * no closure and are intentionally ignored here.
@@ -222,6 +247,7 @@ class BootstrapRouteParser
         if (empty($ast)) {
             return [];
         }
+        $ast = $this->resolveNamesForMatching($ast);
 
         $ranges = [];
 
@@ -284,7 +310,7 @@ class BootstrapRouteParser
 
     /**
      * Detects the array-config group form: a ['middleware' => 'throttle...'] or
-     * ['middleware' => ['auth', 'throttle...']] entry among the call arguments.
+     * ['middleware' => ['auth', ThrottleRequests::class]] entry among the call arguments.
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
@@ -300,29 +326,7 @@ class BootstrapRouteParser
                     || $item->key->value !== 'middleware') {
                     continue;
                 }
-                if ($this->middlewareValueHasThrottle($item->value)) {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Whether a 'middleware' value (a string or a list of strings) carries a throttle.
-     */
-    private function middlewareValueHasThrottle(Node $value): bool
-    {
-        if ($value instanceof String_) {
-            return str_starts_with($value->value, 'throttle');
-        }
-
-        if ($value instanceof Node\Expr\Array_) {
-            foreach ($value->items as $item) {
-                if ($item instanceof Node\Expr\ArrayItem
-                    && $item->value instanceof String_
-                    && str_starts_with($item->value->value, 'throttle')) {
+                if ($this->throttles->expressionIsThrottle($item->value)) {
                     return true;
                 }
             }
@@ -666,7 +670,8 @@ class BootstrapRouteParser
 
     /**
      * Finds route files registered with a throttle middleware on their group
-     * in the given PHP file.
+     * in the given PHP file: in the group's method chain, or in the
+     * ['middleware' => ...] array of Route::group([...], base_path('...')).
      *
      * @return array<string>
      */
@@ -680,26 +685,33 @@ class BootstrapRouteParser
         if (empty($ast)) {
             return [];
         }
+        $ast = $this->resolveNamesForMatching($ast);
 
         $found = [];
-        $groupCalls = $this->parser->findMethodCalls($ast, 'group');
+        $groupCalls = [
+            ...$this->parser->findMethodCalls($ast, 'group'),
+            ...$this->parser->findNodes($ast, StaticCall::class),
+        ];
 
         foreach ($groupCalls as $call) {
-            if (! ($call instanceof MethodCall)) {
+            if (! ($call instanceof MethodCall || $call instanceof StaticCall)
+                || ! $call->name instanceof Identifier
+                || $call->name->name !== 'group') {
                 continue;
             }
 
-            $firstArg = $call->args[0] ?? null;
-            if (! ($firstArg instanceof Node\Arg)) {
-                continue;
+            $routeFile = null;
+            foreach ($call->args as $arg) {
+                if ($arg instanceof Node\Arg) {
+                    $routeFile ??= $this->extractBasePathArgument($arg->value);
+                }
             }
-
-            $routeFile = $this->extractBasePathArgument($firstArg->value);
             if ($routeFile === null) {
                 continue;
             }
 
-            if ($this->chainContainsThrottleMiddleware($call->var)) {
+            if (($call instanceof MethodCall && $this->chainContainsThrottleMiddleware($call->var))
+                || $this->argsCarryThrottleMiddleware($call->args)) {
                 $normalized = $this->normalizePath($routeFile);
                 if ($normalized !== null) {
                     $found[] = $normalized;
@@ -750,34 +762,18 @@ class BootstrapRouteParser
     }
 
     /**
-     * Walks a method-call chain (right to left) looking for ->middleware(...)
-     * where any value starts with 'throttle' (matches 'throttle:5,1', 'throttle:api.rest', etc.).
-     *
-     * Supports both string and array forms:
+     * Walks a method-call chain (right to left) looking for a ->middleware(...)
+     * whose value is, or lists, a throttle MiddlewareThrottleDetector recognises:
      *   ->middleware('throttle:5,1')
-     *   ->middleware(['api', 'throttle:api.rest'])
+     *   ->middleware(['api', ThrottleRequests::using('api')])
      */
     private function chainContainsThrottleMiddleware(Node $node): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
             if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
                 $firstArg = $node->args[0] ?? null;
-                if ($firstArg instanceof Node\Arg) {
-                    $arg = $firstArg->value;
-                    // ->middleware('throttle:5,1')
-                    if ($arg instanceof String_ && str_starts_with($arg->value, 'throttle')) {
-                        return true;
-                    }
-                    // ->middleware(['api', 'throttle:api.rest'])
-                    if ($arg instanceof Node\Expr\Array_) {
-                        foreach ($arg->items as $item) {
-                            if ($item instanceof Node\Expr\ArrayItem
-                                && $item->value instanceof String_
-                                && str_starts_with($item->value->value, 'throttle')) {
-                                return true;
-                            }
-                        }
-                    }
+                if ($firstArg instanceof Node\Arg && $this->throttles->expressionIsThrottle($firstArg->value)) {
+                    return true;
                 }
             }
             if ($node instanceof MethodCall) {

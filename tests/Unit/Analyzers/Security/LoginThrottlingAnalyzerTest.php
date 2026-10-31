@@ -2340,6 +2340,87 @@ PHP;
         ];
     }
 
+    /**
+     * The login route sits far enough inside its group that no line of the group's
+     * opening falls in the window the per-line throttle check reads.
+     *
+     * @param  array<string, string>  $files
+     *
+     * @dataProvider throttleClassGroupProvider
+     */
+    #[DataProvider('throttleClassGroupProvider')]
+    public function test_throttle_class_on_the_route_group_covers_the_login_controller(array $files): void
+    {
+        $result = $this->analyzeApp($files + [
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function throttleClassGroupProvider(): array
+    {
+        $sessionRoutes = "<?php\n\nuse App\\Http\\Controllers\\Auth\\LoginController;\n\nRoute::post('/session/login', [LoginController::class, 'login']);\n";
+        $bootstrap = static fn (string $registration): string => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Routing\\Middleware\\ThrottleRequests;\nuse Illuminate\\Support\\Facades\\Route;\n\n"
+            ."return Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            {$registration}\n        },\n    )\n    ->create();\n";
+
+        return [
+            'in-file group on an aliased import' => [[
+                'routes/web.php' => self::groupedLoginRoutes('Route::middleware(Cap::class)->group(function () {'),
+            ]],
+            'in-file group on ::using()' => [[
+                'routes/web.php' => self::groupedLoginRoutes("Route::middleware(['web', ThrottleRequests::using('login')])->group(function () {"),
+            ]],
+            'in-file array-form group' => [[
+                'routes/web.php' => self::groupedLoginRoutes("Route::group(['middleware' => ThrottleRequests::class], function () {"),
+            ]],
+            'bootstrap registration on ::using()' => [[
+                'bootstrap/app.php' => $bootstrap("Route::middleware(['web', ThrottleRequests::using('login')])->group(base_path('routes/session.php'));"),
+                'routes/web.php' => '<?php',
+                'routes/session.php' => $sessionRoutes,
+            ]],
+            'bootstrap array-form registration' => [[
+                'bootstrap/app.php' => $bootstrap("Route::group(['middleware' => ['web', ThrottleRequests::class]], base_path('routes/session.php'));"),
+                'routes/web.php' => '<?php',
+                'routes/session.php' => $sessionRoutes,
+            ]],
+        ];
+    }
+
+    public function test_app_alias_for_throttle_on_the_route_group_covers_the_login_controller(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => self::appKernel(
+                "protected \$middlewareAliases = ['signin.cap' => \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class];"
+            ),
+            'routes/web.php' => self::groupedLoginRoutes("Route::middleware('signin.cap')->group(function () {"),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttle_alias_re_registered_to_a_non_throttle_does_not_cover_the_route_group(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Kernel.php' => self::appKernel(
+                "protected \$middlewareAliases = ['throttle' => \\App\\Http\\Middleware\\NoopThrottle::class];"
+            ),
+            'app/Http/Middleware/NoopThrottle.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass NoopThrottle\n{\n    public function handle(\$request, \\Closure \$next)\n    {\n        return \$next(\$request);\n    }\n}\n",
+            'routes/web.php' => self::groupedLoginRoutes("Route::middleware('throttle:60,1')->group(function () {"),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'Login route "/session/login" lacks rate limiting protection',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
+    }
+
     public function test_chained_throttle_removed_from_web_group_does_not_clear_web_login(): void
     {
         $result = $this->analyzeApp([
@@ -3425,6 +3506,29 @@ class Kernel extends HttpKernel
 {
     {$properties}
 }
+PHP;
+    }
+
+    /**
+     * A route file whose login route sits five lines inside the group the given
+     * line opens, with ThrottleRequests imported as itself and as Cap.
+     */
+    private static function groupedLoginRoutes(string $groupOpening): string
+    {
+        return <<<PHP
+<?php
+
+use App\Http\Controllers\Auth\LoginController;
+use Illuminate\Routing\Middleware\ThrottleRequests;
+use Illuminate\Routing\Middleware\ThrottleRequests as Cap;
+
+{$groupOpening}
+    Route::get('/session', fn () => 'form');
+    Route::get('/session/help', fn () => 'help');
+    Route::get('/session/terms', fn () => 'terms');
+    Route::get('/session/privacy', fn () => 'privacy');
+    Route::post('/session/login', [LoginController::class, 'login']);
+});
 PHP;
     }
 

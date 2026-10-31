@@ -1051,6 +1051,8 @@ ENV;
             'quoted value' => ['APP_KEY="base64:c2hvcnQ="'],
             'space around equals' => ['APP_KEY = base64:c2hvcnQ='],
             'indented' => ['  APP_KEY='],
+            'empty double-quoted value' => ['APP_KEY=""'],
+            'empty single-quoted value' => ["APP_KEY=''"],
         ];
     }
 

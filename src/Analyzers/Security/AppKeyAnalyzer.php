@@ -269,10 +269,12 @@ class AppKeyAnalyzer extends AbstractFileAnalyzer
      *
      * The command replaces /^APP_KEY=<current key>/m, so the line must start with APP_KEY= followed
      * by the value as Laravel read it: no export prefix, quotes, indentation or spaces around =.
+     * The value must also end the line or be followed by whitespace, as the command leaves anything
+     * else in place, so APP_KEY="" becomes APP_KEY=<new key>"" and the new key reads with the quotes.
      */
     private function keyGenerateCanRewrite(string $line, string $value): bool
     {
-        return str_starts_with($line, 'APP_KEY='.$value);
+        return preg_match('/^APP_KEY='.preg_quote($value, '/').'(?:\s|$)/', $line) === 1;
     }
 
     /**

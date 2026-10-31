@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use Closure;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt\Expression;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -133,6 +134,9 @@ class MiddlewareThrottleDetectorTest extends TestCase
             'dynamic method name' => ["\$middleware->{\$method}('throttle:60,1');"],
             'chain rooted at a static call' => ["Route::middleware('web')->append('throttle:60,1');"],
             'unknown method' => ["\$middleware->redirectGuestsTo('throttle');"],
+            'unregistered name with the word in it' => ["\$middleware->web(append: ['skip-throttle']);"],
+            'class with the name in it' => ['$middleware->web(append: [\\App\\Http\\Middleware\\ThrottleRequestsAudit::class]);'],
+            'class constant other than class' => ['$middleware->web(append: [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::KEY]);'],
         ];
     }
 
@@ -164,13 +168,59 @@ class MiddlewareThrottleDetectorTest extends TestCase
         $this->assertTrue($this->bootstrapDetector('$middleware->web(append: [Throttle::class]);', $imports)->throttlesGroups(['web']));
     }
 
+    public function test_kernel_group_class_whose_name_contains_throttle_requests_is_not_a_throttle(): void
+    {
+        $detector = $this->detector(['app/Http/Kernel.php' => $this->kernel(
+            "protected \$middlewareGroups = ['web' => [\\App\\Http\\Middleware\\ThrottleRequestsAudit::class]];"
+        )]);
+
+        $this->assertFalse($detector->throttlesGroups(['web']));
+    }
+
+    public function test_judge_decides_which_names_throttle(): void
+    {
+        $detector = $this->detector(
+            ['app/Http/Kernel.php' => $this->kernel("protected \$middlewareGroups = ['web' => ['login.cap:5,1'], 'api' => ['throttle:60,1']];")],
+            fn (string $name): bool => $name === 'login.cap:5,1',
+        );
+
+        $this->assertTrue($detector->throttlesGroups(['web']));
+        $this->assertFalse($detector->throttlesGroups(['api']));
+    }
+
+    public function test_judge_receives_a_class_reference_fully_qualified_with_a_leading_backslash(): void
+    {
+        $names = [];
+        $detector = $this->detector(
+            ['bootstrap/app.php' => $this->bootstrap(
+                "\$middleware->web(append: [Throttle::class.':5,1', Throttle::using('login'), 'login.cap']);",
+                'use Illuminate\\Routing\\Middleware\\ThrottleRequests as Throttle;',
+            )],
+            function (string $name) use (&$names): bool {
+                $names[] = $name;
+
+                return false;
+            },
+        );
+
+        $this->assertFalse($detector->throttlesGroups(['web']));
+        $this->assertSame([
+            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests',
+            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests',
+            'login.cap',
+        ], $names);
+    }
+
     public function test_expression_is_throttle_reads_an_unresolved_name_as_written(): void
     {
         $detector = $this->detector([]);
         $parser = new AstParser;
 
-        $this->assertTrue($detector->expressionIsThrottle($this->expression($parser, "ThrottleRequests::class.':60,1'")));
-        $this->assertTrue($detector->expressionIsThrottle($this->expression($parser, "['auth', ThrottleRequests::using('login')]")));
+        // As written, a short name in the global namespace names \ThrottleRequests, not the framework class
+        $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, "ThrottleRequests::class.':60,1'")));
+        $this->assertTrue($detector->expressionIsThrottle($this->expression($parser, "\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':60,1'")));
+        $this->assertTrue($detector->expressionIsThrottle($this->expression($parser, "['auth', \\Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis::using('login')]")));
+        $this->assertTrue($detector->expressionIsThrottle($this->expression($parser, "'throttle:'.\$perMinute")));
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, 'Throttle::class')));
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, '$throttle::class')));
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, "\$throttle::using('login')")));
@@ -187,7 +237,12 @@ class MiddlewareThrottleDetectorTest extends TestCase
 
     private function bootstrapDetector(string $body, string $imports = ''): MiddlewareThrottleDetector
     {
-        $bootstrap = <<<PHP
+        return $this->detector(['bootstrap/app.php' => $this->bootstrap($body, $imports)]);
+    }
+
+    private function bootstrap(string $body, string $imports = ''): string
+    {
+        return <<<PHP
 <?php
 
 use Illuminate\\Foundation\\Application;
@@ -200,8 +255,6 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->create();
 PHP;
-
-        return $this->detector(['bootstrap/app.php' => $bootstrap]);
     }
 
     private function kernel(string $properties, string $imports = ''): string
@@ -223,8 +276,9 @@ PHP;
 
     /**
      * @param  array<string, string>  $files
+     * @param  (Closure(string): bool)|null  $nameThrottles
      */
-    private function detector(array $files): MiddlewareThrottleDetector
+    private function detector(array $files, ?Closure $nameThrottles = null): MiddlewareThrottleDetector
     {
         $dir = $this->uniqueTempPath('middleware_throttle_detector_test_');
         mkdir($dir, 0755, true);
@@ -235,7 +289,7 @@ PHP;
             file_put_contents($dir.'/'.$path, $content);
         }
 
-        return new MiddlewareThrottleDetector($dir, new AstParser);
+        return new MiddlewareThrottleDetector($dir, new AstParser, $nameThrottles);
     }
 
     private function removeDir(string $dir): void

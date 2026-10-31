@@ -2254,6 +2254,92 @@ PHP;
         $this->assertPassed($result);
     }
 
+    /**
+     * No RouteServiceProvider registers routes/web.php in the 'web' group, so only the
+     * group check can clear the login.
+     *
+     * @param  array<string, string>  $files
+     *
+     * @dataProvider resolvedWebGroupThrottleProvider
+     */
+    #[DataProvider('resolvedWebGroupThrottleProvider')]
+    public function test_web_group_throttle_resolved_by_name_clears_web_login(array $files): void
+    {
+        $result = $this->analyzeApp($files + ['routes/web.php' => $this->unthrottledWebLogin()]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function resolvedWebGroupThrottleProvider(): array
+    {
+        return [
+            'kernel alias' => [[
+                'app/Http/Kernel.php' => self::appKernel(
+                    "protected \$middlewareAliases = ['login.cap' => \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class];\n"
+                    ."    protected \$middlewareGroups = ['web' => [\\Illuminate\\Session\\Middleware\\StartSession::class, 'login.cap:5,1']];"
+                ),
+            ]],
+            'bootstrap alias' => [[
+                'bootstrap/app.php' => self::laravel11Bootstrap(
+                    "\$middleware->alias(['login.cap' => \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class])->web(append: ['login.cap:5,1']);"
+                ),
+            ]],
+            'nested group' => [[
+                'app/Http/Kernel.php' => self::appKernel(
+                    "protected \$middlewareGroups = ['web' => ['login-limits'], 'login-limits' => ['throttle:5,1']];"
+                ),
+            ]],
+            'app subclass of ThrottleRequests' => [[
+                'app/Http/Kernel.php' => self::appKernel(
+                    "protected \$middlewareGroups = ['web' => [\\App\\Http\\Middleware\\ThrottleRequests::class.':5,1']];"
+                ),
+                'app/Http/Middleware/ThrottleRequests.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Routing\\Middleware\\ThrottleRequests as BaseThrottleRequests;\n\nclass ThrottleRequests extends BaseThrottleRequests\n{\n}\n",
+            ]],
+        ];
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     *
+     * @dataProvider unresolvedWebGroupThrottleProvider
+     */
+    #[DataProvider('unresolvedWebGroupThrottleProvider')]
+    public function test_web_group_middleware_that_only_names_a_throttle_does_not_clear_web_login(array $files): void
+    {
+        $result = $this->analyzeApp($files + ['routes/web.php' => $this->unthrottledWebLogin()]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function unresolvedWebGroupThrottleProvider(): array
+    {
+        return [
+            'app class with the name in it' => [[
+                'app/Http/Kernel.php' => self::appKernel(
+                    "protected \$middlewareGroups = ['web' => [\\App\\Http\\Middleware\\ThrottleRequestsAudit::class]];"
+                ),
+                'app/Http/Middleware/ThrottleRequestsAudit.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass ThrottleRequestsAudit\n{\n    public function handle(\$request, \\Closure \$next)\n    {\n        logger()->info('request', ['path' => \$request->path()]);\n\n        return \$next(\$request);\n    }\n}\n",
+            ]],
+            'unregistered alias with the word in it' => [[
+                'app/Http/Kernel.php' => self::appKernel("protected \$middlewareGroups = ['web' => ['skip-throttle']];"),
+            ]],
+            'throttle alias re-registered to a non-throttle' => [[
+                'app/Http/Kernel.php' => self::appKernel(
+                    "protected \$middlewareAliases = ['throttle' => \\App\\Http\\Middleware\\NoopThrottle::class];\n"
+                    ."    protected \$middlewareGroups = ['web' => ['throttle:60,1']];"
+                ),
+                'app/Http/Middleware/NoopThrottle.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass NoopThrottle\n{\n    public function handle(\$request, \\Closure \$next)\n    {\n        return \$next(\$request);\n    }\n}\n",
+            ]],
+        ];
+    }
+
     public function test_chained_throttle_removed_from_web_group_does_not_clear_web_login(): void
     {
         $result = $this->analyzeApp([
@@ -3326,7 +3412,23 @@ class RouteServiceProvider extends ServiceProvider
 PHP;
     }
 
-    private function laravel11Bootstrap(string $middlewareBody, string $imports = ''): string
+    private static function appKernel(string $properties): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    {$properties}
+}
+PHP;
+    }
+
+    private static function laravel11Bootstrap(string $middlewareBody, string $imports = ''): string
     {
         return <<<PHP
 <?php

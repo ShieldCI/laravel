@@ -57,15 +57,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource'];
 
-    /**
-     * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
-     * alias names, and the Redis-backed variant.
-     */
-    private const THROTTLE_MIDDLEWARE = [
-        'Illuminate\\Routing\\Middleware\\ThrottleRequests',
-        'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
-    ];
-
     public function __construct(
         private AstParser $parser
     ) {}
@@ -107,8 +98,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // kept apart because each only covers the routes registered in its group:
         // the stock Laravel 9/10 Kernel throttles 'api' out of the box, and that
         // says nothing about a login route in routes/web.php. A throttle on the
-        // global stack runs on every route, so it covers both.
-        $throttles = new MiddlewareThrottleDetector($this->getBasePath(), $this->parser);
+        // global stack runs on every route, so it covers both. Each middleware there
+        // is judged as a route's own is, so an app alias for ThrottleRequests counts.
+        $throttles = new MiddlewareThrottleDetector($this->getBasePath(), $this->parser, $this->middlewareNameThrottles(...));
         $hasWebGroupThrottle = $throttles->throttlesGroups(['web']);
         $hasApiGroupThrottle = $throttles->throttlesGroups(['api']);
 
@@ -1341,7 +1333,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
     {
         // The framework's own throttle middleware, which 'throttle' names
-        if (in_array($fqn, self::THROTTLE_MIDDLEWARE, true)) {
+        if (in_array($fqn, MiddlewareThrottleDetector::THROTTLE_MIDDLEWARE, true)) {
             return true;
         }
 
@@ -1683,7 +1675,22 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         // Laravel registers 'throttle' itself, so an app need not
-        return $name === 'throttle' ? [self::THROTTLE_MIDDLEWARE[0]] : [];
+        return $name === 'throttle' ? [MiddlewareThrottleDetector::THROTTLE_MIDDLEWARE[0]] : [];
+    }
+
+    /**
+     * Whether a middleware name throttles login: one of the classes it resolves to,
+     * through the app's aliases and groups, does.
+     */
+    private function middlewareNameThrottles(string $name): bool
+    {
+        foreach ($this->middlewareClassesNamed($name) as $class) {
+            if ($this->classThrottlesLogin($class)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

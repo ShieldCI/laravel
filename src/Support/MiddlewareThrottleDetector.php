@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Support;
 
+use Closure;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
@@ -20,10 +21,24 @@ use ShieldCI\Concerns\ResolvesClassNames;
  * and earlier) and from the withMiddleware() configurator in bootstrap/app.php (Laravel
  * 11+). Class names are resolved against each file's imports, so an aliased import of
  * ThrottleRequests reads as the class it names.
+ *
+ * Which middleware names throttle is decided by name, never by what a name contains: an
+ * alias the app registers, such as 'signin.cap', can name ThrottleRequests, and a class
+ * such as ThrottleRequestsLogger need not be one. A caller that reads the app's aliases
+ * passes a judge that resolves them.
  */
 class MiddlewareThrottleDetector
 {
     use ResolvesClassNames;
+
+    /**
+     * The framework's throttle middleware: ThrottleRequests, which the 'throttle'
+     * alias names, and the Redis-backed variant.
+     */
+    public const THROTTLE_MIDDLEWARE = [
+        'Illuminate\\Routing\\Middleware\\ThrottleRequests',
+        'Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis',
+    ];
 
     /**
      * Name-resolved ASTs, keyed by path, for this instance.
@@ -32,9 +47,18 @@ class MiddlewareThrottleDetector
      */
     private array $resolved = [];
 
+    /**
+     * The judge, $nameThrottles, says whether one middleware name throttles. It is handed
+     * a string as written ('throttle:60,1', 'signin.cap'), or a class reference fully
+     * qualified with a leading backslash, so it never reads as an alias. Without a judge,
+     * only the framework's classes and the 'throttle' alias Laravel registers count.
+     *
+     * @param  (Closure(string): bool)|null  $nameThrottles
+     */
     public function __construct(
         private readonly string $basePath,
         private readonly ParserInterface $parser,
+        private readonly ?Closure $nameThrottles = null,
     ) {}
 
     /**
@@ -51,43 +75,28 @@ class MiddlewareThrottleDetector
     /**
      * Whether a middleware expression is, or (as an array) lists, a throttle:
      * 'throttle:60,1', ThrottleRequests::class, ThrottleRequests::class.':60,1',
-     * ThrottleRequests::using('login') or ThrottleRequests::with(5, 1).
+     * ThrottleRequests::using('login') or ThrottleRequests::with(5, 1), or an app
+     * alias the judge resolves to one.
      *
      * A class name is read from its resolvedName attribute when there is one, so pass
-     * a tree resolveNamesForMatching() has seen for aliased imports to count.
+     * a tree resolveNamesForMatching() has seen for aliased imports to count. Without
+     * it a name is read as written: a short ThrottleRequests names \ThrottleRequests.
      */
     public function expressionIsThrottle(Expr $expr): bool
     {
-        if ($expr instanceof String_) {
-            return str_contains($expr->value, 'throttle');
-        }
-
-        if ($expr instanceof Expr\ClassConstFetch) {
-            return $expr->class instanceof Name
-                && str_contains($this->className($expr->class), 'ThrottleRequests');
-        }
-
-        // ThrottleRequests::using('login') and ::with(5, 1) build the 'Class:params' string
-        if ($expr instanceof Expr\StaticCall) {
-            return $expr->class instanceof Name
-                && $expr->name instanceof Identifier
-                && in_array($expr->name->toLowerString(), ['using', 'with'], true)
-                && str_contains($this->className($expr->class), 'ThrottleRequests');
-        }
-
-        if ($expr instanceof Expr\BinaryOp\Concat) {
-            return $this->expressionIsThrottle($expr->left);
-        }
-
         if ($expr instanceof Expr\Array_) {
             foreach ($expr->items as $item) {
                 if ($item instanceof Expr\ArrayItem && $this->expressionIsThrottle($item->value)) {
                     return true;
                 }
             }
+
+            return false;
         }
 
-        return false;
+        $name = $this->middlewareName($expr);
+
+        return $name !== null && $this->nameThrottles($name);
     }
 
     /**
@@ -234,6 +243,54 @@ class MiddlewareThrottleDetector
         }
 
         return null;
+    }
+
+    /**
+     * The name a middleware value hands the router: a string as written, or a class
+     * reference fully qualified with a leading backslash, for X::class,
+     * X::class.':params' and X::using(...) / X::with(...), which build the
+     * 'Class:params' string. Null for anything else.
+     */
+    private function middlewareName(Expr $expr): ?string
+    {
+        if ($expr instanceof String_) {
+            return $expr->value;
+        }
+
+        if ($expr instanceof Expr\BinaryOp\Concat) {
+            return $this->middlewareName($expr->left);
+        }
+
+        if ($expr instanceof Expr\ClassConstFetch
+            && $expr->class instanceof Name
+            && $expr->name instanceof Identifier
+            && $expr->name->toLowerString() === 'class') {
+            return '\\'.$this->className($expr->class);
+        }
+
+        if ($expr instanceof Expr\StaticCall
+            && $expr->class instanceof Name
+            && $expr->name instanceof Identifier
+            && in_array($expr->name->toLowerString(), ['using', 'with'], true)) {
+            return '\\'.$this->className($expr->class);
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a middleware name throttles, by the caller's judge or, without one, by
+     * the framework's own names.
+     */
+    private function nameThrottles(string $name): bool
+    {
+        if ($this->nameThrottles !== null) {
+            return ($this->nameThrottles)($name);
+        }
+
+        $class = ltrim((string) strtok($name, ':'), '\\');
+
+        return $class === 'throttle' || in_array($class, self::THROTTLE_MIDDLEWARE, true);
     }
 
     /**

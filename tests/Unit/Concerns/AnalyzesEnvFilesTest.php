@@ -130,6 +130,63 @@ class AnalyzesEnvFilesTest extends TestCase
         $this->assertSame(['BEFORE'], array_keys($result['variables']));
     }
 
+    public function test_values_end_where_dotenv_ends_them(): void
+    {
+        $result = $this->parse(implode("\n", [
+            'UNQUOTED_SPACED=60 # seconds',
+            'UNQUOTED_TIGHT=60# seconds',
+            'ONLY_COMMENT=#nothing',
+            'DOUBLE_SPACED="60" # seconds',
+            'DOUBLE_TIGHT="60"#seconds',
+            "SINGLE_HASH='it#s' # note",
+            'DOUBLE_HASH="x # y"',
+            'ESCAPED_QUOTE="a\"b" # note',
+            'ESCAPES="a\\\\b\$c\fd\ne\rf\tg\vh"',
+            "SINGLE_LITERAL='a\\nb'",
+            'BACKSLASH_HASH=a\#b',
+            'MULTI_LINE="line1',
+            'line2" # note',
+            'INTERPOLATED=${OTHER}',
+            'EMPTY_QUOTED="" # note',
+        ]));
+
+        $this->assertSame([
+            'UNQUOTED_SPACED' => '60',
+            'UNQUOTED_TIGHT' => '60',
+            'ONLY_COMMENT' => '',
+            'DOUBLE_SPACED' => '60',
+            'DOUBLE_TIGHT' => '60',
+            'SINGLE_HASH' => 'it#s',
+            'DOUBLE_HASH' => 'x # y',
+            'ESCAPED_QUOTE' => 'a"b',
+            'ESCAPES' => "a\\b\$c\fd\ne\rf\tg\vh",
+            'SINGLE_LITERAL' => 'a\nb',
+            'BACKSLASH_HASH' => 'a\\',
+            'MULTI_LINE' => "line1\nline2",
+            'INTERPOLATED' => '${OTHER}',
+            'EMPTY_QUOTED' => '',
+        ], $result['values']);
+    }
+
+    public function test_values_dotenv_rejects_stay_as_written(): void
+    {
+        $result = $this->parse(implode("\n", [
+            'TRAILING_TEXT="60"x',
+            "UNCLOSED_SINGLE='60",
+            'UNKNOWN_ESCAPE="a\qb"',
+            'INNER_SPACE=a b',
+            'INNER_SPACE_COMMENT=a b # note',
+        ]));
+
+        $this->assertSame([
+            'TRAILING_TEXT' => '"60"x',
+            'UNCLOSED_SINGLE' => "'60",
+            'UNKNOWN_ESCAPE' => '"a\qb"',
+            'INNER_SPACE' => 'a b',
+            'INNER_SPACE_COMMENT' => 'a b # note',
+        ], $result['values']);
+    }
+
     public function test_commented_variables_use_dotenv_name_rules(): void
     {
         $result = $this->parseCommented(implode("\n", [

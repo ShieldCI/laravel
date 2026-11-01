@@ -6,22 +6,28 @@
 - `MiddlewareThrottleDetector` reports whether named middleware groups in the Kernel or `bootstrap/app.php` are throttled (#520)
 - `BootstrapRouteParser` takes an optional judge, so an app alias for `ThrottleRequests` counts as a throttle (#530)
 
+### Changed
+- `app-key-security` explains how to rewrite an `export` or quoted `APP_KEY` line that `php artisan key:generate` cannot replace (#524)
+
 ### Fixed
 - `debug-mode` reads `app.debug` from the returned config array, so a commented-out or nested `debug` entry is no longer reported (#509)
 - `app-key-security` reads `key` and `cipher` from the returned config array, so commented-out or nested entries are no longer reported (#511)
 - `app-key-security` accepts the `AES-128-GCM` and `AES-256-GCM` ciphers, instead of reporting them at High (#513)
 - `app-key-security` reports an `APP_KEY` whose size does not match the configured cipher, which Laravel's encrypter rejects (#516)
-- `app-key-security` checks each `APP_PREVIOUS_KEYS` entry against the cipher on Laravel 11+, where a wrong-size entry fails every request (#519)
+- `app-key-security` checks each `APP_PREVIOUS_KEYS` entry against the cipher on Laravel 11+, where a wrong-size entry fails any request that uses the encrypter (#519)
 - `login-throttling` recognises group throttles set with `ThrottleRequests::using()`, an aliased import or a chained configurator call (#520)
 - `app-key-security` reads the `APP_KEY` name as dotenv does, so `export APP_KEY=` and quoted names are found and `app_key` is not (#524)
 - `app-key-security` validates the last of several `APP_KEY` lines, the one Laravel reads, rather than the first (#524)
 - `login-throttling` matches group throttle middleware by name rather than substring, so `skip-throttle` no longer counts as a throttle (#526)
 - `login-throttling` no longer reports a login controller whose route group throttles with a class form, such as `ThrottleRequests::class` (#530)
 - `env-variables-complete` no longer reports `export`, quoted or lowercase `.env` names that Laravel loads as missing (#531)
+- `env-example-documented` reports a lowercase `.env` name such as `app_name` as undocumented, since dotenv loads it as a separate variable (#531)
+- `env-example-documented` counts `export` and quoted names in `.env.example` as documented, and skips the inner lines of multi-line values (#531)
 - `login-throttling` no longer credits throttle text near a route, so `->middleware('throttles.audit')` no longer clears a login route (#533)
 - `login-throttling` credits a throttle passed after another middleware, such as `->middleware('auth', 'throttle:6,1')` (#533)
 - `env-variables-complete` reads `.env` values as dotenv does, so `report_redundant` reports `CACHE_TTL=60 # seconds` restating a default (#535)
 - `csrf-protection` treats a route file registered with `->middleware('auth', 'web')` as web, instead of reporting its POST routes (#536)
+- `login-throttling` judges a route file registered with `->middleware('auth', 'api')` against the api group throttle, not the web group's (#536)
 
 ## v1.20.0
 

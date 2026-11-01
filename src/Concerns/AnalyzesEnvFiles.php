@@ -342,7 +342,8 @@ trait AnalyzesEnvFiles
     /**
      * The value a KEY=VALUE entry assigns, read as dotenv's EntryParser reads it.
      *
-     * An unquoted value ends at the first `#`. A quoted value ends at its closing quote,
+     * An unquoted value ends at the first `#`, and whitespace may only precede that `#`.
+     * A quoted value ends at its closing quote,
      * and only whitespace or a comment may follow it; double-quoted escapes are decoded,
      * single-quoted values are literal. ${VAR} references are left unresolved. A value
      * dotenv rejects is returned trimmed but otherwise as written.
@@ -354,8 +355,9 @@ trait AnalyzesEnvFiles
 
         if ($quote !== '"' && $quote !== "'") {
             $hash = strpos($value, '#');
+            $parsed = $hash === false ? $value : rtrim(substr($value, 0, $hash));
 
-            return $hash === false ? $value : rtrim(substr($value, 0, $hash));
+            return preg_match('/\s/', $parsed) === 1 ? $value : $parsed;
         }
 
         $parsed = '';

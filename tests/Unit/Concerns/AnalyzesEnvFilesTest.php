@@ -175,6 +175,7 @@ class AnalyzesEnvFilesTest extends TestCase
             "UNCLOSED_SINGLE='60",
             'UNKNOWN_ESCAPE="a\qb"',
             'INNER_SPACE=a b',
+            'INNER_SPACE_COMMENT=a b # note',
         ]));
 
         $this->assertSame([
@@ -182,6 +183,7 @@ class AnalyzesEnvFilesTest extends TestCase
             'UNCLOSED_SINGLE' => "'60",
             'UNKNOWN_ESCAPE' => '"a\qb"',
             'INNER_SPACE' => 'a b',
+            'INNER_SPACE_COMMENT' => 'a b # note',
         ], $result['values']);
     }
 

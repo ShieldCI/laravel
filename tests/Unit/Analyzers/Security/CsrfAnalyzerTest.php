@@ -2180,6 +2180,37 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_route_file_registered_with_web_as_a_later_middleware_argument(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('auth', 'web')
+                ->group(base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
     public function test_skips_route_file_required_inside_web_group_closure_in_bootstrap(): void
     {
         // Compass pattern: auth.php is require'd inside a ->group(Closure) on a

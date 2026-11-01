@@ -726,30 +726,18 @@ class BootstrapRouteParser
      * Walks a method-call chain (right to left) looking for ->middleware(name)
      * or Route::middleware(name) anywhere in the chain.
      *
-     * Supports both string and array forms:
+     * Supports the string, argument-list and array forms:
      *   ->middleware('web')
+     *   ->middleware('auth', 'web')
      *   ->middleware(['web', 'throttle:60,1'])
      */
     private function chainContainsMiddleware(Node $node, string $middlewareName): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
             if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
-                $firstArg = $node->args[0] ?? null;
-                if ($firstArg instanceof Node\Arg) {
-                    $arg = $firstArg->value;
-                    // ->middleware('web')
-                    if ($arg instanceof String_ && $arg->value === $middlewareName) {
+                foreach ($this->middlewareEntries($node) as $entry) {
+                    if ($entry instanceof String_ && $entry->value === $middlewareName) {
                         return true;
-                    }
-                    // ->middleware(['web', 'throttle:api.rest'])
-                    if ($arg instanceof Node\Expr\Array_) {
-                        foreach ($arg->items as $item) {
-                            if ($item instanceof Node\Expr\ArrayItem
-                                && $item->value instanceof String_
-                                && $item->value->value === $middlewareName) {
-                                return true;
-                            }
-                        }
                     }
                 }
             }
@@ -759,6 +747,37 @@ class BootstrapRouteParser
         }
 
         return false;
+    }
+
+    /**
+     * The middleware a ->middleware(...) call registers, read as Laravel's Router and
+     * RouteRegistrar read their arguments: a leading array is the whole list and any
+     * later arguments are dropped; otherwise every argument is one middleware.
+     *
+     * @return array<Node\Expr>
+     */
+    private function middlewareEntries(StaticCall|MethodCall $call): array
+    {
+        $firstArg = $call->args[0] ?? null;
+        if ($firstArg instanceof Node\Arg && $firstArg->value instanceof Node\Expr\Array_) {
+            $entries = [];
+            foreach ($firstArg->value->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    $entries[] = $item->value;
+                }
+            }
+
+            return $entries;
+        }
+
+        $entries = [];
+        foreach ($call->args as $arg) {
+            if ($arg instanceof Node\Arg) {
+                $entries[] = $arg->value;
+            }
+        }
+
+        return $entries;
     }
 
     /**

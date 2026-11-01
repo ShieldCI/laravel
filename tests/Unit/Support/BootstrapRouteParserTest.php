@@ -1045,6 +1045,91 @@ PHP;
         }
     }
 
+    // ==================== Middleware given as several arguments ====================
+
+    /**
+     * @dataProvider groupMiddlewareArgumentsProvider
+     */
+    #[DataProvider('groupMiddlewareArgumentsProvider')]
+    public function test_group_membership_reads_every_middleware_argument(string $registration, string $group, bool $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $group === 'web'
+                ? $parser->getWebProtectedRouteFiles()
+                : $parser->getApiRegisteredRouteFiles();
+
+            if ($expected) {
+                $this->assertCount(1, $result);
+                $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+            } else {
+                $this->assertSame([], $result);
+            }
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function groupMiddlewareArgumentsProvider(): array
+    {
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'web as a later argument' => ["Route::middleware('auth', 'web')->group({$file});", 'web', true],
+            'web as a later argument mid-chain' => ["Route::prefix('partner')->middleware('auth', 'web')->group({$file});", 'web', true],
+            'api as a later argument' => ["Route::middleware('auth:sanctum', 'api')->group({$file});", 'api', true],
+            // Laravel takes only the array when the first argument is one, and drops the rest.
+            'web after a leading array' => ["Route::middleware(['auth'], 'web')->group({$file});", 'web', false],
+            'name that only starts with web' => ["Route::middleware('auth', 'webhooks')->group({$file});", 'web', false],
+        ];
+    }
+
+    public function test_detects_web_given_as_a_later_middleware_argument_in_providers_dir(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::middleware('auth', 'web')
+                ->group(base_path('routes/partner.php'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getWebProtectedRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_detects_files_required_inside_web_middleware_group_closure(): void
     {
         // Compass pattern: route files are require'd inside a ->group(Closure) on a

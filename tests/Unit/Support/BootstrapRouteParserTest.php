@@ -1414,6 +1414,7 @@ PHP;
             'array-form group on a class' => [$import, "Route::group(['middleware' => ThrottleRequests::class], {$file});"],
             'array-form group on a string' => ['', "Route::group(['middleware' => ['api', 'throttle:5,1']], {$file});"],
             'variadic names' => ['', "Route::middleware('api', 'throttle:5,1')->group({$file});"],
+            'class as a later argument mid-chain' => [$import, "Route::prefix('partner')->middleware('auth', ThrottleRequests::class)->group({$file});"],
         ];
     }
 
@@ -1448,6 +1449,8 @@ PHP;
             'app class with the name in it' => ["Route::middleware(\\App\\Http\\Middleware\\ThrottleRequestsAudit::class)->group({$file});"],
             'alias that only starts with throttle' => ["Route::middleware('throttles.audit')->group({$file});"],
             'array-form group without a throttle' => ["Route::group(['middleware' => 'auth'], {$file});"],
+            // Laravel takes only the array when the first argument is one, and drops the rest.
+            'throttle after a leading array' => ["Route::middleware(['auth'], 'throttle:5,1')->group({$file});"],
         ];
     }
 

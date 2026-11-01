@@ -791,8 +791,8 @@ class BootstrapRouteParser
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
             if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
-                foreach ($node->args as $arg) {
-                    if ($arg instanceof Node\Arg && $this->throttles->expressionIsThrottle($arg->value)) {
+                foreach ($this->middlewareEntries($node) as $entry) {
+                    if ($this->throttles->expressionIsThrottle($entry)) {
                         return true;
                     }
                 }

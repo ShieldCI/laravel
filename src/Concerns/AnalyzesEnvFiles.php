@@ -26,7 +26,7 @@ trait AnalyzesEnvFiles
      * Parse environment file and return key-value pairs with error tracking.
      *
      * `variables` maps each key to its raw line; `values` maps each key to
-     * its trimmed, unquoted value.
+     * its value as dotenv reads it, without quotes or inline comment.
      *
      * @return array{variables: array<string, string>, values: array<string, string>, error: string|null}
      */
@@ -340,19 +340,55 @@ trait AnalyzesEnvFiles
     }
 
     /**
-     * Extract the value portion of a KEY=VALUE line, trimmed and with
-     * matching surrounding quotes stripped.
+     * The value a KEY=VALUE entry assigns, read as dotenv's EntryParser reads it.
+     *
+     * An unquoted value ends at the first `#`. A quoted value ends at its closing quote,
+     * and only whitespace or a comment may follow it; double-quoted escapes are decoded,
+     * single-quoted values are literal. ${VAR} references are left unresolved. A value
+     * dotenv rejects is returned trimmed but otherwise as written.
      */
     private function extractEnvValue(string $line): string
     {
         $value = trim(substr($line, (int) strpos($line, '=') + 1));
+        $quote = $value[0] ?? '';
 
-        if (strlen($value) >= 2) {
-            $first = $value[0];
+        if ($quote !== '"' && $quote !== "'") {
+            $hash = strpos($value, '#');
 
-            if (($first === '"' || $first === "'") && str_ends_with($value, $first)) {
-                $value = substr($value, 1, -1);
+            return $hash === false ? $value : rtrim(substr($value, 0, $hash));
+        }
+
+        $parsed = '';
+        $length = strlen($value);
+
+        for ($i = 1; $i < $length; $i++) {
+            $char = $value[$i];
+
+            if ($char === $quote) {
+                $rest = ltrim(substr($value, $i + 1));
+
+                return $rest === '' || $rest[0] === '#' ? $parsed : $value;
             }
+
+            if ($quote === '"' && $char === '\\') {
+                $escaped = match ($value[++$i] ?? '') {
+                    '"', '\\', '$' => $value[$i],
+                    'f' => "\f",
+                    'n' => "\n",
+                    'r' => "\r",
+                    't' => "\t",
+                    'v' => "\v",
+                    default => null,
+                };
+
+                if ($escaped === null) {
+                    return $value;
+                }
+
+                $char = $escaped;
+            }
+
+            $parsed .= $char;
         }
 
         return $value;

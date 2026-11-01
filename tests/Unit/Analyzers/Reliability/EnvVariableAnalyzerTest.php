@@ -1045,6 +1045,50 @@ PHP;
         );
     }
 
+    public function test_redundant_override_reads_values_past_inline_comments(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => "WIDGET_MAX_SEATS=1000\nWIDGET_LABEL=widgets",
+            '.env' => "WIDGET_MAX_SEATS=1000 # seats\nWIDGET_LABEL=\"widgets\" # label",
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000), 'label' => env('WIDGET_LABEL', 'widgets')];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertSame('redundant-override', $issues[0]->metadata['code']);
+        $this->assertEqualsCanonicalizing(
+            ['WIDGET_MAX_SEATS', 'WIDGET_LABEL'],
+            $issues[0]->metadata['redundant_variables']
+        );
+    }
+
+    public function test_redundant_override_skips_values_dotenv_rejects(): void
+    {
+        config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);
+
+        $tempDir = $this->createTempDirectory([
+            '.env.example' => 'WIDGET_MAX_SEATS=1000',
+            '.env' => 'WIDGET_MAX_SEATS="1000"x',
+            'config/widget.php' => "<?php\n\nreturn ['seats' => env('WIDGET_MAX_SEATS', 1000)];",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertEmpty($result->getIssues());
+    }
+
     public function test_redundant_override_matches_boolean_default_text(): void
     {
         config(['shieldci.analyzers.reliability.env-variables-complete.report_redundant' => true]);

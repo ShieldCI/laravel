@@ -2841,6 +2841,41 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider computedThrottleRouteProvider
+     */
+    #[DataProvider('computedThrottleRouteProvider')]
+    public function test_throttle_with_a_computed_limit_clears_the_login_route(string $middleware): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store'])->middleware(".$middleware.");\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function computedThrottleRouteProvider(): array
+    {
+        return [
+            'concatenated limit' => ["'throttle:'.config('auth.login_limit')"],
+            'interpolated limit' => ['"throttle:{$loginLimit},1"'],
+            'concatenated limit in a list' => ["['guest', 'throttle:'.\$loginLimit.',1']"],
+        ];
+    }
+
+    public function test_concatenated_name_that_only_starts_with_throttle_does_not_clear_the_login_route(): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store'])->middleware('throttle'.\$suffix);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
     public function test_auth_routes_in_a_throttled_group_clear_the_login_controller(): void
     {
         $routes = <<<'PHP'

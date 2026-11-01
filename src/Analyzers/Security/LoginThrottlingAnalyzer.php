@@ -468,8 +468,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             continue;
                         }
 
-                        // A throttle on the route, its group or its file covers the
-                        // controllers it names; one in the controller clears only the route.
+                        // A throttle the route, its group or its file applies covers the
+                        // controllers the route names; one its controller registers on
+                        // itself clears only the route.
                         $action = $routeActions[$lineNumber + 1] ?? null;
                         $routeThrottled = $fileThrottled || $inThrottledGroup
                             || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $action);
@@ -1557,9 +1558,35 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return $this->middlewareClassesNamed($expr->value);
         }
 
+        $named = $this->computedMiddlewareName($expr);
+        if ($named !== null) {
+            return $this->middlewareClassesNamed($named);
+        }
+
         $class = $this->middlewareClassName($expr);
 
         return $class === null ? [] : [$class];
+    }
+
+    /**
+     * The literal text a computed middleware string starts with, as in
+     * 'throttle:'.config('auth.limit') or "throttle:{$limit}", when it already
+     * holds the ':' that ends the name. Before that ':' the name is not finished:
+     * 'throttle'.$suffix may be 'throttles.audit'.
+     */
+    private function computedMiddlewareName(Node\Expr $expr): ?string
+    {
+        while ($expr instanceof Node\Expr\BinaryOp\Concat) {
+            $expr = $expr->left;
+        }
+
+        $text = match (true) {
+            $expr instanceof Node\Scalar\String_ => $expr->value,
+            $expr instanceof Node\Scalar\InterpolatedString && ($expr->parts[0] ?? null) instanceof Node\InterpolatedStringPart => $expr->parts[0]->value,
+            default => null,
+        };
+
+        return $text !== null && str_contains($text, ':') ? $text : null;
     }
 
     /**

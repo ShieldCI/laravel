@@ -375,6 +375,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 // A route reference string carries no position, so controller names
                 // resolve against the imports the file declares by its end.
                 $ast = $this->parser->parseFile($filePath);
+
+                // A file that does not parse is left to the report's parse-failure
+                // notice, as every analyzer leaves it; one that parses empty has no routes.
+                if ($ast === []) {
+                    continue;
+                }
                 $this->trackFileImports($ast);
 
                 // Middleware classes each route statement and each route group names,
@@ -394,16 +400,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     $inThrottledGroup = $this->lineInRanges($lineNumber + 1, $throttledRanges);
 
                     // Check for Auth::routes() helper
-                    if (preg_match('/Auth::routes\s*\(/i', $line, $authCall, PREG_OFFSET_CAPTURE)) {
+                    if (preg_match('/Auth::routes\s*\(/i', $line)) {
                         // Auth::routes() includes login routes - check if throttled
                         // laravel/ui registers these against App\Http\Controllers\Auth\LoginController,
                         // posting the credentials to its login() method
                         $loginController = 'App\\Http\\Controllers\\Auth\\LoginController';
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $authCall[0][1])
-                            || $this->routeClassesThrottle([$loginController], ['class' => $loginController, 'method' => 'login'])
-                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, ['class' => $loginController, 'method' => 'login']);
+                        $loginAction = ['class' => $loginController, 'method' => 'login'];
+                        $routeThrottled = $fileThrottled || $inThrottledGroup
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $loginAction);
 
-                        if (! $hasThrottle && ! $fileThrottled && ! $inThrottledGroup) {
+                        if ($routeThrottled) {
+                            $coveredControllers[$loginController] = true;
+                        }
+
+                        if (! $routeThrottled && ! $this->routeClassesThrottle([$loginController], $loginAction)) {
                             $issues[] = $this->createIssueWithSnippet(
                                 message: 'Auth::routes() includes login endpoint without explicit rate limiting',
                                 filePath: $filePath,
@@ -428,20 +438,19 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                     // For web files GET never matches: a GET login route renders the form,
                     // and the credentials arrive on the POST.
                     $routeUri = null;
-                    $routeColumn = 0;
                     if ($isApiRoute) {
-                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
-                            [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
-                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
-                            [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
+                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m)) {
+                            $routeUri = $m[2];
+                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
+                            $routeUri = $m[2];
                         }
-                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m, PREG_OFFSET_CAPTURE)) {
-                        [$routeUri, $routeColumn] = [$m[2][0], $m[0][1]];
+                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
+                        $routeUri = $m[2];
                     }
 
                     // A verb chained after another Route:: call, Route::middleware(...)->post(...),
                     // judged by the same verb and URI rules. routeMiddleware() reads the
-                    // middleware on both sides of its verb, so the text scan adds nothing.
+                    // middleware on both sides of its verb.
                     $chained = $chainedRoutes[$lineNumber + 1] ?? null;
                     if ($routeUri === null && $chained !== null && $this->isLoginRoute($chained['verb'], $chained['uri'], $isApiRoute)) {
                         $routeUri = $chained['uri'];
@@ -459,20 +468,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                             continue;
                         }
 
-                        // Check if this route or surrounding lines have throttle middleware
-                        $hasThrottle = $this->checkRouteHasThrottling($lines, $lineNumber, $routeColumn) || $inThrottledGroup;
-                        $routeClasses = $this->controllersReferencedByRoute($lines, $lineNumber);
+                        // A throttle the route, its group or its file applies covers the
+                        // controllers the route names; one its controller registers on
+                        // itself clears only the route.
+                        $action = $routeActions[$lineNumber + 1] ?? null;
+                        $routeThrottled = $fileThrottled || $inThrottledGroup
+                            || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $action);
 
-                        if ($hasThrottle || $fileThrottled) {
-                            foreach ($routeClasses as $controller) {
+                        if ($routeThrottled) {
+                            foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
                                 $coveredControllers[$controller] = true;
                             }
                         }
 
-                        if (! $hasThrottle
-                            && ! $fileThrottled
-                            && ! $this->routeClassesThrottle($this->actionClasses($routeActions[$lineNumber + 1] ?? null), $routeActions[$lineNumber + 1] ?? null)
-                            && ! $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $routeActions[$lineNumber + 1] ?? null)) {
+                        if (! $routeThrottled && ! $this->routeClassesThrottle($this->actionClasses($action), $action)) {
                             $routeType = $isApiRoute ? 'API authentication' : 'Login';
                             $issues[] = $this->createIssueWithSnippet(
                                 message: sprintf('%s route "%s" lacks rate limiting protection', $routeType, $routeUri),
@@ -548,10 +557,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             $method = $call->name->toLowerString();
 
             // Route::post(...)->middleware(...): the verb is further down the chain
-            if ($method === 'middleware' && ($call->args[0] ?? null) instanceof Node\Arg
+            if ($method === 'middleware'
                 && ($verb = $this->routeVerbIn($call->var)) !== null && $verb->name instanceof Node\Identifier) {
                 $line = $verb->name->getStartLine();
-                $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareClassesIn($call->args[0]->value)];
+                $statements[$line] = [...$statements[$line] ?? [], ...$this->middlewareArgumentClasses($call)];
             }
 
             if ($method === 'group') {
@@ -767,7 +776,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
                 $method = $node->name->toLowerString();
                 if ($method === 'middleware') {
-                    array_push($classes, ...$this->middlewareClassesIn($first->value));
+                    array_push($classes, ...$this->middlewareArgumentClasses($node));
                 } elseif ($method === 'controller') {
                     $controller = $this->middlewareClassName($first->value);
                 }
@@ -780,6 +789,25 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return [$classes, $controller];
+    }
+
+    /**
+     * The middleware classes a route's or group's ->middleware(...) call names. Laravel
+     * takes a list or any number of arguments, so ->middleware('auth', 'throttle:6,1')
+     * names both.
+     *
+     * @return array<int, string>
+     */
+    private function middlewareArgumentClasses(Node\Expr\MethodCall|Node\Expr\StaticCall $call): array
+    {
+        $classes = [];
+        foreach ($call->args as $arg) {
+            if ($arg instanceof Node\Arg) {
+                array_push($classes, ...$this->middlewareClassesIn($arg->value));
+            }
+        }
+
+        return $classes;
     }
 
     /**
@@ -860,113 +888,6 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         return $controllers;
-    }
-
-    /**
-     * Check if a route has throttling in nearby lines or on the same line (before/after).
-     * $column is the offset on the route's line where the route call starts.
-     *
-     * @param  array<int, string>  $lines
-     */
-    private function checkRouteHasThrottling(array $lines, int $lineNumber, int $column): bool
-    {
-        // Check current line first (for patterns like: Route::middleware('throttle')->post(...))
-        if (isset($lines[$lineNumber]) && is_string($lines[$lineNumber])) {
-            if ($this->lineHasThrottle($lines[$lineNumber])) {
-                return true;
-            }
-        }
-
-        // Check previous 3 lines (for multi-line route definitions)
-        $startLine = max(0, $lineNumber - 3);
-        for ($i = $startLine; $i < $lineNumber; $i++) {
-            if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                continue;
-            }
-
-            if ($this->lineHasThrottle($lines[$i])) {
-                // Make sure we haven't hit a semicolon between the throttle and current line
-                $hasSemicolon = false;
-                for ($j = $i; $j < $lineNumber; $j++) {
-                    if (isset($lines[$j]) && is_string($lines[$j]) && str_contains($lines[$j], ';')) {
-                        $hasSemicolon = true;
-                        break;
-                    }
-                }
-                if (! $hasSemicolon) {
-                    return true;
-                }
-            }
-        }
-
-        // The lines after the route carry its chain only up to the end of its
-        // statement; past that, a throttle belongs to another statement.
-        $endLine = $this->statementEndLine($lines, $lineNumber, $column);
-        for ($i = $lineNumber + 1; $i <= $endLine; $i++) {
-            if (isset($lines[$i]) && $this->lineHasThrottle($lines[$i])) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Index of the line where the statement starting at $column on $lineNumber
-     * ends: its ';', or the bracket of an enclosing group it sits in without
-     * one, as in an arrow-function group. The source is tokenized so that a ';'
-     * inside brackets, as in a closure body, or inside a string does not count.
-     * Reading from $column rather than the start of the line keeps a statement
-     * or group opener written before the route on that line out of the count.
-     * A statement that is never closed runs to the last line.
-     *
-     * @param  array<int, string>  $lines
-     */
-    private function statementEndLine(array $lines, int $lineNumber, int $column): int
-    {
-        $lastLine = count($lines) - 1;
-
-        // Tokenize a window that doubles until it holds the statement's end, so a
-        // route costs the length of its statement rather than the rest of the
-        // file. Cutting at a line break is safe: the tokens before the cut are the
-        // ones the whole file yields, and a string the cut leaves open stays a
-        // single token, so no ';' or bracket inside it counts.
-        for ($size = 8; ; $size *= 2) {
-            $window = array_slice($lines, $lineNumber, $size);
-            $window[0] = substr($window[0] ?? '', $column);
-            $depth = 0;
-
-            // The '<?php ' prefix shares the route's line, so token line 1 is $lineNumber.
-            foreach (\PhpToken::tokenize('<?php '.implode("\n", $window)) as $token) {
-                if ($token->is(['(', '[', '{', T_DOLLAR_OPEN_CURLY_BRACES])) {
-                    $depth++;
-                } elseif ($token->is([')', ']', '}'])) {
-                    $depth--;
-                }
-
-                // A closer that takes the depth below zero belongs to an enclosing
-                // group, so the statement ended before it.
-                if ($depth < 0 || ($depth === 0 && $token->is(';'))) {
-                    return $lineNumber + $token->line - 1;
-                }
-            }
-
-            if ($lineNumber + $size > $lastLine) {
-                return $lastLine;
-            }
-        }
-    }
-
-    /**
-     * Check if a single line contains throttle middleware.
-     */
-    private function lineHasThrottle(string $line): bool
-    {
-        // Improved patterns to catch more throttle variations
-        return preg_match('/->middleware\(["\']throttle/i', $line) ||  // Single string
-               preg_match('/->middleware\(\[.*["\']throttle/i', $line) ||  // Array with quotes
-               preg_match('/->middleware\(["\'][^"\']*["\'],\s*["\']throttle/i', $line) ||  // Varargs
-               preg_match('/ThrottleRequests::class/i', $line);  // Class reference
     }
 
     /**
@@ -1637,9 +1558,35 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return $this->middlewareClassesNamed($expr->value);
         }
 
+        $named = $this->computedMiddlewareName($expr);
+        if ($named !== null) {
+            return $this->middlewareClassesNamed($named);
+        }
+
         $class = $this->middlewareClassName($expr);
 
         return $class === null ? [] : [$class];
+    }
+
+    /**
+     * The literal text a computed middleware string starts with, as in
+     * 'throttle:'.config('auth.limit') or "throttle:{$limit}", when it already
+     * holds the ':' that ends the name. Before that ':' the name is not finished:
+     * 'throttle'.$suffix may be 'throttles.audit'.
+     */
+    private function computedMiddlewareName(Node\Expr $expr): ?string
+    {
+        while ($expr instanceof Node\Expr\BinaryOp\Concat) {
+            $expr = $expr->left;
+        }
+
+        $text = match (true) {
+            $expr instanceof Node\Scalar\String_ => $expr->value,
+            $expr instanceof Node\Scalar\InterpolatedString && ($expr->parts[0] ?? null) instanceof Node\InterpolatedStringPart => $expr->parts[0]->value,
+            default => null,
+        };
+
+        return $text !== null && str_contains($text, ':') ? $text : null;
     }
 
     /**

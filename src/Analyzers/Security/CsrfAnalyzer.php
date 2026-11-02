@@ -20,9 +20,10 @@ use ShieldCI\Support\BootstrapRouteParser;
  * Checks for:
  * - Forms without @csrf directive
  * - AJAX requests without CSRF token
- * - Routes without CSRF middleware (VerifyCsrfToken in Laravel 9/10, ValidateCsrfToken in Laravel 11+)
+ * - Routes without CSRF middleware (VerifyCsrfToken in Laravel 9/10, ValidateCsrfToken in Laravel 11/12,
+ *   PreventRequestForgery in Laravel 13+)
  * - Overly broad CSRF exceptions in middleware $except array (Laravel 9/10)
- * - Overly broad CSRF exceptions in validateCsrfTokens() method (Laravel 11+)
+ * - Overly broad CSRF exceptions in validateCsrfTokens() / preventRequestForgery() (Laravel 11+)
  * - Explicitly disabled CSRF protection in bootstrap/app.php (Laravel 11+):
  *   - $middleware->remove(ValidateCsrfToken::class)
  *   - $middleware->web(remove: [ValidateCsrfToken::class])
@@ -31,6 +32,25 @@ use ShieldCI\Support\BootstrapRouteParser;
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
+    /**
+     * Framework CSRF middleware. Laravel 13 renamed ValidateCsrfToken to PreventRequestForgery
+     * and keeps the old name as a subclass, so either may appear in an application.
+     */
+    private const CSRF_MIDDLEWARE_PATTERN = '(ValidateCsrfToken|PreventRequestForgery)';
+
+    /**
+     * Middleware methods that take CSRF exceptions. Laravel 13 deprecated validateCsrfTokens()
+     * in favour of preventRequestForgery().
+     */
+    private const CSRF_EXCEPT_METHOD_PATTERN = '(?:validateCsrfTokens|preventRequestForgery)';
+
+    /**
+     * CSRF middleware names an HTTP Kernel may register.
+     *
+     * @var array<int, string>
+     */
+    private const KERNEL_CSRF_MIDDLEWARE = ['VerifyCsrfToken', 'ValidateCsrfToken', 'PreventRequestForgery'];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -502,11 +522,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        // Check if CSRF middleware is present (Laravel 10: VerifyCsrfToken, Laravel 11+: ValidateCsrfToken)
-        $hasVerifyCsrfToken = str_contains($content, 'VerifyCsrfToken');
-        $hasValidateCsrfToken = str_contains($content, 'ValidateCsrfToken');
-
-        if (! $hasVerifyCsrfToken && ! $hasValidateCsrfToken) {
+        if ($this->kernelCsrfMiddlewareIn($content) === null) {
             $issues[] = $this->createIssueWithSnippet(
                 message: 'CSRF middleware is not registered in HTTP Kernel',
                 filePath: $kernelFile,
@@ -528,9 +544,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            if ((str_contains($line, 'VerifyCsrfToken') || str_contains($line, 'ValidateCsrfToken')) &&
-                preg_match('/^\s*\/\//', $line)) {
-                $middlewareName = str_contains($line, 'ValidateCsrfToken') ? 'ValidateCsrfToken' : 'VerifyCsrfToken';
+            $middlewareName = $this->kernelCsrfMiddlewareIn($line);
+
+            if ($middlewareName !== null && preg_match('/^\s*\/\//', $line)) {
 
                 $issues[] = $this->createIssueWithSnippet(
                     message: sprintf('%s middleware is commented out', $middlewareName),
@@ -547,6 +563,20 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
+    }
+
+    /**
+     * Return the CSRF middleware name the text mentions, or null when it mentions none.
+     */
+    private function kernelCsrfMiddlewareIn(string $text): ?string
+    {
+        foreach (self::KERNEL_CSRF_MIDDLEWARE as $name) {
+            if (str_contains($text, $name)) {
+                return $name;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -640,17 +670,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if (preg_match('/ValidateCsrfToken/', $lines[$i])) {
+                    if (preg_match('/'.self::CSRF_MIDDLEWARE_PATTERN.'/', $lines[$i], $removed)) {
                         $issues[] = $this->createIssueWithSnippet(
-                            message: 'ValidateCsrfToken removed from web middleware group',
+                            message: sprintf('%s removed from web middleware group', $removed[1]),
                             filePath: $file,
                             lineNumber: $lineNumber + 1,
                             severity: Severity::Critical,
-                            recommendation: 'Do not remove ValidateCsrfToken from the web middleware group. This disables CSRF protection for all web routes.',
+                            recommendation: sprintf('Do not remove %s from the web middleware group. This disables CSRF protection for all web routes.', $removed[1]),
                             metadata: [
                                 'file' => 'bootstrap/app.php',
                                 'laravel_version' => '11+',
-                                'middleware' => 'ValidateCsrfToken',
+                                'middleware' => $removed[1],
                                 'status' => 'removed_from_web',
                                 'line' => $lineNumber + 1,
                             ]
@@ -665,14 +695,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
 
             // Check for patterns that disable CSRF:
-            // - validateCsrfTokens(except: ['*'])
-            if (preg_match('/validateCsrfTokens\s*\(\s*except\s*:\s*\[\s*[\'\"]\*[\'\"]\s*\]/', $line)) {
+            // - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
+            if (preg_match('/'.self::CSRF_EXCEPT_METHOD_PATTERN.'\s*\(\s*except\s*:\s*\[\s*[\'\"]\*[\'\"]\s*\]/', $line)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'All routes excluded from CSRF protection in bootstrap/app.php',
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
-                    recommendation: 'Remove wildcard CSRF exception. In Laravel 11+, ValidateCsrfToken is global by default - only exclude specific URIs that need it.',
+                    recommendation: 'Remove wildcard CSRF exception. In Laravel 11+, CSRF protection is on for the web group by default - only exclude specific URIs that need it.',
                     metadata: [
                         'file' => 'bootstrap/app.php',
                         'laravel_version' => '11+',
@@ -683,17 +713,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
 
             // Check for $middleware->remove(ValidateCsrfToken::class) - older approach
-            if (preg_match('/\$middleware\s*->\s*remove\s*\(\s*.*ValidateCsrfToken/', $line)) {
+            if (preg_match('/\$middleware\s*->\s*remove\s*\(\s*.*'.self::CSRF_MIDDLEWARE_PATTERN.'/', $line, $removed)) {
                 $issues[] = $this->createIssueWithSnippet(
-                    message: 'ValidateCsrfToken middleware has been removed',
+                    message: sprintf('%s middleware has been removed', $removed[1]),
                     filePath: $file,
                     lineNumber: $lineNumber + 1,
                     severity: Severity::Critical,
-                    recommendation: 'Do not remove ValidateCsrfToken middleware. This disables CSRF protection for all routes.',
+                    recommendation: sprintf('Do not remove %s middleware. This disables CSRF protection for all routes.', $removed[1]),
                     metadata: [
                         'file' => 'bootstrap/app.php',
                         'laravel_version' => '11+',
-                        'middleware' => 'ValidateCsrfToken',
+                        'middleware' => $removed[1],
                         'status' => 'removed',
                         'line' => $lineNumber + 1,
                     ]
@@ -715,8 +745,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Check for validateCsrfTokens(except: [...])
-            if (preg_match('/validateCsrfTokens\s*\(\s*except\s*:\s*\[/', $line)) {
+            // Check for validateCsrfTokens(except: [...]) / preventRequestForgery(except: [...])
+            if (preg_match('/'.self::CSRF_EXCEPT_METHOD_PATTERN.'\s*\(\s*except\s*:\s*\[/', $line)) {
                 // Extract exceptions from the array
                 $searchRange = min($lineNumber + 20, count($lines));
                 $exceptions = [];

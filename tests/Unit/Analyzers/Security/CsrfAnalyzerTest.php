@@ -1362,8 +1362,9 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_fails_when_validate_csrf_token_missing_from_use_array(): void
+    public function test_passes_when_global_stack_customised_without_csrf_middleware(): void
     {
+        // use() replaces the global stack; CSRF belongs to the web group, which use() does not touch
         $bootstrap = <<<'PHP'
 <?php
 
@@ -1376,6 +1377,9 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\TrustProxies::class,
             \Illuminate\Http\Middleware\HandleCors::class,
             \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
+            \Illuminate\Http\Middleware\ValidatePostSize::class,
+            \Illuminate\Foundation\Http\Middleware\TrimStrings::class,
+            \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
         ]);
     })
     ->create();
@@ -1392,8 +1396,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('ValidateCsrfToken missing from global middleware stack', $result);
+        $this->assertPassed($result);
     }
 
     public function test_passes_when_validate_csrf_token_in_use_array(): void

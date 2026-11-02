@@ -27,7 +27,6 @@ use ShieldCI\Support\BootstrapRouteParser;
  * - Explicitly disabled CSRF protection in bootstrap/app.php (Laravel 11+):
  *   - $middleware->remove(ValidateCsrfToken::class)
  *   - $middleware->web(remove: [ValidateCsrfToken::class])
- *   - $middleware->use([...]) without ValidateCsrfToken in the array
  *   - validateCsrfTokens(except: ['*'])
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
@@ -582,7 +581,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check bootstrap/app.php for Laravel 11+ applications.
      *
-     * Laravel 11+ includes ValidateCsrfToken globally by default.
+     * Laravel 11+ includes CSRF middleware in the web group by default.
      * Users can:
      * 1. Manually manage middleware with withMiddleware() - check if CSRF is disabled
      * 2. Exclude URIs using validateCsrfTokens() method - check for overly broad patterns
@@ -617,48 +616,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function checkCsrfDisabledInBootstrap(array $lines, string $file, array &$issues): void
     {
-        $inUseMethod = false;
-        $useMethodStartLine = 0;
-        $hasValidateCsrfTokenInUse = false;
-
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line)) {
                 continue;
-            }
-
-            // Check for $middleware->use([...]) - manual global middleware stack
-            if (preg_match('/\$middleware\s*->\s*use\s*\(\s*\[/', $line)) {
-                $inUseMethod = true;
-                $useMethodStartLine = $lineNumber;
-                $hasValidateCsrfTokenInUse = false;
-            }
-
-            // Check if ValidateCsrfToken is in the use() array
-            if ($inUseMethod && preg_match('/ValidateCsrfToken/', $line)) {
-                $hasValidateCsrfTokenInUse = true;
-            }
-
-            // Check for end of use() method (both ']); ' and '])' patterns)
-            if ($inUseMethod && (str_contains($line, ']);') || preg_match('/\]\s*\)\s*;?/', $line))) {
-                $inUseMethod = false;
-
-                // If use() method was found but ValidateCsrfToken wasn't in it
-                if (! $hasValidateCsrfTokenInUse) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'ValidateCsrfToken missing from global middleware stack',
-                        filePath: $file,
-                        lineNumber: $useMethodStartLine + 1,
-                        severity: Severity::Critical,
-                        recommendation: 'Register ValidateCsrfToken middleware in the global middleware stack in bootstrap/app.php to enable CSRF protection for all requests.',
-                        metadata: [
-                            'file' => 'bootstrap/app.php',
-                            'laravel_version' => '11+',
-                            'middleware' => 'ValidateCsrfToken',
-                            'status' => 'missing_from_use',
-                            'line' => $useMethodStartLine + 1,
-                        ]
-                    );
-                }
             }
 
             // Check for $middleware->web(remove: [...]) with ValidateCsrfToken

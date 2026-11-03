@@ -14,4 +14,5 @@ coverage/
 Thumbs.db
 coverage.xml
 *.md
+!/CLAUDE.md
 .claude

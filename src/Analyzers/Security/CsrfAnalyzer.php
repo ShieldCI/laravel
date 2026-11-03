@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
-use Illuminate\Filesystem\Filesystem;
 use PhpParser\Node\ArrayItem;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
@@ -19,10 +18,10 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Concerns\ReadsMiddlewareConfigurator;
 use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\BootstrapRouteParser;
-use ShieldCI\Support\Composer;
 
 /**
  * Detects missing CSRF protection vulnerabilities.
@@ -43,6 +42,7 @@ use ShieldCI\Support\Composer;
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
     use ReadsMiddlewareConfigurator;
     use ResolvesClassNames;
 
@@ -727,12 +727,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 switch ($method) {
                     case 'group':
-                        // A list that cannot be read leaves nothing to compare against
-                        if ($middleware === null) {
-                            return;
-                        }
-
-                        $group = ['entries' => $middleware, 'line' => $line];
+                        // The last group() call wins; a list that cannot be read holds unknown entries
+                        $group = ['entries' => $middleware ?? [null], 'line' => $line];
                         break;
 
                     case 'appendtogroup':
@@ -762,9 +758,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         $found = [];
-        $entries = $group['entries'] ?? $this->defaultWebCsrfMiddleware();
+        $entries = $group['entries'] ?? [$this->defaultWebCsrfMiddleware()];
+        // An entry that cannot be read may be CSRF middleware, so a CSRF name may match it
+        $unknown = in_array(null, $entries, true);
 
-        if ($group !== null && ! in_array(null, $group['entries'], true) && $this->csrfMiddlewareInList($group['entries']) === null) {
+        if ($group !== null && ! $unknown && $this->csrfMiddlewareInList($entries) === null) {
             $found[] = $this->createIssueWithSnippet(
                 message: 'web middleware group redefined without CSRF middleware',
                 filePath: $file,
@@ -781,43 +779,33 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        foreach ($entries as $index => $entry) {
-            if ($entry === null || ! isset($replacements[$entry])) {
-                continue;
-            }
-
-            [$replacement, $line] = $replacements[$entry];
-            $entries[$index] = $replacement;
-            $replaced = $this->csrfMiddlewareIn($entry);
+        foreach ($replacements as $search => [$replacement, $line]) {
+            $replaced = $this->csrfMiddlewareIn($search);
 
             // Swapping in an application subclass such as App\Http\Middleware\VerifyCsrfToken keeps protection
-            if ($replaced === null || $replacement === null || $this->csrfMiddlewareIn($replacement) !== null) {
+            if ($replaced === null
+                || (! $unknown && ! in_array($search, $entries, true))
+                || ($replacement !== null && $this->csrfMiddlewareIn($replacement) !== null)) {
                 continue;
             }
 
-            $found[] = $this->createIssueWithSnippet(
-                message: sprintf('%s replaced in web middleware group', $replaced),
-                filePath: $file,
-                lineNumber: $line,
-                severity: Severity::High,
-                recommendation: sprintf('Replace %s only with a subclass of it. Any other replacement disables CSRF protection for all web routes.', $replaced),
-                metadata: [
-                    'file' => 'bootstrap/app.php',
-                    'laravel_version' => $this->bootstrapLaravelVersion($replaced),
-                    'middleware' => $replaced,
-                    'replacement' => $replacement,
-                    'status' => 'replaced_in_web',
-                    'line' => $line,
-                    'severity_reason' => 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
-                ]
-            );
+            $found[] = $this->webGroupReplacementIssue($replaced, $replacement, $file, $line);
         }
 
-        foreach ($entries as $entry) {
-            $removed = $entry !== null && isset($removals[$entry]) ? $this->csrfMiddlewareIn($entry) : null;
+        // Replacements apply in one pass over the group, before removals
+        foreach ($entries as $index => $entry) {
+            if ($entry !== null && isset($replacements[$entry])) {
+                $entries[$index] = $replacements[$entry][0];
+            }
+        }
 
-            if ($entry !== null && $removed !== null) {
-                $found[] = $this->webGroupRemovalIssue($removed, $file, $removals[$entry]);
+        $unknown = in_array(null, $entries, true);
+
+        foreach ($removals as $name => $line) {
+            $removed = $this->csrfMiddlewareIn($name);
+
+            if ($removed !== null && ($unknown || in_array($name, $entries, true))) {
+                $found[] = $this->webGroupRemovalIssue($removed, $file, $line);
             }
         }
 
@@ -831,20 +819,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The CSRF middleware the default web group holds: PreventRequestForgery from Laravel 13,
-     * ValidateCsrfToken in Laravel 11 and 12, and either when the installed version is unknown.
-     *
-     * @return list<string>
+     * ValidateCsrfToken before it.
      */
-    private function defaultWebCsrfMiddleware(): array
+    private function defaultWebCsrfMiddleware(): string
     {
-        $version = (new Composer(new Filesystem, $this->getBasePath()))->installedVersion('laravel/framework');
-        $major = $version !== null && preg_match('/^v?(\d+)\./', $version, $matches) === 1 ? (int) $matches[1] : null;
-
-        return match (true) {
-            $major === null => ['Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken', 'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery'],
-            $major >= 13 => ['Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery'],
-            default => ['Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken'],
-        };
+        return $this->isLaravel13OrNewer()
+            ? 'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery'
+            : 'Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken';
     }
 
     /**
@@ -919,6 +900,32 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         return null;
+    }
+
+    /**
+     * The issue for CSRF middleware replaced in the web group, by web(replace:) or replaceInGroup().
+     * A replacement that cannot be read may be a CSRF subclass, so it is reported at Medium.
+     */
+    private function webGroupReplacementIssue(string $replaced, ?string $replacement, string $file, int $line): Issue
+    {
+        return $this->createIssueWithSnippet(
+            message: sprintf('%s replaced in web middleware group', $replaced),
+            filePath: $file,
+            lineNumber: $line,
+            severity: $replacement === null ? Severity::Medium : Severity::High,
+            recommendation: sprintf('Replace %s only with a subclass of it. Any other replacement disables CSRF protection for all web routes.', $replaced),
+            metadata: [
+                'file' => 'bootstrap/app.php',
+                'laravel_version' => $this->bootstrapLaravelVersion($replaced),
+                'middleware' => $replaced,
+                'replacement' => $replacement,
+                'status' => 'replaced_in_web',
+                'line' => $line,
+                'severity_reason' => $replacement === null
+                    ? 'Medium because the replacement cannot be read and may be a CSRF subclass'
+                    : 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
+            ]
+        );
     }
 
     /**

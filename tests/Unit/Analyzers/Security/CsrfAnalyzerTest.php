@@ -1479,6 +1479,8 @@ PHP;
 
     public function test_fails_when_csrf_removed_from_web_group(): void
     {
+        $this->skipUnlessDefaultWebGroupOf(12);
+
         $bootstrap = <<<'PHP'
 <?php
 
@@ -1704,7 +1706,8 @@ PHP;
     public function test_fails_when_prevent_request_forgery_removed_from_web_group(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            "\$middleware->web(remove: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);"
+            "\$middleware->web(remove: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);",
+            13
         );
 
         $this->assertFailed($result);
@@ -1816,7 +1819,8 @@ PHP;
     public function test_fails_when_web_replace_swaps_out_csrf_middleware(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            "\$middleware->web(append: [\n            \\App\\Http\\Middleware\\HandleInertiaRequests::class,\n        ], replace: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class => \\App\\Http\\Middleware\\NoopMiddleware::class,\n        ]);"
+            "\$middleware->web(append: [\n            \\App\\Http\\Middleware\\HandleInertiaRequests::class,\n        ], replace: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class => \\App\\Http\\Middleware\\NoopMiddleware::class,\n        ]);",
+            13
         );
 
         $this->assertFailed($result);
@@ -1837,7 +1841,8 @@ PHP;
     public function test_fails_when_replace_in_group_swaps_out_csrf_middleware(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            "\$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \\App\\Http\\Middleware\\NoopMiddleware::class);"
+            "\$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \\App\\Http\\Middleware\\NoopMiddleware::class);",
+            12
         );
 
         $this->assertFailed($result);
@@ -1848,7 +1853,8 @@ PHP;
     public function test_fails_when_csrf_middleware_removed_from_web_group_by_name(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            "\$middleware->removeFromGroup('web', [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);"
+            "\$middleware->removeFromGroup('web', [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);",
+            13
         );
 
         $this->assertFailed($result);
@@ -1971,7 +1977,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             '$middleware->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class]);',
-            'v13.2.0'
+            13
         );
 
         $this->assertPassed($result);
@@ -1981,7 +1987,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->removeFromGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class);",
-            'v13.2.0'
+            13
         );
 
         $this->assertPassed($result);
@@ -1991,7 +1997,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             '$middleware->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class]);',
-            'v12.20.0'
+            12
         );
 
         $this->assertPassed($result);
@@ -2001,7 +2007,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             '$middleware->web(replace: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class => \\App\\Http\\Middleware\\NoopMiddleware::class]);',
-            'v13.2.0'
+            13
         );
 
         $this->assertPassed($result);
@@ -2011,7 +2017,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             '$middleware->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class]);',
-            'v12.20.0'
+            12
         );
 
         $this->assertFailed($result);
@@ -2025,7 +2031,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->web(remove: 'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery');",
-            'v13.2.0'
+            13
         );
 
         $this->assertFailed($result);
@@ -2037,7 +2043,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             '$middleware->web(remove: [ValidateCsrfToken::class]);',
-            'v11.45.0',
+            11,
             'use Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken;'
         );
 
@@ -2051,7 +2057,7 @@ PHP;
         // Replacements apply before removals, so the removal finds no ValidateCsrfToken left
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->web(replace: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class => \\App\\Http\\Middleware\\VerifyCsrfToken::class]);\n        \$middleware->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class]);",
-            'v12.20.0'
+            12
         );
 
         $this->assertPassed($result);
@@ -2061,7 +2067,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->web(replace: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class => \\App\\Http\\Middleware\\VerifyCsrfToken::class]);\n        \$middleware->removeFromGroup('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
-            'v12.20.0'
+            12
         );
 
         $this->assertFailed($result);
@@ -2074,7 +2080,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->web(\n            remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class],\n            append: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class],\n        );",
-            'v12.20.0'
+            12
         );
 
         $this->assertPassed($result);
@@ -2089,20 +2095,42 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_passes_when_web_group_is_redefined_from_a_variable(): void
+    public function test_fails_when_csrf_middleware_is_removed_from_web_group_redefined_from_a_variable(): void
     {
+        // The variable may hold CSRF middleware, so naming it in a removal counts
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->group('web', \$webMiddleware);\n        \$middleware->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class]);"
         );
 
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('ValidateCsrfToken removed from web middleware group', $result->getIssues()[0]->message);
+    }
+
+    public function test_passes_when_web_group_redefined_from_a_variable_is_left_alone(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware("\$middleware->group('web', \$webMiddleware);");
+
         $this->assertPassed($result);
     }
 
-    public function test_fails_when_redefined_web_group_has_its_csrf_middleware_removed(): void
+    public function test_fails_when_later_web_group_redefinition_drops_csrf_middleware(): void
+    {
+        // The last group() call wins, so an unreadable earlier one does not end the check
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->group('web', \$webMiddleware);\n        \$middleware->group('web', [\\Illuminate\\Session\\Middleware\\StartSession::class]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('web middleware group redefined without CSRF middleware', $result->getIssues()[0]->message);
+        $this->assertSame(8, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_fails_when_csrf_middleware_is_removed_from_web_group_with_a_spread_entry(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);\n        \$middleware->web(remove: [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
-            'v13.2.0'
+            "\$middleware->group('web', [...\$defaults]);\n        \$middleware->removeFromGroup('web', \\App\\Http\\Middleware\\VerifyCsrfToken::class);"
         );
 
         $this->assertFailed($result);
@@ -2110,11 +2138,50 @@ PHP;
         $this->assertSame('VerifyCsrfToken removed from web middleware group', $result->getIssues()[0]->message);
     }
 
-    public function test_passes_when_unknown_entry_replaces_csrf_middleware(): void
+    public function test_fails_when_redefined_web_group_has_its_csrf_middleware_removed(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);\n        \$middleware->web(remove: [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
+            13
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken removed from web middleware group', $result->getIssues()[0]->message);
+    }
+
+    public function test_reports_medium_when_unreadable_value_replaces_csrf_middleware(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \$csrfMiddleware);",
-            'v12.20.0'
+            12
+        );
+
+        $this->assertWarning($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('ValidateCsrfToken replaced in web middleware group', $result->getIssues()[0]->message);
+        $this->assertEquals(Severity::Medium, $result->getIssues()[0]->severity);
+        $this->assertNull($result->getIssues()[0]->metadata['replacement']);
+    }
+
+    public function test_reports_medium_when_config_value_replaces_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->web(replace: [\\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class => config('app.csrf')]);",
+            13
+        );
+
+        $this->assertWarning($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('PreventRequestForgery replaced in web middleware group', $result->getIssues()[0]->message);
+        $this->assertEquals(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_when_unreadable_value_replaces_middleware_the_group_does_not_hold(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \$csrfMiddleware);",
+            13
         );
 
         $this->assertPassed($result);
@@ -2124,7 +2191,7 @@ PHP;
     {
         $result = $this->analyzeBootstrapMiddleware(
             "\$m = \$middleware;\n        \$m->alias([])->web(remove: [\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class]);",
-            'v11.45.0'
+            11
         );
 
         $this->assertFailed($result);
@@ -2133,11 +2200,29 @@ PHP;
     }
 
     /**
-     * Analyze a bootstrap/app.php whose withMiddleware() closure runs the statement. A Laravel
-     * version writes vendor/composer/installed.json, and imports go after the file's own.
+     * Skip the test unless the running framework's default web group holds the CSRF middleware
+     * of the given Laravel major: PreventRequestForgery from 13, ValidateCsrfToken before it.
      */
-    private function analyzeBootstrapMiddleware(string $statement, ?string $laravelVersion = null, string $import = ''): ResultInterface
+    private function skipUnlessDefaultWebGroupOf(int $laravelMajor): void
     {
+        $running = app()->version();
+
+        if (version_compare($running, '13.0.0', '>=') !== ($laravelMajor >= 13)) {
+            $this->markTestSkipped(sprintf('Running on Laravel %s, whose default web group differs from Laravel %d.', $running, $laravelMajor));
+        }
+    }
+
+    /**
+     * Analyze a bootstrap/app.php whose withMiddleware() closure runs the statement, and imports
+     * go after the file's own. A test given a Laravel major runs only where the default web
+     * group matches it.
+     */
+    private function analyzeBootstrapMiddleware(string $statement, ?int $laravelMajor = null, string $import = ''): ResultInterface
+    {
+        if ($laravelMajor !== null) {
+            $this->skipUnlessDefaultWebGroupOf($laravelMajor);
+        }
+
         $bootstrap = <<<PHP
 <?php
 
@@ -2154,12 +2239,6 @@ PHP;
             'bootstrap/app.php' => $bootstrap,
             'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
         ];
-
-        if ($laravelVersion !== null) {
-            $files['vendor/composer/installed.json'] = (string) json_encode([
-                'packages' => [['name' => 'laravel/framework', 'version' => $laravelVersion]],
-            ]);
-        }
 
         $tempDir = $this->createTempDirectory($files);
 

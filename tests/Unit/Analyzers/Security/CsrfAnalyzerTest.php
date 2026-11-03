@@ -1362,8 +1362,9 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_fails_when_validate_csrf_token_missing_from_use_array(): void
+    public function test_passes_when_global_stack_customised_without_csrf_middleware(): void
     {
+        // use() replaces the global stack; CSRF belongs to the web group, which use() does not touch
         $bootstrap = <<<'PHP'
 <?php
 
@@ -1376,42 +1377,9 @@ return Application::configure(basePath: dirname(__DIR__))
             \Illuminate\Http\Middleware\TrustProxies::class,
             \Illuminate\Http\Middleware\HandleCors::class,
             \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
-        ]);
-    })
-    ->create();
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'bootstrap/app.php' => $bootstrap,
-            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['bootstrap', 'resources']);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('ValidateCsrfToken missing from global middleware stack', $result);
-    }
-
-    public function test_passes_when_validate_csrf_token_in_use_array(): void
-    {
-        $bootstrap = <<<'PHP'
-<?php
-
-use Illuminate\Foundation\Application;
-
-return Application::configure(basePath: dirname(__DIR__))
-    ->withMiddleware(function ($middleware) {
-        $middleware->use([
-            \Illuminate\Foundation\Http\Middleware\InvokeDeferredCallbacks::class,
-            \Illuminate\Http\Middleware\TrustProxies::class,
-            \Illuminate\Http\Middleware\HandleCors::class,
-            \Illuminate\Foundation\Http\Middleware\PreventRequestsDuringMaintenance::class,
-            \Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class,
+            \Illuminate\Http\Middleware\ValidatePostSize::class,
             \Illuminate\Foundation\Http\Middleware\TrimStrings::class,
+            \Illuminate\Foundation\Http\Middleware\ConvertEmptyStringsToNull::class,
         ]);
     })
     ->create();
@@ -1464,8 +1432,9 @@ PHP;
         $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
-    public function test_fails_when_csrf_removed_entirely(): void
+    public function test_passes_when_csrf_middleware_removed_from_global_stack(): void
     {
+        // remove() edits the global stack only; CSRF middleware is in the web group, which it does not touch
         $bootstrap = <<<'PHP'
 <?php
 
@@ -1474,6 +1443,7 @@ use Illuminate\Foundation\Application;
 return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function ($middleware) {
         $middleware->remove(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
+        $middleware->remove([\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class]);
     })
     ->create();
 PHP;
@@ -1489,10 +1459,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('ValidateCsrfToken middleware has been removed', $result);
-        $issues = $result->getIssues();
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertPassed($result);
     }
 
     public function test_fails_when_validate_csrf_tokens_excludes_all_with_wildcard(): void
@@ -1619,6 +1586,252 @@ PHP;
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Broad CSRF exception pattern in bootstrap/app.php', $result);
         $this->assertCount(2, $result->getIssues()); // Both admin/* and dashboard/*
+    }
+
+    // ==================== Laravel 13 PreventRequestForgery Tests ====================
+
+    public function test_fails_when_prevent_request_forgery_excludes_all_with_wildcard(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->preventRequestForgery(except: ['*'], originOnly: true);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('All routes excluded from CSRF protection in bootstrap/app.php', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_fails_prevent_request_forgery_with_broad_exception(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->preventRequestForgery(except: [\n            'admin/*',\n            'stripe/*',\n        ]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('Broad CSRF exception pattern in bootstrap/app.php: admin/*', $result);
+        $this->assertEquals(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_prevent_request_forgery_with_specific_exceptions(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->preventRequestForgery(except: ['stripe/*', 'service/hooks/*']);"
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_prevent_request_forgery_removed_from_web_group(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->web(remove: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('PreventRequestForgery removed from web middleware group', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_when_prevent_request_forgery_registered_in_kernel(): void
+    {
+        $result = $this->analyzeKernelWebGroup('\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class,');
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_prevent_request_forgery_commented_out_in_kernel(): void
+    {
+        $result = $this->analyzeKernelWebGroup('// \Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class,');
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('PreventRequestForgery middleware is commented out', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_prevent_request_forgery_findings_report_laravel_13(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->preventRequestForgery(except: ['*']);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertSame('13+', $result->getIssues()[0]->metadata['laravel_version']);
+    }
+
+    public function test_validate_csrf_token_findings_report_laravel_11(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->validateCsrfTokens(except: ['*']);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertSame('11+', $result->getIssues()[0]->metadata['laravel_version']);
+    }
+
+    public function test_fails_when_prevent_request_forgery_subclass_excludes_all_routes(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery as Middleware;
+
+class PreventRequestForgery extends Middleware
+{
+    protected $except = [
+        '*',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/PreventRequestForgery.php' => $middleware,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('All routes excluded from CSRF protection with wildcard', $result);
+        $this->assertSame('PreventRequestForgery.php', $result->getIssues()[0]->metadata['file']);
+    }
+
+    public function test_fails_when_web_group_redefined_without_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->group('web', [\n            \\Illuminate\\Cookie\\Middleware\\EncryptCookies::class,\n            \\Illuminate\\Session\\Middleware\\StartSession::class,\n            \\Illuminate\\Routing\\Middleware\\SubstituteBindings::class,\n        ]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('web middleware group redefined without CSRF middleware', $result);
+        $this->assertEquals(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_when_web_group_redefined_with_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->group('web', [\n            \\Illuminate\\Session\\Middleware\\StartSession::class,\n            \\App\\Http\\Middleware\\VerifyCsrfToken::class,\n        ]);"
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_api_group_redefined_without_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->group('api', [\\Illuminate\\Routing\\Middleware\\SubstituteBindings::class]);"
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_web_replace_swaps_out_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->web(append: [\n            \\App\\Http\\Middleware\\HandleInertiaRequests::class,\n        ], replace: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class => \\App\\Http\\Middleware\\NoopMiddleware::class,\n        ]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('PreventRequestForgery replaced in web middleware group', $result);
+        $this->assertSame('13+', $result->getIssues()[0]->metadata['laravel_version']);
+    }
+
+    public function test_passes_when_web_replace_swaps_in_csrf_subclass(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->web(replace: [\n            \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class => \\App\\Http\\Middleware\\VerifyCsrfToken::class,\n        ]);"
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_replace_in_group_swaps_out_csrf_middleware(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \\App\\Http\\Middleware\\NoopMiddleware::class);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('ValidateCsrfToken replaced in web middleware group', $result);
+    }
+
+    public function test_fails_when_csrf_middleware_removed_from_web_group_by_name(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->removeFromGroup('web', [\n            \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class,\n        ]);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertHasIssueContaining('PreventRequestForgery removed from web middleware group', $result);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    private function analyzeBootstrapMiddleware(string $statement): ResultInterface
+    {
+        $bootstrap = <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (\$middleware) {
+        {$statement}
+    })
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        return $analyzer->analyze();
+    }
+
+    private function analyzeKernelWebGroup(string $entry): ResultInterface
+    {
+        $kernel = <<<PHP
+<?php
+
+namespace App\\Http;
+
+class Kernel
+{
+    protected \$middlewareGroups = [
+        'web' => [
+            {$entry}
+        ],
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $kernel,
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        return $analyzer->analyze();
     }
 
     // ==================== Route Middleware Tests (6 tests) ====================

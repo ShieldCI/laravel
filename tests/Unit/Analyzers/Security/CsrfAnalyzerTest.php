@@ -1432,8 +1432,9 @@ PHP;
         $this->assertEquals(Severity::Critical, $issues[0]->severity);
     }
 
-    public function test_fails_when_csrf_removed_entirely(): void
+    public function test_passes_when_csrf_middleware_removed_from_global_stack(): void
     {
+        // remove() edits the global stack only; CSRF middleware is in the web group, which it does not touch
         $bootstrap = <<<'PHP'
 <?php
 
@@ -1442,6 +1443,7 @@ use Illuminate\Foundation\Application;
 return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function ($middleware) {
         $middleware->remove(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);
+        $middleware->remove([\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class]);
     })
     ->create();
 PHP;
@@ -1457,10 +1459,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('ValidateCsrfToken middleware has been removed', $result);
-        $issues = $result->getIssues();
-        $this->assertEquals(Severity::Critical, $issues[0]->severity);
+        $this->assertPassed($result);
     }
 
     public function test_fails_when_validate_csrf_tokens_excludes_all_with_wildcard(): void
@@ -1636,18 +1635,6 @@ PHP;
         $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
     }
 
-    public function test_fails_when_prevent_request_forgery_removed_entirely(): void
-    {
-        $result = $this->analyzeBootstrapMiddleware(
-            '$middleware->remove(\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class);'
-        );
-
-        $this->assertFailed($result);
-        $this->assertCount(1, $result->getIssues());
-        $this->assertHasIssueContaining('PreventRequestForgery middleware has been removed', $result);
-        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
-    }
-
     public function test_passes_when_prevent_request_forgery_registered_in_kernel(): void
     {
         $result = $this->analyzeKernelWebGroup('\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class,');
@@ -1678,7 +1665,7 @@ PHP;
     public function test_validate_csrf_token_findings_report_laravel_11(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
-            '$middleware->remove(\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class);'
+            "\$middleware->validateCsrfTokens(except: ['*']);"
         );
 
         $this->assertFailed($result);

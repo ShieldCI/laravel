@@ -25,7 +25,6 @@ use ShieldCI\Support\BootstrapRouteParser;
  * - Overly broad CSRF exceptions in middleware $except array (Laravel 9/10)
  * - Overly broad CSRF exceptions in validateCsrfTokens() / preventRequestForgery() (Laravel 11+)
  * - Explicitly disabled CSRF protection in bootstrap/app.php (Laravel 11+):
- *   - $middleware->remove(ValidateCsrfToken::class)
  *   - $middleware->web(remove: [ValidateCsrfToken::class]) or removeFromGroup('web', ...)
  *   - $middleware->group('web', [...]) without CSRF middleware
  *   - $middleware->web(replace: [...]) or replaceInGroup('web', ...) swapping CSRF middleware out
@@ -659,25 +658,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         'file' => 'bootstrap/app.php',
                         'laravel_version' => $this->bootstrapLaravelVersion($line),
                         'exception' => '*',
-                        'line' => $lineNumber + 1,
-                    ]
-                );
-            }
-
-            // Check for $middleware->remove(ValidateCsrfToken::class) - older approach
-            if (preg_match('/\$middleware\s*->\s*remove\s*\((.*)/', $line, $removeCall)
-                && ($removed = $this->csrfMiddlewareIn($removeCall[1])) !== null) {
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf('%s middleware has been removed', $removed),
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::Critical,
-                    recommendation: sprintf('Do not remove %s middleware. This disables CSRF protection for all routes.', $removed),
-                    metadata: [
-                        'file' => 'bootstrap/app.php',
-                        'laravel_version' => $this->bootstrapLaravelVersion($removed),
-                        'middleware' => $removed,
-                        'status' => 'removed',
                         'line' => $lineNumber + 1,
                     ]
                 );

@@ -11,6 +11,7 @@ use PhpParser\Node\Identifier;
 use PhpParser\Node\Name;
 use PhpParser\Node\Scalar\String_;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\Concerns\ReadsMiddlewareConfigurator;
 use ShieldCI\Concerns\ResolvesClassNames;
 
 /**
@@ -29,6 +30,7 @@ use ShieldCI\Concerns\ResolvesClassNames;
  */
 class MiddlewareThrottleDetector
 {
+    use ReadsMiddlewareConfigurator;
     use ResolvesClassNames;
 
     /**
@@ -145,30 +147,14 @@ class MiddlewareThrottleDetector
      */
     private function bootstrapThrottles(array $groups): bool
     {
-        foreach ($this->parser->findNodes($this->resolvedAst('bootstrap/app.php'), Expr\MethodCall::class) as $call) {
-            if ($call instanceof Expr\MethodCall
-                && $call->name instanceof Identifier
-                && $this->chainStartsAtVariable($call->var)
+        foreach ($this->configuratorCalls($this->parser, $this->resolvedAst('bootstrap/app.php')) as $call) {
+            if ($call->name instanceof Identifier
                 && $this->middlewareCallThrottlesGroup($call, $call->name->toLowerString(), $groups)) {
                 return true;
             }
         }
 
         return false;
-    }
-
-    /**
-     * Whether a call's receiver is the configurator variable, directly
-     * ($middleware->web(...)) or through a chain ($middleware->alias([...])->web(...)).
-     * Every Middleware method returns the configurator, so a chain keeps configuring it.
-     */
-    private function chainStartsAtVariable(Expr $expr): bool
-    {
-        while ($expr instanceof Expr\MethodCall) {
-            $expr = $expr->var;
-        }
-
-        return $expr instanceof Expr\Variable;
     }
 
     /**
@@ -225,24 +211,6 @@ class MiddlewareThrottleDetector
         }
 
         return false;
-    }
-
-    /**
-     * The value of a call argument, given by name or by position.
-     */
-    private function callArgument(Expr\MethodCall $call, int $position, string $name): ?Expr
-    {
-        foreach ($call->args as $index => $arg) {
-            if (! $arg instanceof Node\Arg) {
-                continue;
-            }
-
-            if ($arg->name !== null ? $arg->name->toString() === $name : $index === $position) {
-                return $arg->value;
-            }
-        }
-
-        return null;
     }
 
     /**

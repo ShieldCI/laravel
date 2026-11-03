@@ -4,6 +4,12 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node\ArrayItem;
+use PhpParser\Node\Expr;
+use PhpParser\Node\Identifier;
+use PhpParser\Node\Name;
+use PhpParser\Node\Scalar\String_;
+use PhpParser\Node\Stmt;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -12,6 +18,9 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\DetectsLaravelVersion;
+use ShieldCI\Concerns\ReadsMiddlewareConfigurator;
+use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\BootstrapRouteParser;
 
 /**
@@ -24,19 +33,26 @@ use ShieldCI\Support\BootstrapRouteParser;
  *   PreventRequestForgery in Laravel 13+)
  * - Overly broad CSRF exceptions in middleware $except array (Laravel 9/10)
  * - Overly broad CSRF exceptions in validateCsrfTokens() / preventRequestForgery() (Laravel 11+)
- * - Explicitly disabled CSRF protection in bootstrap/app.php (Laravel 11+):
- *   - $middleware->web(remove: [ValidateCsrfToken::class]) or removeFromGroup('web', ...)
+ * - Explicitly disabled CSRF protection in bootstrap/app.php (Laravel 11+), read through the AST:
+ *   - $middleware->web(remove: [...]) or removeFromGroup('web', ...) naming the CSRF middleware
+ *     the web group holds for the installed Laravel version
  *   - $middleware->group('web', [...]) without CSRF middleware
  *   - $middleware->web(replace: [...]) or replaceInGroup('web', ...) swapping CSRF middleware out
  *   - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
+    use DetectsLaravelVersion;
+    use ReadsMiddlewareConfigurator;
+    use ResolvesClassNames;
+
     /**
-     * Middleware methods that take CSRF exceptions. Laravel 13 deprecated validateCsrfTokens()
-     * in favour of preventRequestForgery().
+     * Middleware methods that take CSRF exceptions, lowercased. Laravel 13 deprecated
+     * validateCsrfTokens() in favour of preventRequestForgery().
+     *
+     * @var array<int, string>
      */
-    private const CSRF_EXCEPT_METHOD_PATTERN = '(?:validateCsrfTokens|preventRequestForgery)';
+    private const CSRF_EXCEPT_METHODS = ['validatecsrftokens', 'preventrequestforgery'];
 
     /**
      * CSRF middleware names an application may register. Laravel 13 renamed ValidateCsrfToken to
@@ -378,6 +394,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check the application's CSRF middleware subclass for overly broad exceptions.
      *
+     * The $except property is read through the AST, so every entry counts however the array
+     * is laid out across lines.
+     *
      * @param  array<int, Issue>  &$issues
      */
     private function checkCsrfMiddlewareExceptions(array &$issues): void
@@ -388,63 +407,49 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $content = FileParser::readFile($middlewarePath);
-        if ($content === null) {
-            return;
-        }
-
-        $lines = FileParser::getLines($middlewarePath);
-
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
+        foreach ($this->parser->findNodes($this->parser->parseFile($middlewarePath), Stmt\Property::class) as $property) {
+            if (! $property instanceof Stmt\Property) {
                 continue;
             }
 
-            // Check for overly broad exceptions
-            if (preg_match('/\$except\s*=\s*\[/', $line)) {
-                $searchRange = min($lineNumber + 20, count($lines));
-                $exceptions = [];
+            foreach ($property->props as $item) {
+                if ($item->name->toString() !== 'except' || ! $item->default instanceof Expr\Array_) {
+                    continue;
+                }
 
-                for ($i = $lineNumber + 1; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
+                $line = $item->getStartLine();
+
+                foreach ($item->default->items as $entry) {
+                    if (! $entry instanceof ArrayItem || ! $entry->value instanceof String_) {
                         continue;
                     }
 
-                    if (preg_match('/["\']([^"\']+)["\']/', $lines[$i], $matches)) {
-                        $exceptions[] = $matches[1];
-                    }
+                    $exception = $entry->value->value;
 
-                    if (str_contains($lines[$i], '];')) {
-                        break;
-                    }
-                }
-
-                // Check for dangerous wildcards
-                foreach ($exceptions as $exception) {
                     if ($exception === '*' || $exception === '/*') {
                         $issues[] = $this->createIssueWithSnippet(
                             message: 'All routes excluded from CSRF protection with wildcard',
                             filePath: $middlewarePath,
-                            lineNumber: $lineNumber + 1,
+                            lineNumber: $line,
                             severity: Severity::Critical,
                             recommendation: 'Remove wildcard CSRF exceptions and specify exact routes that need exclusion',
                             metadata: [
                                 'exception' => $exception,
                                 'file' => basename($middlewarePath),
-                                'line' => $lineNumber + 1,
+                                'line' => $line,
                             ]
                         );
-                    } elseif (preg_match('/\*/', $exception) && $this->isBroadCsrfException($exception)) {
+                    } elseif (str_contains($exception, '*') && $this->isBroadCsrfException($exception)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: sprintf('Broad CSRF exception pattern: %s', $exception),
                             filePath: $middlewarePath,
-                            lineNumber: $lineNumber + 1,
+                            lineNumber: $line,
                             severity: Severity::High,
                             recommendation: 'Use more specific route patterns for CSRF exceptions (e.g., "service/webhooks/*" instead of "webhooks/*")',
                             metadata: [
                                 'exception' => $exception,
                                 'file' => basename($middlewarePath),
-                                'line' => $lineNumber + 1,
+                                'line' => $line,
                             ]
                         );
                     }
@@ -522,7 +527,34 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        if ($this->csrfMiddlewareIn($content) === null) {
+        // Only a comment that is itself a middleware entry counts, not prose that names the class
+        $commentedEntry = '/^\s*\/\/\s*[\'"]?\\\\?(?:\w+\\\\)*('.implode('|', self::CSRF_MIDDLEWARE).')(?:::class|[\'"])/';
+        $commentedOut = [];
+
+        foreach (FileParser::getLines($kernelFile) as $lineNumber => $line) {
+            if (! is_string($line) || preg_match($commentedEntry, $line, $matches) !== 1) {
+                continue;
+            }
+
+            $middlewareName = $matches[1];
+
+            $commentedOut[] = $this->createIssueWithSnippet(
+                message: sprintf('%s middleware is commented out', $middlewareName),
+                filePath: $kernelFile,
+                lineNumber: $lineNumber + 1,
+                severity: Severity::Critical,
+                recommendation: sprintf('Uncomment the %s middleware to enable CSRF protection', $middlewareName),
+                metadata: [
+                    'file' => 'Kernel.php',
+                    'middleware' => $middlewareName,
+                    'status' => 'commented',
+                    'line' => $lineNumber + 1,
+                ]
+            );
+        }
+
+        // A commented-out entry is the more specific finding for a Kernel that registers none
+        if ($commentedOut === [] && $this->csrfMiddlewareIn(FileParser::stripAllComments($content)) === null) {
             $issues[] = $this->createIssueWithSnippet(
                 message: 'CSRF middleware is not registered in HTTP Kernel',
                 filePath: $kernelFile,
@@ -537,32 +569,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             );
         }
 
-        // Check if it's commented out
-        $lines = FileParser::getLines($kernelFile);
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            $middlewareName = $this->csrfMiddlewareIn($line);
-
-            if ($middlewareName !== null && preg_match('/^\s*\/\//', $line)) {
-
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf('%s middleware is commented out', $middlewareName),
-                    filePath: $kernelFile,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::Critical,
-                    recommendation: sprintf('Uncomment the %s middleware to enable CSRF protection', $middlewareName),
-                    metadata: [
-                        'file' => 'Kernel.php',
-                        'middleware' => $middlewareName,
-                        'status' => 'commented',
-                        'line' => $lineNumber + 1,
-                    ]
-                );
-            }
-        }
+        array_push($issues, ...$commentedOut);
     }
 
     /**
@@ -582,177 +589,343 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Check bootstrap/app.php for Laravel 11+ applications.
      *
-     * Laravel 11+ includes CSRF middleware in the web group by default.
-     * Users can:
-     * 1. Manually manage middleware with withMiddleware() - check if CSRF is disabled
-     * 2. Exclude URIs using validateCsrfTokens() method - check for overly broad patterns
+     * Laravel 11+ includes CSRF middleware in the web group by default. The withMiddleware()
+     * configurator can take it out of the group or exclude URIs from it, and each call is read
+     * through the AST, so an argument's position, order or line break does not matter.
      *
      * @param  array<int, Issue>  &$issues
      */
     private function checkBootstrapApp(string $file, array &$issues): void
     {
-        $content = FileParser::readFile($file);
-        if ($content === null) {
-            return;
-        }
+        $calls = $this->configuratorCalls($this->parser, $this->resolveNamesForMatching($this->parser->parseFile($file)));
 
-        $lines = FileParser::getLines($file);
-
-        // Check if middleware is manually managed
-        $hasWithMiddleware = str_contains($content, 'withMiddleware');
-
-        if ($hasWithMiddleware) {
-            $this->checkCsrfDisabledInBootstrap($lines, $file, $issues);
-            $this->checkWebGroupRedefinedInBootstrap($lines, $file, $issues);
-        }
-
-        // Check for CSRF exception patterns in validateCsrfTokens() method
-        $this->checkBootstrapCsrfExceptions($lines, $file, $issues);
+        $this->checkBootstrapCsrfExceptions($calls, $file, $issues);
+        $this->checkWebGroupInBootstrap($calls, $file, $issues);
     }
 
     /**
-     * Check if CSRF protection is explicitly disabled in bootstrap/app.php.
+     * Check validateCsrfTokens() / preventRequestForgery() calls for wildcard and overly broad
+     * exceptions.
      *
+     * @param  list<Expr\MethodCall>  $calls
      * @param  array<int, Issue>  &$issues
-     * @param  array<int, string>  $lines
      */
-    private function checkCsrfDisabledInBootstrap(array $lines, string $file, array &$issues): void
+    private function checkBootstrapCsrfExceptions(array $calls, string $file, array &$issues): void
     {
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
+        foreach ($calls as $call) {
+            if (! $call->name instanceof Identifier
+                || ! in_array($call->name->toLowerString(), self::CSRF_EXCEPT_METHODS, true)) {
                 continue;
             }
 
-            // Check for $middleware->web(remove: [...]) with ValidateCsrfToken
-            if (preg_match('/\$middleware\s*->\s*web\s*\(\s*remove\s*:\s*\[/', $line)) {
-                // Look ahead to check if ValidateCsrfToken is in the remove array
-                $searchRange = min($lineNumber + 10, count($lines));
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
+            $except = $this->callArgument($call, 0, 'except');
+            if (! $except instanceof Expr\Array_) {
+                continue;
+            }
 
-                    $removed = $this->csrfMiddlewareIn($lines[$i]);
+            $method = $call->name->toString();
+            $line = $call->name->getStartLine();
+            $exceptions = [];
 
-                    if ($removed !== null) {
-                        $issues[] = $this->webGroupRemovalIssue($removed, $file, $lineNumber + 1);
-                        break;
-                    }
-
-                    if (str_contains($lines[$i], '])')) {
-                        break;
-                    }
+            foreach ($except->items as $item) {
+                if ($item instanceof ArrayItem && $item->value instanceof String_) {
+                    $exceptions[] = $item->value->value;
                 }
             }
 
-            // Check for patterns that disable CSRF:
-            // - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
-            if (preg_match('/'.self::CSRF_EXCEPT_METHOD_PATTERN.'\s*\(\s*except\s*:\s*\[\s*[\'\"]\*[\'\"]\s*\]/', $line)) {
+            // The middleware trims slashes before matching, so '/*' excludes every route too
+            $wildcards = array_values(array_intersect($exceptions, ['*', '/*']));
+
+            if ($wildcards !== []) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: 'All routes excluded from CSRF protection in bootstrap/app.php',
                     filePath: $file,
-                    lineNumber: $lineNumber + 1,
+                    lineNumber: $line,
                     severity: Severity::Critical,
                     recommendation: 'Remove wildcard CSRF exception. In Laravel 11+, CSRF protection is on for the web group by default - only exclude specific URIs that need it.',
                     metadata: [
                         'file' => 'bootstrap/app.php',
-                        'laravel_version' => $this->bootstrapLaravelVersion($line),
-                        'exception' => '*',
-                        'line' => $lineNumber + 1,
+                        'laravel_version' => $this->bootstrapLaravelVersion($method),
+                        'exception' => $wildcards[0],
+                        'line' => $line,
                     ]
                 );
+            }
+
+            foreach (array_diff($exceptions, $wildcards) as $exception) {
+                if (str_contains($exception, '*') && $this->isBroadCsrfException($exception)) {
+                    $issues[] = $this->createIssueWithSnippet(
+                        message: sprintf('Broad CSRF exception pattern in bootstrap/app.php: %s', $exception),
+                        filePath: $file,
+                        lineNumber: $line,
+                        severity: Severity::High,
+                        recommendation: 'Use more specific route patterns for CSRF exceptions (e.g., "service/webhooks/*" instead of "webhooks/*")',
+                        metadata: [
+                            'exception' => $exception,
+                            'file' => 'bootstrap/app.php',
+                            'laravel_version' => $this->bootstrapLaravelVersion($method),
+                            'risk_level' => 'high',
+                            'line' => $line,
+                        ]
+                    );
+                }
             }
         }
     }
 
     /**
-     * Check bootstrap/app.php for a web group rebuilt or edited so it loses CSRF middleware.
+     * Check bootstrap/app.php for a web group configured so it loses CSRF middleware.
      *
-     * group('web', [...]) replaces the whole group, web(replace:) and replaceInGroup() swap one
-     * entry for another, and removeFromGroup() is the long form of web(remove:). Each can drop
-     * CSRF protection without a remove() call naming the middleware.
+     * Mirrors Middleware::getMiddlewareGroups(): group('web', [...]) replaces the default group,
+     * then replacements apply, then removals, then prepends and appends. Replacements and
+     * removals match the exact class string in the group, so naming a class the group does not
+     * hold, such as ValidateCsrfToken on Laravel 13 where the default group lists
+     * PreventRequestForgery, changes nothing. CSRF middleware added back by a prepend or append
+     * keeps the group protected.
      *
+     * @param  list<Expr\MethodCall>  $calls
      * @param  array<int, Issue>  &$issues
-     * @param  array<int, string>  $lines
      */
-    private function checkWebGroupRedefinedInBootstrap(array $lines, string $file, array &$issues): void
+    private function checkWebGroupInBootstrap(array $calls, string $file, array &$issues): void
     {
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
+        /** @var array{entries: list<string|null>, line: int}|null $group */
+        $group = null;
+        /** @var array<string, array{0: string|null, 1: int}> $replacements */
+        $replacements = [];
+        /** @var array<string, int> $removals */
+        $removals = [];
+        /** @var list<string|null> $additions */
+        $additions = [];
+
+        foreach ($calls as $call) {
+            if (! $call->name instanceof Identifier) {
                 continue;
             }
 
-            if (preg_match('/\$middleware\s*->\s*group\s*\(\s*[\'"]web[\'"]\s*,/', $line)) {
-                if ($this->csrfMiddlewareIn($this->callText($lines, $lineNumber)) === null) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'web middleware group redefined without CSRF middleware',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Include PreventRequestForgery (ValidateCsrfToken before Laravel 13) in the web group passed to group(). Without it, every web route accepts forged requests.',
-                        metadata: [
-                            'file' => 'bootstrap/app.php',
-                            'laravel_version' => '11+',
-                            'status' => 'missing_from_web',
-                            'line' => $lineNumber + 1,
-                            'severity_reason' => 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
-                        ]
-                    );
-                }
+            $line = $call->name->getStartLine();
+            $method = $call->name->toLowerString();
+            $removing = [];
 
-                continue;
-            }
-
-            if (preg_match('/\$middleware\s*->\s*removeFromGroup\s*\(\s*[\'"]web[\'"]\s*,/', $line)) {
-                $removed = $this->csrfMiddlewareIn($this->callText($lines, $lineNumber));
-
-                if ($removed !== null) {
-                    $issues[] = $this->webGroupRemovalIssue($removed, $file, $lineNumber + 1);
-                }
-
-                continue;
-            }
-
-            $replacements = [];
-
-            if (preg_match('/\$middleware\s*->\s*web\s*\(/', $line)
-                && preg_match('/replace\s*:\s*\[(.*?)\]/s', $this->callText($lines, $lineNumber), $replace)) {
-                preg_match_all('/([^,\[\]]+?)\s*=>\s*([^,\[\]]+)/', $replace[1], $pairs, PREG_SET_ORDER);
-
-                foreach ($pairs as $pair) {
-                    $replacements[] = [$pair[1], $pair[2]];
-                }
-            } elseif (preg_match('/\$middleware\s*->\s*replaceInGroup\s*\(/', $line)
-                && preg_match('/replaceInGroup\s*\(\s*[\'"]web[\'"]\s*,([^,]+),([^,)]+)/', $this->callText($lines, $lineNumber), $pair)) {
-                $replacements[] = [$pair[1], $pair[2]];
-            }
-
-            foreach ($replacements as [$search, $replacement]) {
-                $replaced = $this->csrfMiddlewareIn($search);
-
-                // Swapping in an application subclass such as App\Http\Middleware\VerifyCsrfToken keeps protection
-                if ($replaced === null || $this->csrfMiddlewareIn($replacement) !== null) {
-                    continue;
-                }
-
-                $issues[] = $this->createIssueWithSnippet(
-                    message: sprintf('%s replaced in web middleware group', $replaced),
-                    filePath: $file,
-                    lineNumber: $lineNumber + 1,
-                    severity: Severity::High,
-                    recommendation: sprintf('Replace %s only with a subclass of it. Any other replacement disables CSRF protection for all web routes.', $replaced),
-                    metadata: [
-                        'file' => 'bootstrap/app.php',
-                        'laravel_version' => $this->bootstrapLaravelVersion($replaced),
-                        'middleware' => $replaced,
-                        'replacement' => trim($replacement),
-                        'status' => 'replaced_in_web',
-                        'line' => $lineNumber + 1,
-                        'severity_reason' => 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
-                    ]
+            if ($method === 'web') {
+                $removing = $this->middlewareList($this->callArgument($call, 2, 'remove')) ?? [];
+                $additions = array_merge(
+                    $additions,
+                    $this->middlewareList($this->callArgument($call, 0, 'append')) ?? [],
+                    $this->middlewareList($this->callArgument($call, 1, 'prepend')) ?? [],
                 );
+
+                $replace = $this->callArgument($call, 3, 'replace');
+                foreach ($replace instanceof Expr\Array_ ? $replace->items : [] as $item) {
+                    $search = $item instanceof ArrayItem && $item->key !== null ? $this->middlewareName($item->key) : null;
+
+                    if ($item instanceof ArrayItem && $search !== null) {
+                        $replacements[$search] = [$this->middlewareName($item->value), $line];
+                    }
+                }
+            } elseif ($this->isWebGroupName($this->callArgument($call, 0, 'group'))) {
+                $middleware = $this->middlewareList($this->callArgument($call, 1, 'middleware'));
+
+                switch ($method) {
+                    case 'group':
+                        // The last group() call wins; a list that cannot be read holds unknown entries
+                        $group = ['entries' => $middleware ?? [null], 'line' => $line];
+                        break;
+
+                    case 'appendtogroup':
+                    case 'prependtogroup':
+                        $additions = array_merge($additions, $middleware ?? []);
+                        break;
+
+                    case 'removefromgroup':
+                        $removing = $middleware ?? [];
+                        break;
+
+                    case 'replaceingroup':
+                        $search = $this->middlewareName($this->callArgument($call, 1, 'search'));
+
+                        if ($search !== null) {
+                            $replacements[$search] = [$this->middlewareName($this->callArgument($call, 2, 'replace')), $line];
+                        }
+                        break;
+                }
+            }
+
+            foreach ($removing as $name) {
+                if ($name !== null && ! isset($removals[$name])) {
+                    $removals[$name] = $line;
+                }
             }
         }
+
+        $found = [];
+        $entries = $group['entries'] ?? [$this->defaultWebCsrfMiddleware()];
+        // An entry that cannot be read may be CSRF middleware, so a CSRF name may match it
+        $unknown = in_array(null, $entries, true);
+
+        if ($group !== null && ! $unknown && $this->csrfMiddlewareInList($entries) === null) {
+            $found[] = $this->createIssueWithSnippet(
+                message: 'web middleware group redefined without CSRF middleware',
+                filePath: $file,
+                lineNumber: $group['line'],
+                severity: Severity::High,
+                recommendation: 'Include PreventRequestForgery (ValidateCsrfToken before Laravel 13) in the web group passed to group(). Without it, every web route accepts forged requests.',
+                metadata: [
+                    'file' => 'bootstrap/app.php',
+                    'laravel_version' => '11+',
+                    'status' => 'missing_from_web',
+                    'line' => $group['line'],
+                    'severity_reason' => 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
+                ]
+            );
+        }
+
+        foreach ($replacements as $search => [$replacement, $line]) {
+            $replaced = $this->csrfMiddlewareIn($search);
+
+            // Swapping in an application subclass such as App\Http\Middleware\VerifyCsrfToken keeps protection
+            if ($replaced === null
+                || (! $unknown && ! in_array($search, $entries, true))
+                || ($replacement !== null && $this->csrfMiddlewareIn($replacement) !== null)) {
+                continue;
+            }
+
+            $found[] = $this->webGroupReplacementIssue($replaced, $replacement, $file, $line);
+        }
+
+        // Replacements apply in one pass over the group, before removals
+        foreach ($entries as $index => $entry) {
+            if ($entry !== null && isset($replacements[$entry])) {
+                $entries[$index] = $replacements[$entry][0];
+            }
+        }
+
+        $unknown = in_array(null, $entries, true);
+
+        foreach ($removals as $name => $line) {
+            $removed = $this->csrfMiddlewareIn($name);
+
+            if ($removed !== null && ($unknown || in_array($name, $entries, true))) {
+                $found[] = $this->webGroupRemovalIssue($removed, $file, $line);
+            }
+        }
+
+        // Prepends and appends run last, so CSRF middleware added there protects the group
+        if ($this->csrfMiddlewareInList($additions) !== null) {
+            return;
+        }
+
+        array_push($issues, ...$found);
+    }
+
+    /**
+     * The CSRF middleware the default web group holds: PreventRequestForgery from Laravel 13,
+     * ValidateCsrfToken before it.
+     */
+    private function defaultWebCsrfMiddleware(): string
+    {
+        return $this->isLaravel13OrNewer()
+            ? 'Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery'
+            : 'Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken';
+    }
+
+    /**
+     * Whether a group argument names the web group.
+     */
+    private function isWebGroupName(?Expr $expr): bool
+    {
+        return $expr instanceof String_ && $expr->value === 'web';
+    }
+
+    /**
+     * The middleware names an array|string argument lists, with null for an entry that cannot
+     * be read. Empty when the argument is absent, and null when the list itself cannot be read.
+     *
+     * @return list<string|null>|null
+     */
+    private function middlewareList(?Expr $expr): ?array
+    {
+        if ($expr === null) {
+            return [];
+        }
+
+        if (! $expr instanceof Expr\Array_) {
+            $name = $this->middlewareName($expr);
+
+            return $name !== null ? [$name] : null;
+        }
+
+        $names = [];
+        foreach ($expr->items as $item) {
+            $names[] = $item instanceof ArrayItem && ! $item->unpack ? $this->middlewareName($item->value) : null;
+        }
+
+        return $names;
+    }
+
+    /**
+     * The string a middleware value puts in the group: a string as written, or the fully
+     * qualified name of X::class. Null for anything else.
+     */
+    private function middlewareName(?Expr $expr): ?string
+    {
+        if ($expr instanceof String_) {
+            return $expr->value;
+        }
+
+        if ($expr instanceof Expr\ClassConstFetch
+            && $expr->class instanceof Name
+            && $expr->name instanceof Identifier
+            && $expr->name->toLowerString() === 'class') {
+            $resolved = $expr->class->getAttribute('resolvedName');
+
+            return ($resolved instanceof Name ? $resolved : $expr->class)->toString();
+        }
+
+        return null;
+    }
+
+    /**
+     * The first CSRF middleware name a list of middleware names mentions, or null.
+     *
+     * @param  list<string|null>  $names
+     */
+    private function csrfMiddlewareInList(array $names): ?string
+    {
+        foreach ($names as $name) {
+            $middleware = $name !== null ? $this->csrfMiddlewareIn($name) : null;
+
+            if ($middleware !== null) {
+                return $middleware;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The issue for CSRF middleware replaced in the web group, by web(replace:) or replaceInGroup().
+     * A replacement that cannot be read may be a CSRF subclass, so it is reported at Medium.
+     */
+    private function webGroupReplacementIssue(string $replaced, ?string $replacement, string $file, int $line): Issue
+    {
+        return $this->createIssueWithSnippet(
+            message: sprintf('%s replaced in web middleware group', $replaced),
+            filePath: $file,
+            lineNumber: $line,
+            severity: $replacement === null ? Severity::Medium : Severity::High,
+            recommendation: sprintf('Replace %s only with a subclass of it. Any other replacement disables CSRF protection for all web routes.', $replaced),
+            metadata: [
+                'file' => 'bootstrap/app.php',
+                'laravel_version' => $this->bootstrapLaravelVersion($replaced),
+                'middleware' => $replaced,
+                'replacement' => $replacement,
+                'status' => 'replaced_in_web',
+                'line' => $line,
+                'severity_reason' => $replacement === null
+                    ? 'Medium because the replacement cannot be read and may be a CSRF subclass'
+                    : 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
+            ]
+        );
     }
 
     /**
@@ -783,93 +956,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function bootstrapLaravelVersion(string $text): string
     {
         return stripos($text, 'PreventRequestForgery') !== false ? '13+' : '11+';
-    }
-
-    /**
-     * The source of the method call starting on the given line, up to the line that closes it.
-     *
-     * @param  array<int, string>  $lines
-     */
-    private function callText(array $lines, int $start): string
-    {
-        $text = '';
-        $end = min($start + 30, count($lines));
-
-        for ($i = $start; $i < $end; $i++) {
-            $text .= ($lines[$i] ?? '')."\n";
-
-            if (str_contains($lines[$i] ?? '', ');')) {
-                break;
-            }
-        }
-
-        return $text;
-    }
-
-    /**
-     * Check for overly broad CSRF exception patterns in validateCsrfTokens() calls.
-     *
-     * @param  array<int, Issue>  &$issues
-     * @param  array<int, string>  $lines
-     */
-    private function checkBootstrapCsrfExceptions(array $lines, string $file, array &$issues): void
-    {
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
-                continue;
-            }
-
-            // Check for validateCsrfTokens(except: [...]) / preventRequestForgery(except: [...])
-            if (preg_match('/'.self::CSRF_EXCEPT_METHOD_PATTERN.'\s*\(\s*except\s*:\s*\[/', $line)) {
-                // Extract exceptions from the array
-                $searchRange = min($lineNumber + 20, count($lines));
-                $exceptions = [];
-
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
-
-                    if (preg_match_all('/[\'"]([^\'"]+)[\'"]/', $lines[$i], $matches)) {
-                        foreach ($matches[1] as $match) {
-                            if ($match !== 'except') { // Skip the 'except' keyword
-                                $exceptions[] = $match;
-                            }
-                        }
-                    }
-
-                    // Stop at the end of the array
-                    if (str_contains($lines[$i], '])')) {
-                        break;
-                    }
-                }
-
-                // Check each exception pattern using the same logic as middleware $except
-                foreach ($exceptions as $exception) {
-                    if ($exception === '*' || $exception === '/*') {
-                        // Already caught above, skip duplicate
-                        continue;
-                    }
-
-                    if (preg_match('/\*/', $exception) && $this->isBroadCsrfException($exception)) {
-                        $issues[] = $this->createIssueWithSnippet(
-                            message: sprintf('Broad CSRF exception pattern in bootstrap/app.php: %s', $exception),
-                            filePath: $file,
-                            lineNumber: $lineNumber + 1,
-                            severity: Severity::High,
-                            recommendation: 'Use more specific route patterns for CSRF exceptions (e.g., "service/webhooks/*" instead of "webhooks/*")',
-                            metadata: [
-                                'exception' => $exception,
-                                'file' => 'bootstrap/app.php',
-                                'laravel_version' => $this->bootstrapLaravelVersion($line),
-                                'risk_level' => 'high',
-                                'line' => $lineNumber + 1,
-                            ]
-                        );
-                    }
-                }
-            }
-        }
     }
 
     /**

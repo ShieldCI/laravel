@@ -1219,12 +1219,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function readRouteChain(array $chain, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
     {
-        $calls = [];
-        foreach ($chain as $link) {
-            if ($link->name instanceof Identifier) {
-                $calls[$link->name->toLowerString()][] = $link;
+        // Calls after resource() configure its PendingResourceRegistration, which reads them
+        // by its own rules (see resourceState()); calls up to it read as on any route
+        $resourceAt = null;
+        foreach ($chain as $index => $link) {
+            if ($link->name instanceof Identifier && $link->name->toLowerString() === 'resource') {
+                $resourceAt = $index;
+
+                break;
             }
         }
+
+        $calls = $this->callsByName($resourceAt === null ? $chain : array_slice($chain, 0, $resourceAt + 1));
 
         $web = false;
         foreach ($calls['middleware'] ?? [] as $link) {
@@ -1254,7 +1260,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $method = $this->stateChangingRouteMethod($calls, $routeParser);
+        $method = $this->stateChangingRouteMethod($calls);
+        if ($resourceAt !== null) {
+            [$writes, $resourceWeb, $resourceStrips] = $this->resourceState($chain[$resourceAt], array_slice($chain, $resourceAt + 1), $routeParser);
+            $method = $writes ? 'RESOURCE' : null;
+            $web = $web || $resourceWeb;
+            $strips = $strips || $resourceStrips;
+        }
+
         if ($method !== null && $chain !== []) {
             $walk['routes'][] = [
                 'line' => $chain[0]->getStartLine(),
@@ -1268,12 +1281,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The method a route chain registers when it accepts a request CSRF checks, or null:
-     * post, put, patch, delete and any; match() listing such a verb; and resource() unless
-     * only() or except() leaves out store, update and destroy.
+     * post, put, patch, delete and any, and match() listing such a verb. resource() is
+     * judged by resourceState().
      *
      * @param  array<string, non-empty-list<Expr\MethodCall|Expr\StaticCall>>  $calls  Chain calls by lowercase name
      */
-    private function stateChangingRouteMethod(array $calls, BootstrapRouteParser $routeParser): ?string
+    private function stateChangingRouteMethod(array $calls): ?string
     {
         foreach (['post', 'put', 'patch', 'delete', 'any'] as $verb) {
             if (isset($calls[$verb])) {
@@ -1291,23 +1304,110 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return array_diff($methods, ['GET', 'HEAD', 'OPTIONS']) !== [] ? 'MATCH' : null;
         }
 
-        if (isset($calls['resource'])) {
-            // only() and except() read their arguments as ->middleware() does
-            $writes = ['store', 'update', 'destroy'];
-            foreach (['only' => true, 'except' => false] as $filter => $keeps) {
-                foreach ($calls[$filter] ?? [] as $link) {
-                    $names = $this->entryNames($routeParser->middlewareEntries($link));
-                    if (in_array(null, $names, true)) {
-                        return null;
-                    }
-                    $writes = $keeps ? array_intersect($writes, $names) : array_diff($writes, $names);
-                }
+        return null;
+    }
+
+    /**
+     * What a resource() registration applies, as Laravel's PendingResourceRegistration and
+     * ResourceRegistrar read it: whether it keeps any of store, update and destroy, whether
+     * its own middleware lists 'web', and whether it excludes 'web' or the CSRF middleware.
+     *
+     * The options array (the third argument) sets only, except, middleware and
+     * excluded_middleware. A later only(), except() or middleware() call replaces that
+     * option, and withoutMiddleware() adds to excluded_middleware. middleware() and
+     * withoutMiddleware() wrap their first argument and ignore any others; only() and
+     * except() take a list or every argument, as a route's middleware() does.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $pending  The calls chained after resource()
+     * @return array{bool, bool, bool}
+     */
+    private function resourceState(Expr\MethodCall|Expr\StaticCall $resource, array $pending, BootstrapRouteParser $routeParser): array
+    {
+        $optionsArg = $resource->args[2] ?? null;
+        $options = $optionsArg instanceof Node\Arg && $optionsArg->value instanceof Expr\Array_ ? $optionsArg->value : null;
+        $calls = $this->callsByName($pending);
+
+        $writes = ['store', 'update', 'destroy'];
+        foreach (['only' => true, 'except' => false] as $filter => $keeps) {
+            $entries = isset($calls[$filter])
+                ? $routeParser->middlewareEntries($calls[$filter][count($calls[$filter]) - 1])
+                : $this->resourceOption($options, $filter);
+            if ($entries === null) {
+                continue;
             }
 
-            return $writes !== [] ? 'RESOURCE' : null;
+            $names = $this->entryNames($entries);
+            if (in_array(null, $names, true)) {
+                return [false, false, false];
+            }
+            $writes = $keeps ? array_intersect($writes, $names) : array_diff($writes, $names);
+        }
+
+        $middleware = isset($calls['middleware'])
+            ? $this->wrappedFirstArgument($calls['middleware'][count($calls['middleware']) - 1])
+            : ($this->resourceOption($options, 'middleware') ?? []);
+
+        $excluded = $this->resourceOption($options, 'excluded_middleware') ?? [];
+        foreach ($calls['withoutmiddleware'] ?? [] as $link) {
+            $excluded = [...$excluded, ...$this->wrappedFirstArgument($link)];
+        }
+
+        return [
+            $writes !== [],
+            in_array('web', $this->entryNames($middleware), true),
+            $this->namesExcludeCsrf($this->entryNames($excluded)),
+        ];
+    }
+
+    /**
+     * The entries a resource option lists: each item of an array value, or the value
+     * itself. Null when the options array does not set the option.
+     *
+     * @return list<Expr>|null
+     */
+    private function resourceOption(?Expr\Array_ $options, string $key): ?array
+    {
+        foreach ($options->items ?? [] as $item) {
+            if ($item instanceof ArrayItem && $item->key instanceof String_ && $item->key->value === $key) {
+                return $item->value instanceof Expr\Array_ ? $this->arrayValues($item->value) : [$item->value];
+            }
         }
 
         return null;
+    }
+
+    /**
+     * The entries of a call's first argument as Arr::wrap() reads it: each item of an array,
+     * or the value itself. Later arguments are ignored.
+     *
+     * @return list<Expr>
+     */
+    private function wrappedFirstArgument(Expr\MethodCall|Expr\StaticCall $call): array
+    {
+        $first = $call->args[0] ?? null;
+        if (! $first instanceof Node\Arg) {
+            return [];
+        }
+
+        return $first->value instanceof Expr\Array_ ? $this->arrayValues($first->value) : [$first->value];
+    }
+
+    /**
+     * The calls of a chain grouped by lowercase method name, in chain order.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $chain
+     * @return array<string, non-empty-list<Expr\MethodCall|Expr\StaticCall>>
+     */
+    private function callsByName(array $chain): array
+    {
+        $calls = [];
+        foreach ($chain as $link) {
+            if ($link->name instanceof Identifier) {
+                $calls[$link->name->toLowerString()][] = $link;
+            }
+        }
+
+        return $calls;
     }
 
     /**

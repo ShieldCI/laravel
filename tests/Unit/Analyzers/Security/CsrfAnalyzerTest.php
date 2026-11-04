@@ -2852,6 +2852,81 @@ PHP);
         $this->assertPassed($result);
     }
 
+    public function test_passes_read_only_resource_routes_filtered_by_options(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::resource('reports', ReportController::class, ['only' => ['index', 'show']]);
+Route::resource('exports', ExportController::class, ['except' => ['store', 'update', 'destroy']]);
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_resource_only_call_replaces_only_option(): void
+    {
+        // PendingResourceRegistration::only() overwrites the 'only' option
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::resource('reports', ReportController::class, ['only' => ['index']])->only(['index', 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_passes_resource_with_web_middleware_option(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::resource('receipts', ReceiptController::class, ['middleware' => ['auth', 'web']]);
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_resource_middleware_call_replaces_middleware_option(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::resource('receipts', ReceiptController::class, ['middleware' => 'web'])->middleware('auth');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_resource_middleware_call_reads_only_its_first_argument(): void
+    {
+        // Unlike a route, a resource registration wraps one argument and ignores the rest
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::resource('receipts', ReceiptController::class)->middleware('auth', 'web');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_resource_excluded_middleware_option_strips_csrf(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    Route::resource('receipts', ReceiptController::class, ['excluded_middleware' => [VerifyCsrfToken::class]]);
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_passes_fluent_routes_with_web_middleware(): void
     {
         $result = $this->analyzeRouteFile(<<<'PHP'

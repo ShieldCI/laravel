@@ -40,6 +40,14 @@ use ShieldCI\Support\BootstrapRouteParser;
  *   - $middleware->group('web', [...]) without CSRF middleware
  *   - $middleware->web(replace: [...]) or replaceInGroup('web', ...) swapping CSRF middleware out
  *   - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
+ *
+ * @phpstan-type RouteWalk array{
+ *     routes: list<array{line: int, method: string, web: bool, strips: bool, closures: list<int>}>,
+ *     groups: array<int, array{web: bool, strips: bool}>,
+ *     variables: array<string, int>,
+ *     variableGroups: list<array{variable: string, web: bool, strips: bool}>,
+ *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
+ * }
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
 {
@@ -131,10 +139,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $apiRegisteredFiles = $bootstrapParser->getApiRegisteredRouteFiles();
 
         // Check route files for routes that should have CSRF protection
-        $routeFiles = $this->getRouteFiles();
-        foreach ($routeFiles as $file) {
-            $this->checkRoutesForCsrfMiddleware($file, $issues, $bootstrapParser, $webProtectedFiles, $apiRegisteredFiles);
-        }
+        $this->checkRoutesForCsrfMiddleware($this->getRouteFiles(), $issues, $bootstrapParser, $webProtectedFiles, $apiRegisteredFiles);
 
         $summary = empty($issues)
             ? 'No CSRF protection issues detected'
@@ -960,81 +965,94 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check route files for routes that should have CSRF middleware.
+     * Check custom route files for state-changing routes the 'web' middleware does not reach.
      *
      * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
-     * This check only flags Route::post/put/patch/delete() routes in custom route files
-     * (not web.php or api.php) that the 'web' middleware does not reach. The file is read
-     * through the AST, and 'web' counts at any position in:
-     * - the route's own ->middleware(...), read as Laravel reads it: a leading array is
-     *   the whole list, otherwise every argument is one middleware
-     * - a ->middleware(...) on the chain of a group whose closure holds the route
-     * - the 'middleware' attribute of a Route::group([...], ...) whose closure holds the route
+     * routes/web.php, routes/api.php and files registered under 'api' are skipped. A file
+     * registered under 'web' externally, or required inside a group 'web' reaches, is covered,
+     * and so is any file a covered file requires outside a group that removes CSRF. The rest
+     * are read through the AST: see walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
      *
+     * @param  array<string>  $routeFiles
+     * @param  array<int, Issue>  $issues
      * @param  array<string>  $webProtectedFiles  Files covered by 'web' middleware via external registration
      * @param  array<string>  $apiRegisteredFiles  Files registered under 'api' middleware via external registration
-     * @param  array<int, Issue>  $issues
      */
     private function checkRoutesForCsrfMiddleware(
-        string $file,
+        array $routeFiles,
         array &$issues,
         BootstrapRouteParser $routeParser,
         array $webProtectedFiles = [],
         array $apiRegisteredFiles = [],
     ): void {
-        $real = realpath($file);
-        $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
+        $walks = [];
 
-        // Skip routes/api.php — it uses token authentication, not CSRF cookies
-        if (str_ends_with($normalizedPath, '/routes/api.php')) {
-            return;
-        }
+        foreach ($routeFiles as $file) {
+            $real = realpath($file);
+            $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
-        // Skip web.php - routes in web.php automatically get 'web' middleware applied globally
-        // via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+)
-        if (str_ends_with($normalizedPath, '/routes/web.php')) {
-            return;
-        }
-
-        // Skip files registered under 'api' middleware externally — they use token auth, not CSRF
-        if (in_array($normalizedPath, $apiRegisteredFiles, true)) {
-            return;
-        }
-
-        // Skip files registered with 'web' middleware externally (e.g. withRouting(then: ...))
-        if (in_array($normalizedPath, $webProtectedFiles, true)) {
-            return;
-        }
-
-        // A file that does not parse yields no nodes; the report's parse-failure notice covers it
-        $ast = $this->parser->parseFile($file);
-        $protected = $this->webProtectedRoutes($ast, $routeParser);
-        $reportedLines = [];
-
-        foreach ($this->parser->findNodes($ast, Expr\StaticCall::class) as $call) {
-            if (! $call instanceof Expr\StaticCall || ! $this->isRouteVerbCall($call) || isset($protected[spl_object_id($call)])) {
+            // routes/api.php and files registered under 'api' use token authentication, not
+            // CSRF cookies; routes/web.php gets 'web' applied globally
+            if (str_ends_with($normalizedPath, '/routes/api.php')
+                || str_ends_with($normalizedPath, '/routes/web.php')
+                || in_array($normalizedPath, $apiRegisteredFiles, true)) {
                 continue;
             }
 
-            $line = $call->getStartLine();
+            $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
+        }
+
+        // Coverage passes down require chains of any depth
+        $covered = array_fill_keys($webProtectedFiles, true);
+        do {
+            $count = count($covered);
+            foreach ($walks as $path => $entry) {
+                foreach ($entry['walk']['includes'] as $include) {
+                    if (! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
+                        $covered[$include['file']] = true;
+                    }
+                }
+            }
+        } while (count($covered) > $count);
+
+        foreach ($walks as $path => $entry) {
+            if (! isset($covered[$path])) {
+                $this->reportUnprotectedRoutes($entry['file'], $entry['walk']['routes'], $issues);
+            }
+        }
+    }
+
+    /**
+     * @param  list<array{line: int, method: string, stripped: bool}>  $routes
+     * @param  array<int, Issue>  $issues
+     */
+    private function reportUnprotectedRoutes(string $file, array $routes, array &$issues): void
+    {
+        $reportedLines = [];
+
+        foreach ($routes as $route) {
+            $line = $route['line'];
             if (isset($reportedLines[$line])) {
                 continue;
             }
             $reportedLines[$line] = true;
 
-            $method = $call->name instanceof Identifier ? strtoupper($call->name->name) : '';
             $issues[] = $this->createIssueWithSnippet(
-                message: sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $method),
+                message: $route['stripped']
+                    ? sprintf('%s route in custom route file missing CSRF protection - the CSRF middleware is excluded from it', $route['method'])
+                    : sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $route['method']),
                 filePath: $file,
                 lineNumber: $line,
                 severity: Severity::High,
-                recommendation: 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
+                recommendation: $route['stripped']
+                    ? 'Stop excluding the web group or the CSRF middleware from this route through withoutMiddleware() or excluded_middleware. A route that cannot send a token, such as a webhook, belongs in the CSRF middleware exceptions instead, where the exemption is reviewed with the others.'
+                    : 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
                 metadata: [
-                    'method' => $method,
+                    'method' => $route['method'],
                     'file' => basename($file),
                     'line' => $line,
                     'severity_reason' => 'High severity for custom route files - web.php is automatically protected',
@@ -1044,83 +1062,290 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The route verb calls of a route file the 'web' middleware reaches, keyed by
-     * spl_object_id(): those whose own chain applies it, and those inside the closure of
-     * a group that applies it through its chain or its 'middleware' attribute. A nested
-     * group sits inside its parent's closure, so its routes are covered with it.
+     * Walk a route file once and resolve what reaches each route: the state-changing routes
+     * 'web' does not reach or the CSRF middleware is excluded from, and the files it requires,
+     * each with what reaches its require.
      *
-     * @param  array<Node>  $ast
-     * @return array<int, true>
+     * @return array{routes: list<array{line: int, method: string, stripped: bool}>, includes: list<array{file: string, web: bool, strips: bool}>}
      */
-    private function webProtectedRoutes(array $ast, BootstrapRouteParser $routeParser): array
+    private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
-        $protected = [];
-        $webClosures = [];
+        /** @var RouteWalk $walk */
+        $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'variableGroups' => [], 'includes' => []];
 
-        foreach ($this->parser->findNodes($ast, Expr\MethodCall::class) as $call) {
-            if (! $call instanceof Expr\MethodCall || ! $call->name instanceof Identifier) {
-                continue;
-            }
+        // A file that does not parse yields no nodes; the report's parse-failure notice covers it
+        foreach ($this->parser->parseFile($file) as $node) {
+            $this->walkRouteNode($node, [], $walk, $routeParser);
+        }
 
-            $method = $call->name->toLowerString();
-
-            // Route::middleware('web')->group(function () { ... })
-            if ($method === 'group' && $routeParser->chainContainsMiddleware($call->var, 'web')) {
-                $webClosures[] = $routeParser->closureArgument($call->args);
-            }
-
-            // Route::post(...)->middleware('web'): the verb is the root of the chain
-            if ($method === 'middleware' && $routeParser->chainContainsMiddleware($call, 'web')) {
-                $root = $call->var;
-                while ($root instanceof Expr\MethodCall) {
-                    $root = $root->var;
-                }
-                if ($root instanceof Expr\StaticCall && $this->isRouteVerbCall($root)) {
-                    $protected[spl_object_id($root)] = true;
-                }
+        // A group whose callback is a variable opens the closure last assigned to it
+        $groups = $walk['groups'];
+        foreach ($walk['variableGroups'] as $group) {
+            $closure = $walk['variables'][$group['variable']] ?? null;
+            if ($closure !== null) {
+                $groups[$closure] = [
+                    'web' => $group['web'] || ($groups[$closure]['web'] ?? false),
+                    'strips' => $group['strips'] || ($groups[$closure]['strips'] ?? false),
+                ];
             }
         }
 
-        // Route::group(['middleware' => [..., 'web']], function () { ... })
-        foreach ($this->parser->findNodes($ast, Expr\StaticCall::class) as $call) {
-            if ($call instanceof Expr\StaticCall
-                && $this->isRouteCall($call, ['group'])
-                && $this->groupAttributesListWeb($call->args)) {
-                $webClosures[] = $routeParser->closureArgument($call->args);
+        $routes = [];
+        foreach ($walk['routes'] as $route) {
+            [$web, $strips] = $this->groupsReaching($route['closures'], $groups, $route['web'], $route['strips']);
+            if (! $web || $strips) {
+                $routes[] = ['line' => $route['line'], 'method' => $route['method'], 'stripped' => $web];
             }
         }
 
-        foreach (array_filter($webClosures) as $closure) {
-            foreach ($this->parser->findNodes([$closure], Expr\StaticCall::class) as $call) {
-                if ($call instanceof Expr\StaticCall && $this->isRouteVerbCall($call)) {
-                    $protected[spl_object_id($call)] = true;
-                }
+        $includes = [];
+        foreach ($walk['includes'] as $include) {
+            $path = $routeParser->includedFile($include['include'], dirname($file));
+            if ($path !== null) {
+                [$web, $strips] = $this->groupsReaching($include['closures'], $groups, false, false);
+                $includes[] = ['file' => $path, 'web' => $web, 'strips' => $strips];
             }
         }
 
-        return $protected;
+        return ['routes' => $routes, 'includes' => $includes];
     }
 
     /**
-     * Whether a group's attribute array lists 'web' in its 'middleware' entry, at any
-     * position: Laravel applies every middleware a group lists.
+     * Whether 'web' reaches a node, and whether the CSRF middleware is excluded from it,
+     * given its own chain's state and the closures enclosing it. Laravel merges a group's
+     * middleware and excluded middleware into every route inside it, and excluding wins.
      *
-     * @param  array<Node>  $args
+     * @param  list<int>  $closures
+     * @param  array<int, array{web: bool, strips: bool}>  $groups
+     * @return array{bool, bool}
      */
-    private function groupAttributesListWeb(array $args): bool
+    private function groupsReaching(array $closures, array $groups, bool $web, bool $strips): array
     {
-        foreach ($args as $arg) {
-            if (! $arg instanceof Node\Arg || ! $arg->value instanceof Expr\Array_) {
-                continue;
+        foreach ($closures as $closure) {
+            $web = $web || ($groups[$closure]['web'] ?? false);
+            $strips = $strips || ($groups[$closure]['strips'] ?? false);
+        }
+
+        return [$web, $strips];
+    }
+
+    /**
+     * Walk one node of a route file, recording into $walk its route registrations, the groups
+     * that open a closure, closures assigned to variables, and require/include expressions,
+     * each route and include with the closures enclosing it.
+     *
+     * 'web' reaches a route at any position in its own ->middleware(...), read as Laravel
+     * reads it (a leading array is the whole list, otherwise every argument is one middleware),
+     * and through any enclosing group that applies it on its chain or in its 'middleware'
+     * attribute. ->withoutMiddleware(...) or an 'excluded_middleware' attribute naming 'web'
+     * or the CSRF middleware excludes it again, at any level. Method names are matched
+     * case-insensitively, as PHP calls them.
+     *
+     * @param  list<int>  $closures  spl_object_id()s of the closures enclosing $node, outermost first
+     * @param  RouteWalk  $walk
+     */
+    private function walkRouteNode(Node $node, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
+    {
+        if ($node instanceof Expr\MethodCall || $node instanceof Expr\StaticCall) {
+            $this->walkCallChain($node, $closures, $walk, $routeParser);
+
+            return;
+        }
+
+        if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
+            $closures[] = spl_object_id($node);
+        } elseif ($node instanceof Expr\Include_) {
+            $walk['includes'][] = ['include' => $node, 'closures' => $closures];
+        } elseif ($node instanceof Expr\Assign
+            && $node->var instanceof Expr\Variable
+            && is_string($node->var->name)
+            && ($node->expr instanceof Expr\Closure || $node->expr instanceof Expr\ArrowFunction)) {
+            $walk['variables'][$node->var->name] = spl_object_id($node->expr);
+        }
+
+        foreach ($node->getSubNodeNames() as $name) {
+            $sub = $node->$name;
+            foreach (is_array($sub) ? $sub : [$sub] as $child) {
+                if ($child instanceof Node) {
+                    $this->walkRouteNode($child, $closures, $walk, $routeParser);
+                }
+            }
+        }
+    }
+
+    /**
+     * Walk a method-call chain as one unit: read it as a route registration when its root is
+     * the Route facade or a $router variable, then walk its root and each call's arguments,
+     * which may hold further routes.
+     *
+     * @param  list<int>  $closures
+     * @param  RouteWalk  $walk
+     */
+    private function walkCallChain(Expr\MethodCall|Expr\StaticCall $call, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
+    {
+        $chain = [];
+        $base = $call;
+        while ($base instanceof Expr\MethodCall) {
+            array_unshift($chain, $base);
+            $base = $base->var;
+        }
+        if ($base instanceof Expr\StaticCall) {
+            array_unshift($chain, $base);
+            $base = $base->class;
+        }
+
+        if (($base instanceof Name && $base->getLast() === 'Route')
+            || ($base instanceof Expr\Variable && $base->name === 'router')) {
+            $this->readRouteChain($chain, $closures, $walk, $routeParser);
+        }
+
+        $children = [$base];
+        foreach ($chain as $link) {
+            $children = [...$children, $link->name, ...$link->args];
+        }
+
+        foreach ($children as $child) {
+            $this->walkRouteNode($child, $closures, $walk, $routeParser);
+        }
+    }
+
+    /**
+     * Read a route registration chain, root first: the middleware it applies and excludes,
+     * then the group it opens or the state-changing route it registers.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $chain
+     * @param  list<int>  $closures
+     * @param  RouteWalk  $walk
+     */
+    private function readRouteChain(array $chain, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
+    {
+        $calls = [];
+        foreach ($chain as $link) {
+            if ($link->name instanceof Identifier) {
+                $calls[$link->name->toLowerString()][] = $link;
+            }
+        }
+
+        $web = false;
+        foreach ($calls['middleware'] ?? [] as $link) {
+            $web = $web || in_array('web', $this->entryNames($routeParser->middlewareEntries($link)), true);
+        }
+
+        $strips = false;
+        foreach ($calls['withoutmiddleware'] ?? [] as $link) {
+            $strips = $strips || $this->namesExcludeCsrf($this->entryNames($routeParser->middlewareEntries($link)));
+        }
+
+        if (isset($calls['group'])) {
+            $args = $calls['group'][0]->args;
+            $state = [
+                'web' => $web || in_array('web', $this->entryNames($routeParser->groupAttributeEntries($args, 'middleware')), true),
+                'strips' => $strips || $this->namesExcludeCsrf($this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware'))),
+            ];
+
+            $closure = $routeParser->closureArgument($args);
+            $variable = $this->variableArgument($args);
+            if ($closure !== null) {
+                $walk['groups'][spl_object_id($closure)] = $state;
+            } elseif ($variable !== null) {
+                $walk['variableGroups'][] = ['variable' => $variable] + $state;
             }
 
-            foreach ($arg->value->items as $item) {
-                if ($item instanceof ArrayItem
-                    && $item->key instanceof String_
-                    && $item->key->value === 'middleware'
-                    && in_array('web', $this->middlewareList($item->value) ?? [], true)) {
-                    return true;
+            return;
+        }
+
+        $method = $this->stateChangingRouteMethod($calls, $routeParser);
+        if ($method !== null && $chain !== []) {
+            $walk['routes'][] = [
+                'line' => $chain[0]->getStartLine(),
+                'method' => $method,
+                'web' => $web,
+                'strips' => $strips,
+                'closures' => $closures,
+            ];
+        }
+    }
+
+    /**
+     * The method a route chain registers when it accepts a request CSRF checks, or null:
+     * post, put, patch, delete and any; match() listing such a verb; and resource() unless
+     * only() or except() leaves out store, update and destroy.
+     *
+     * @param  array<string, non-empty-list<Expr\MethodCall|Expr\StaticCall>>  $calls  Chain calls by lowercase name
+     */
+    private function stateChangingRouteMethod(array $calls, BootstrapRouteParser $routeParser): ?string
+    {
+        foreach (['post', 'put', 'patch', 'delete', 'any'] as $verb) {
+            if (isset($calls[$verb])) {
+                return strtoupper($verb);
+            }
+        }
+
+        if (isset($calls['match'])) {
+            $first = $calls['match'][0]->args[0] ?? null;
+            $methods = $first instanceof Node\Arg
+                ? $this->entryNames($first->value instanceof Expr\Array_ ? $this->arrayValues($first->value) : [$first->value])
+                : [];
+            $methods = array_map(strtoupper(...), array_filter($methods, is_string(...)));
+
+            return array_diff($methods, ['GET', 'HEAD', 'OPTIONS']) !== [] ? 'MATCH' : null;
+        }
+
+        if (isset($calls['resource'])) {
+            // only() and except() read their arguments as ->middleware() does
+            $writes = ['store', 'update', 'destroy'];
+            foreach (['only' => true, 'except' => false] as $filter => $keeps) {
+                foreach ($calls[$filter] ?? [] as $link) {
+                    $names = $this->entryNames($routeParser->middlewareEntries($link));
+                    if (in_array(null, $names, true)) {
+                        return null;
+                    }
+                    $writes = $keeps ? array_intersect($writes, $names) : array_diff($writes, $names);
                 }
+            }
+
+            return $writes !== [] ? 'RESOURCE' : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * The name each middleware or route-method entry reads as, with null for one that cannot be read.
+     *
+     * @param  array<Expr>  $entries
+     * @return list<string|null>
+     */
+    private function entryNames(array $entries): array
+    {
+        return array_values(array_map($this->middlewareName(...), $entries));
+    }
+
+    /**
+     * @return list<Expr>
+     */
+    private function arrayValues(Expr\Array_ $array): array
+    {
+        $values = [];
+        foreach ($array->items as $item) {
+            if ($item instanceof ArrayItem) {
+                $values[] = $item->value;
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * Whether excluding these middleware removes CSRF protection: they name 'web' or a CSRF middleware.
+     *
+     * @param  list<string|null>  $names
+     */
+    private function namesExcludeCsrf(array $names): bool
+    {
+        foreach ($names as $name) {
+            if ($name === 'web' || ($name !== null && $this->csrfMiddlewareIn($name) !== null)) {
+                return true;
             }
         }
 
@@ -1128,24 +1353,19 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a static call registers a POST/PUT/PATCH/DELETE route: Route::post(...) and the like.
-     */
-    private function isRouteVerbCall(Expr\StaticCall $call): bool
-    {
-        return $this->isRouteCall($call, ['post', 'put', 'patch', 'delete']);
-    }
-
-    /**
-     * Whether a static call is Route::<one of $methods>(...), matched case-insensitively.
+     * The name of the first variable a group is given as its callback, or null.
      *
-     * @param  array<int, string>  $methods  Lowercase method names
+     * @param  array<Node>  $args
      */
-    private function isRouteCall(Expr\StaticCall $call, array $methods): bool
+    private function variableArgument(array $args): ?string
     {
-        return $call->class instanceof Name
-            && $call->class->getLast() === 'Route'
-            && $call->name instanceof Identifier
-            && in_array($call->name->toLowerString(), $methods, true);
+        foreach ($args as $arg) {
+            if ($arg instanceof Node\Arg && $arg->value instanceof Expr\Variable && is_string($arg->value->name)) {
+                return $arg->value->name;
+            }
+        }
+
+        return null;
     }
 
     /**

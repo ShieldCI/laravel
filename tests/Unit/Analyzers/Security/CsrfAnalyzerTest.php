@@ -2748,6 +2748,221 @@ PHP);
         $this->assertIssueCount(1, $result);
     }
 
+    public function test_passes_web_middleware_called_in_mixed_case(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::post('/invoices', [InvoiceController::class, 'store'])->Middleware('web');
+
+Route::MIDDLEWARE('web')->group(function () {
+    Route::post('/receipts', [ReceiptController::class, 'store']);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_route_excluding_csrf_middleware_inside_web_group(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    Route::post('/payments/callback', PaymentCallbackController::class)
+        ->withoutMiddleware([VerifyCsrfToken::class]);
+    Route::post('/payments/notify', PaymentNotifyController::class)->withoutMiddleware('web');
+    Route::post('/payments', [PaymentController::class, 'store']);
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertSame(
+            'POST route in custom route file missing CSRF protection - the CSRF middleware is excluded from it',
+            $result->getIssues()[0]->message,
+        );
+        $this->assertSame(4, $result->getIssues()[0]->location?->line);
+        $this->assertSame(6, $result->getIssues()[1]->location?->line);
+    }
+
+    public function test_fails_routes_in_group_excluding_csrf_middleware(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    Route::withoutMiddleware(ValidateCsrfToken::class)->group(function () {
+        Route::post('/payments/callback', PaymentCallbackController::class);
+    });
+
+    Route::group(['excluded_middleware' => ['web']], function () {
+        Route::post('/payments/notify', PaymentNotifyController::class);
+    });
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+    }
+
+    public function test_excluding_other_middleware_keeps_web_protection(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    Route::post('/payments', [PaymentController::class, 'store'])->withoutMiddleware('throttle');
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_fluent_and_other_state_changing_route_forms(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('auth')->post('/invoices', [InvoiceController::class, 'store']);
+Route::prefix('billing')->delete('/invoices/{invoice}', [InvoiceController::class, 'destroy']);
+Route::match(['get', 'post'], '/search', SearchController::class);
+Route::any('/hooks', HookController::class);
+Route::resource('receipts', ReceiptController::class);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame(
+            ['POST', 'DELETE', 'MATCH', 'ANY', 'RESOURCE'],
+            array_map(fn ($issue) => $issue->metadata['method'], $result->getIssues()),
+        );
+    }
+
+    public function test_passes_read_only_match_and_resource_routes(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::match(['get', 'head'], '/reports', ReportController::class);
+Route::resource('reports', ReportController::class)->only(['index', 'show']);
+Route::resource('exports', ExportController::class)->except('store', 'update', 'destroy');
+Route::get('/status', StatusController::class);
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_fluent_routes_with_web_middleware(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->post('/invoices', [InvoiceController::class, 'store']);
+Route::resource('receipts', ReceiptController::class)->middleware(['auth', 'web']);
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_router_variable_group_with_web_attribute(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$router->group(['middleware' => 'web'], function () use ($router) {
+    $router->post('/invoices', [InvoiceController::class, 'store']);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_router_variable_route_without_web(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$router->post('/invoices', [InvoiceController::class, 'store']);
+$client->post('/invoices', ['amount' => 10]);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_passes_web_group_with_variable_callback(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$billingRoutes = function () {
+    Route::post('/invoices', [InvoiceController::class, 'store']);
+};
+
+Route::middleware('web')->group($billingRoutes);
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_group_with_variable_callback_without_web(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$billingRoutes = function () {
+    Route::post('/invoices', [InvoiceController::class, 'store']);
+};
+
+Route::middleware('auth')->group($billingRoutes);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_passes_file_required_inside_web_group_of_custom_route_file(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/admin.php' => <<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    require __DIR__.'/admin-billing.php';
+});
+
+require __DIR__.'/admin-reports.php';
+PHP,
+            'routes/admin-billing.php' => <<<'PHP'
+<?php
+
+require __DIR__.'/admin-billing-refunds.php';
+
+Route::post('/invoices', [InvoiceController::class, 'store']);
+PHP,
+            'routes/admin-billing-refunds.php' => <<<'PHP'
+<?php
+
+Route::post('/refunds', [RefundController::class, 'store']);
+PHP,
+            'routes/admin-reports.php' => <<<'PHP'
+<?php
+
+Route::post('/reports', [ReportController::class, 'store']);
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('admin-reports.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
     private function analyzeRouteFile(string $routes): ResultInterface
     {
         $tempDir = $this->createTempDirectory(['routes/billing.php' => $routes]);

@@ -296,7 +296,7 @@ class BootstrapRouteParser
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
-    private function closureArgument(array $args): ?Node
+    public function closureArgument(array $args): ?Node
     {
         foreach ($args as $arg) {
             if ($arg instanceof Node\Arg
@@ -731,7 +731,7 @@ class BootstrapRouteParser
      *   ->middleware('auth', 'web')
      *   ->middleware(['web', 'throttle:60,1'])
      */
-    private function chainContainsMiddleware(Node $node, string $middlewareName): bool
+    public function chainContainsMiddleware(Node $node, string $middlewareName): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
             if ($node->name instanceof Identifier && $node->name->name === 'middleware') {

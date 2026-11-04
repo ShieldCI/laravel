@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Security;
 
+use PhpParser\Node;
 use PhpParser\Node\ArrayItem;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Identifier;
@@ -132,7 +133,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Check route files for routes that should have CSRF protection
         $routeFiles = $this->getRouteFiles();
         foreach ($routeFiles as $file) {
-            $this->checkRoutesForCsrfMiddleware($file, $issues, $webProtectedFiles, $apiRegisteredFiles);
+            $this->checkRoutesForCsrfMiddleware($file, $issues, $bootstrapParser, $webProtectedFiles, $apiRegisteredFiles);
         }
 
         $summary = empty($issues)
@@ -964,20 +965,15 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
-     * This check only flags routes in:
-     * - Custom route files (not web.php or api.php)
-     * - That are missing explicit 'web' middleware
+     * This check only flags Route::post/put/patch/delete() routes in custom route files
+     * (not web.php or api.php) that the 'web' middleware does not reach. The file is read
+     * through the AST, and 'web' counts at any position in:
+     * - the route's own ->middleware(...), read as Laravel reads it: a leading array is
+     *   the whole list, otherwise every argument is one middleware
+     * - a ->middleware(...) on the chain of a group whose closure holds the route
+     * - the 'middleware' attribute of a Route::group([...], ...) whose closure holds the route
      *
-     * Only accepts explicit 'web' middleware:
-     * - middleware('web')
-     * - middleware(['web', ...])
-     * - Route::group(['middleware' => 'web'], ...)
-     * - Route::group(['middleware' => ['web', ...]], ...)
-     *
-     * Does NOT accept:
-     * - 'auth' middleware (doesn't include CSRF)
-     * - Just ->middleware( without 'web'
-     * - Assumed middleware from elsewhere
+     * 'auth' and other middleware do not count: they do not include CSRF protection.
      *
      * @param  array<string>  $webProtectedFiles  Files covered by 'web' middleware via external registration
      * @param  array<string>  $apiRegisteredFiles  Files registered under 'api' middleware via external registration
@@ -986,14 +982,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function checkRoutesForCsrfMiddleware(
         string $file,
         array &$issues,
+        BootstrapRouteParser $routeParser,
         array $webProtectedFiles = [],
         array $apiRegisteredFiles = [],
     ): void {
-        $content = FileParser::readFile($file);
-        if ($content === null) {
-            return;
-        }
-
         $real = realpath($file);
         $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
@@ -1018,103 +1010,142 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $lines = FileParser::getLines($file);
-        $insideWebGroup = false;
-        $groupDepth = 0;
+        // A file that does not parse yields no nodes; the report's parse-failure notice covers it
+        $ast = $this->parser->parseFile($file);
+        $protected = $this->webProtectedRoutes($ast, $routeParser);
+        $reportedLines = [];
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
+        foreach ($this->parser->findNodes($ast, Expr\StaticCall::class) as $call) {
+            if (! $call instanceof Expr\StaticCall || ! $this->isRouteVerbCall($call) || isset($protected[spl_object_id($call)])) {
                 continue;
             }
 
-            // Check for Route::group with 'web' middleware
-            if (preg_match('/Route::group\s*\(\s*\[/', $line)) {
-                // Look ahead to check if this group has 'web' middleware
-                $searchRange = min($lineNumber + 10, count($lines));
-                $hasWebInGroup = false;
+            $line = $call->getStartLine();
+            if (isset($reportedLines[$line])) {
+                continue;
+            }
+            $reportedLines[$line] = true;
 
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
+            $method = $call->name instanceof Identifier ? strtoupper($call->name->name) : '';
+            $issues[] = $this->createIssueWithSnippet(
+                message: sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $method),
+                filePath: $file,
+                lineNumber: $line,
+                severity: Severity::High,
+                recommendation: 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
+                metadata: [
+                    'method' => $method,
+                    'file' => basename($file),
+                    'line' => $line,
+                    'severity_reason' => 'High severity for custom route files - web.php is automatically protected',
+                ]
+            );
+        }
+    }
 
-                    // Check for 'middleware' => 'web' or 'middleware' => ['web', ...]
-                    if (preg_match('/[\'"]middleware[\'"]\s*=>\s*[\'"]\s*web\s*[\'"]/', $lines[$i]) ||
-                        preg_match('/[\'"]middleware[\'"]\s*=>\s*\[\s*[\'"]\s*web\s*[\'"]/', $lines[$i])) {
-                        $hasWebInGroup = true;
-                        break;
-                    }
+    /**
+     * The route verb calls of a route file the 'web' middleware reaches, keyed by
+     * spl_object_id(): those whose own chain applies it, and those inside the closure of
+     * a group that applies it through its chain or its 'middleware' attribute. A nested
+     * group sits inside its parent's closure, so its routes are covered with it.
+     *
+     * @param  array<Node>  $ast
+     * @return array<int, true>
+     */
+    private function webProtectedRoutes(array $ast, BootstrapRouteParser $routeParser): array
+    {
+        $protected = [];
+        $webClosures = [];
 
-                    // Stop at the end of the array
-                    if (str_contains($lines[$i], '],')) {
-                        break;
-                    }
-                }
-
-                if ($hasWebInGroup) {
-                    $insideWebGroup = true;
-                    $groupDepth++;
-                }
+        foreach ($this->parser->findNodes($ast, Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Expr\MethodCall || ! $call->name instanceof Identifier) {
+                continue;
             }
 
-            // Track when we exit a group
-            if ($insideWebGroup && preg_match('/^\s*\}\s*\);\s*$/', $line)) {
-                $groupDepth--;
-                if ($groupDepth <= 0) {
-                    $insideWebGroup = false;
-                    $groupDepth = 0;
-                }
+            $method = $call->name->toLowerString();
+
+            // Route::middleware('web')->group(function () { ... })
+            if ($method === 'group' && $routeParser->chainContainsMiddleware($call->var, 'web')) {
+                $webClosures[] = $routeParser->closureArgument($call->args);
             }
 
-            // Check for POST/PUT/PATCH/DELETE routes
-            if (preg_match('/Route::(post|put|patch|delete)\s*\(/i', $line, $matches)) {
-                $method = strtoupper($matches[1]);
-
-                // If inside a web group, the route is protected
-                if ($insideWebGroup) {
-                    continue;
+            // Route::post(...)->middleware('web'): the verb is the root of the chain
+            if ($method === 'middleware' && $routeParser->chainContainsMiddleware($call, 'web')) {
+                $root = $call->var;
+                while ($root instanceof Expr\MethodCall) {
+                    $root = $root->var;
                 }
-
-                // Check if the route has explicit 'web' middleware
-                $searchRange = min($lineNumber + 10, count($lines));
-                $hasWebMiddleware = false;
-
-                for ($i = $lineNumber; $i < $searchRange; $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
-
-                    // Check for middleware('web') or middleware(['web', ...])
-                    if (preg_match('/->middleware\s*\(\s*[\'"]\s*web\s*[\'"]/', $lines[$i]) ||
-                        preg_match('/->middleware\s*\(\s*\[\s*[\'"]\s*web\s*[\'"]/', $lines[$i])) {
-                        $hasWebMiddleware = true;
-                        break;
-                    }
-
-                    // Stop at semicolon that's at the end of a route chain (not inside a function body)
-                    // Look for patterns like '); or ->something();
-                    if (preg_match('/^\s*\)\s*;\s*$/', trim($lines[$i])) || preg_match('/^\s*;\s*$/', trim($lines[$i]))) {
-                        break;
-                    }
-                }
-
-                if (! $hasWebMiddleware) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $method),
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
-                        metadata: [
-                            'method' => $method,
-                            'file' => basename($file),
-                            'line' => $lineNumber + 1,
-                            'severity_reason' => 'High severity for custom route files - web.php is automatically protected',
-                        ]
-                    );
+                if ($root instanceof Expr\StaticCall && $this->isRouteVerbCall($root)) {
+                    $protected[spl_object_id($root)] = true;
                 }
             }
         }
+
+        // Route::group(['middleware' => [..., 'web']], function () { ... })
+        foreach ($this->parser->findNodes($ast, Expr\StaticCall::class) as $call) {
+            if ($call instanceof Expr\StaticCall
+                && $this->isRouteCall($call, ['group'])
+                && $this->groupAttributesListWeb($call->args)) {
+                $webClosures[] = $routeParser->closureArgument($call->args);
+            }
+        }
+
+        foreach (array_filter($webClosures) as $closure) {
+            foreach ($this->parser->findNodes([$closure], Expr\StaticCall::class) as $call) {
+                if ($call instanceof Expr\StaticCall && $this->isRouteVerbCall($call)) {
+                    $protected[spl_object_id($call)] = true;
+                }
+            }
+        }
+
+        return $protected;
+    }
+
+    /**
+     * Whether a group's attribute array lists 'web' in its 'middleware' entry, at any
+     * position: Laravel applies every middleware a group lists.
+     *
+     * @param  array<Node>  $args
+     */
+    private function groupAttributesListWeb(array $args): bool
+    {
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg || ! $arg->value instanceof Expr\Array_) {
+                continue;
+            }
+
+            foreach ($arg->value->items as $item) {
+                if ($item instanceof ArrayItem
+                    && $item->key instanceof String_
+                    && $item->key->value === 'middleware'
+                    && in_array('web', $this->middlewareList($item->value) ?? [], true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a static call registers a POST/PUT/PATCH/DELETE route: Route::post(...) and the like.
+     */
+    private function isRouteVerbCall(Expr\StaticCall $call): bool
+    {
+        return $this->isRouteCall($call, ['post', 'put', 'patch', 'delete']);
+    }
+
+    /**
+     * Whether a static call is Route::<one of $methods>(...), matched case-insensitively.
+     *
+     * @param  array<int, string>  $methods  Lowercase method names
+     */
+    private function isRouteCall(Expr\StaticCall $call, array $methods): bool
+    {
+        return $call->class instanceof Name
+            && $call->class->getLast() === 'Route'
+            && $call->name instanceof Identifier
+            && in_array($call->name->toLowerString(), $methods, true);
     }
 
     /**

@@ -2980,6 +2980,62 @@ PHP);
         $this->assertPassed($result);
     }
 
+    public function test_reassigned_variable_callback_binds_to_closure_assigned_before_group(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$routes = function () {
+    Route::post('/invoices', [InvoiceController::class, 'store']);
+};
+Route::middleware('web')->group($routes);
+
+$routes = function () {
+    Route::post('/receipts', [ReceiptController::class, 'store']);
+};
+Route::middleware('auth')->group($routes);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(9, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_reports_route_excluding_aliased_csrf_middleware(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken as CsrfGuard;
+
+Route::middleware('web')->group(function () {
+    Route::post('/payments/callback', PaymentCallbackController::class)->withoutMiddleware(CsrfGuard::class);
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_passes_routes_applying_csrf_middleware_directly(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Session\Middleware\StartSession;
+
+Route::post('/invoices', [InvoiceController::class, 'store'])
+    ->middleware([StartSession::class, PreventRequestForgery::class]);
+
+Route::group(['middleware' => [StartSession::class, VerifyCsrfToken::class]], function () {
+    Route::post('/receipts', [ReceiptController::class, 'store']);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
     public function test_fails_group_with_variable_callback_without_web(): void
     {
         $result = $this->analyzeRouteFile(<<<'PHP'

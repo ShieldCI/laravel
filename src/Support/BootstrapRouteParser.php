@@ -296,7 +296,7 @@ class BootstrapRouteParser
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
-    private function closureArgument(array $args): ?Node
+    public function closureArgument(array $args): ?Node
     {
         foreach ($args as $arg) {
             if ($arg instanceof Node\Arg
@@ -316,6 +316,25 @@ class BootstrapRouteParser
      */
     private function argsCarryThrottleMiddleware(array $args): bool
     {
+        foreach ($this->groupAttributeEntries($args, 'middleware') as $entry) {
+            if ($this->throttles->expressionIsThrottle($entry)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The entries a group's attribute array lists under $key, such as 'middleware' or
+     * 'excluded_middleware': each item of an array value, or the value itself.
+     *
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     * @return array<Node\Expr>
+     */
+    public function groupAttributeEntries(array $args, string $key): array
+    {
+        $entries = [];
         foreach ($args as $arg) {
             if (! ($arg instanceof Node\Arg) || ! ($arg->value instanceof Node\Expr\Array_)) {
                 continue;
@@ -323,16 +342,23 @@ class BootstrapRouteParser
             foreach ($arg->value->items as $item) {
                 if (! ($item instanceof Node\Expr\ArrayItem)
                     || ! ($item->key instanceof String_)
-                    || $item->key->value !== 'middleware') {
+                    || $item->key->value !== $key) {
                     continue;
                 }
-                if ($this->throttles->expressionIsThrottle($item->value)) {
-                    return true;
+                if (! ($item->value instanceof Node\Expr\Array_)) {
+                    $entries[] = $item->value;
+
+                    continue;
+                }
+                foreach ($item->value->items as $listed) {
+                    if ($listed instanceof Node\Expr\ArrayItem) {
+                        $entries[] = $listed->value;
+                    }
                 }
             }
         }
 
-        return false;
+        return $entries;
     }
 
     /**
@@ -621,17 +647,25 @@ class BootstrapRouteParser
             // findNodes() only ever yields Include_ nodes; the instanceof narrows the
             // type for static analysis without an unreachable skip branch.
             if ($include instanceof Include_) {
-                $path = $this->resolveIncludePath($include->expr, $dir);
-                if ($path !== null && file_exists($path)) {
-                    $normalized = $this->normalizePath($path);
-                    if ($normalized !== null) {
-                        $found[] = $normalized;
-                    }
+                $path = $this->includedFile($include, $dir);
+                if ($path !== null) {
+                    $found[] = $path;
                 }
             }
         }
 
         return $found;
+    }
+
+    /**
+     * The normalized absolute path of an existing file a require/include in $dir loads,
+     * or null when the path cannot be read or the file does not exist.
+     */
+    public function includedFile(Include_ $include, string $dir): ?string
+    {
+        $path = $this->resolveIncludePath($include->expr, $dir);
+
+        return $path !== null && file_exists($path) ? $this->normalizePath($path) : null;
     }
 
     /**
@@ -734,7 +768,7 @@ class BootstrapRouteParser
     private function chainContainsMiddleware(Node $node, string $middlewareName): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
-            if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
+            if ($node->name instanceof Identifier && $node->name->toLowerString() === 'middleware') {
                 foreach ($this->middlewareEntries($node) as $entry) {
                     if ($entry instanceof String_ && $entry->value === $middlewareName) {
                         return true;
@@ -756,7 +790,7 @@ class BootstrapRouteParser
      *
      * @return array<Node\Expr>
      */
-    private function middlewareEntries(StaticCall|MethodCall $call): array
+    public function middlewareEntries(StaticCall|MethodCall $call): array
     {
         $firstArg = $call->args[0] ?? null;
         if ($firstArg instanceof Node\Arg && $firstArg->value instanceof Node\Expr\Array_) {
@@ -790,7 +824,7 @@ class BootstrapRouteParser
     private function chainContainsThrottleMiddleware(Node $node): bool
     {
         if ($node instanceof StaticCall || $node instanceof MethodCall) {
-            if ($node->name instanceof Identifier && $node->name->name === 'middleware') {
+            if ($node->name instanceof Identifier && $node->name->toLowerString() === 'middleware') {
                 foreach ($this->middlewareEntries($node) as $entry) {
                     if ($this->throttles->expressionIsThrottle($entry)) {
                         return true;

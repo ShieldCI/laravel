@@ -14,6 +14,7 @@ use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Scalar\MagicConst\Dir;
 use PhpParser\Node\Scalar\String_;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\Concerns\ResolvesClassNames;
 
@@ -26,7 +27,8 @@ use ShieldCI\Concerns\ResolvesClassNames;
  *   2. Files registered via Route::middleware('web|api')->...->group(base_path('...'))
  *      or Route::group(['middleware' => 'web|api'], base_path('...')), or require'd inside
  *      such a group's closure, in bootstrap/app.php's withRouting(then: ...) callback or
- *      in app/Providers/*.php
+ *      in app/Providers/*.php. The middleware reaches the file from any enclosing group
+ *      unless one excludes it, as Laravel merges group attributes
  *
  * It also exposes {@see self::getThrottledGroupLineRanges()} for the in-file case:
  * the line spans of throttled Route::...->group(Closure) blocks declared directly
@@ -41,6 +43,9 @@ class BootstrapRouteParser
     use ResolvesClassNames;
 
     private readonly MiddlewareThrottleDetector $throttles;
+
+    /** @var array<string, list<array{file: string, calls: non-empty-list<MethodCall|StaticCall>}>> */
+    private array $registrations = [];
 
     /**
      * The judge, $nameThrottles, says whether one middleware name throttles, as
@@ -148,10 +153,9 @@ class BootstrapRouteParser
     }
 
     /**
-     * Returns absolute paths of route files registered with a throttle middleware
-     * directly on their group in bootstrap/app.php or app/Providers/*.php, through
-     * Route::middleware(...)->group(base_path('...')) or
-     * Route::group(['middleware' => ...], base_path('...')).
+     * Returns absolute paths of route files registered on a throttled group in
+     * bootstrap/app.php or app/Providers/*.php, in the forms
+     * {@see self::filesGroupsApply()} reads.
      *
      * Matches any throttle variant: 'throttle:5,1', ThrottleRequests::class,
      * ThrottleRequests::class.':5,1', ThrottleRequests::using('login') or
@@ -169,13 +173,12 @@ class BootstrapRouteParser
     }
 
     /**
-     * Route files a group registers, each with the group call it inherits its
-     * middleware from: ->group(base_path('...')), Route::group([...], base_path('...')),
-     * or a file require'd/include'd inside a group's closure. Read from the route
-     * files, bootstrap/app.php and app/Providers/*.php, so the caller can resolve
-     * the group's middleware against the imports of the file that declares it.
+     * Route files a group registers, each with the group calls it inherits its
+     * middleware from, as {@see self::groupRegistrations()} reads them. Read from the
+     * route files, bootstrap/app.php and app/Providers/*.php, so the caller can resolve
+     * the groups' middleware against the imports of the file that declares them.
      *
-     * @return array<int, array{file: string, source: string, call: MethodCall|StaticCall}>
+     * @return array<int, array{file: string, source: string, calls: non-empty-list<MethodCall|StaticCall>}>
      */
     public function getGroupRegisteredRouteFiles(): array
     {
@@ -193,25 +196,8 @@ class BootstrapRouteParser
 
         $found = [];
         foreach ($sources as $source) {
-            if (! file_exists($source)) {
-                continue;
-            }
-
-            $ast = $this->parser->parseFile($source);
-            $calls = [
-                ...$this->parser->findMethodCalls($ast, 'group'),
-                ...$this->parser->findNodes($ast, StaticCall::class),
-            ];
-            foreach ($calls as $call) {
-                if (! ($call instanceof MethodCall || $call instanceof StaticCall)
-                    || ! $call->name instanceof Identifier
-                    || $call->name->name !== 'group') {
-                    continue;
-                }
-
-                foreach ($this->filesLoadedByGroup($call, dirname($source)) as $path) {
-                    $found[] = ['file' => $path, 'source' => $source, 'call' => $call];
-                }
+            foreach ($this->groupRegistrations($source) as $registration) {
+                $found[] = ['file' => $registration['file'], 'source' => $source, 'calls' => $registration['calls']];
             }
         }
 
@@ -244,25 +230,16 @@ class BootstrapRouteParser
 
         $ranges = [];
 
-        // Fluent form: Route::middleware([...'throttle'...])->group(function () {...})
-        // (throttle in the method chain) — also handles ->group(['middleware' =>
-        // 'throttle'], function () {...}) via the config-array check.
-        foreach ($this->parser->findMethodCalls($ast, 'group') as $call) {
-            if ($call instanceof MethodCall) {
+        // Fluent form: Route::middleware([...'throttle'...])->group(function () {...}),
+        // throttled on the chain; array form: Route::group(['middleware' =>
+        // 'throttle...'], function () {...}), throttled in its attribute array.
+        foreach ((new NodeFinder)->find($ast, $this->isGroupCall(...)) as $call) {
+            if ($this->isGroupCall($call)) {
                 $this->collectThrottledGroupRange(
                     $call->args,
-                    $this->chainContainsThrottleMiddleware($call->var),
+                    $call instanceof MethodCall && $this->anyEntry($this->chainEntries($call->var, 'middleware'), $this->throttles->expressionIsThrottle(...)),
                     $ranges,
                 );
-            }
-        }
-
-        // Array form: Route::group(['middleware' => 'throttle...'], function () {...}).
-        foreach ($this->parser->findNodes($ast, StaticCall::class) as $call) {
-            if ($call instanceof StaticCall
-                && $call->name instanceof Identifier
-                && $call->name->name === 'group') {
-                $this->collectThrottledGroupRange($call->args, false, $ranges);
             }
         }
 
@@ -279,7 +256,7 @@ class BootstrapRouteParser
     private function collectThrottledGroupRange(array $args, bool $chainThrottled, array &$ranges): void
     {
         $closure = $this->closureArgument($args);
-        if ($closure !== null && ($chainThrottled || $this->argsCarryThrottleMiddleware($args))) {
+        if ($closure !== null && ($chainThrottled || $this->anyEntry($this->groupAttributeEntries($args, 'middleware'), $this->throttles->expressionIsThrottle(...)))) {
             $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
         }
     }
@@ -302,32 +279,15 @@ class BootstrapRouteParser
     }
 
     /**
-     * Detects the array-config group form: a ['middleware' => 'throttle...'] or
-     * ['middleware' => ['auth', ThrottleRequests::class]] entry among the call arguments.
+     * Whether $judge accepts any of these middleware entries.
      *
-     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     * @param  array<Node\Expr>  $entries
+     * @param  Closure(Node\Expr): bool  $judge
      */
-    private function argsCarryThrottleMiddleware(array $args): bool
+    private function anyEntry(array $entries, Closure $judge): bool
     {
-        foreach ($this->groupAttributeEntries($args, 'middleware') as $entry) {
-            if ($this->throttles->expressionIsThrottle($entry)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Detects the array-config group form for a named middleware: a ['middleware' => 'web']
-     * or ['middleware' => ['auth', 'web']] entry among the call arguments.
-     *
-     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
-     */
-    private function argsCarryMiddleware(array $args, string $middlewareName): bool
-    {
-        foreach ($this->groupAttributeEntries($args, 'middleware') as $entry) {
-            if ($entry instanceof String_ && $entry->value === $middlewareName) {
+        foreach ($entries as $entry) {
+            if ($judge($entry)) {
                 return true;
             }
         }
@@ -584,98 +544,149 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered on a group carrying middlewareName in the given PHP file:
-     * in the group's method chain, Route::middleware(middlewareName)->group(...), or in its
-     * attribute array, Route::group(['middleware' => middlewareName], ...). The group loads
-     * them through base_path('...') or require's them inside its closure. Supports both
-     * string and array middleware forms.
+     * Finds route files registered on a group carrying middlewareName in the given PHP file,
+     * read as {@see self::filesGroupsApply()} reads them.
      *
      * @return array<string>
      */
     private function getFilesRegisteredWithMiddlewareInFile(string $filePath, string $middlewareName): array
     {
-        if (! file_exists($filePath)) {
-            return [];
-        }
+        return $this->filesGroupsApply(
+            $filePath,
+            fn (Node\Expr $entry): bool => $entry instanceof String_ && $entry->value === $middlewareName,
+        );
+    }
 
-        $ast = $this->parser->parseFile($filePath);
-        if (empty($ast)) {
-            return [];
-        }
-
+    /**
+     * The route files groups in $filePath load that $judge says their groups apply to them:
+     * a group enclosing the load names a matching middleware on its chain,
+     * ->middleware(...), or in its 'middleware' attribute, and none excludes one through
+     * ->withoutMiddleware(...) or its 'excluded_middleware' attribute. Laravel merges both
+     * lists down nested groups, and excluding wins.
+     *
+     * @param  Closure(Node\Expr): bool  $judge
+     * @return array<string>
+     */
+    private function filesGroupsApply(string $filePath, Closure $judge): array
+    {
         $found = [];
-        $groupCalls = [
-            ...$this->parser->findMethodCalls($ast, 'group'),
-            ...$this->parser->findNodes($ast, StaticCall::class),
+        foreach ($this->groupRegistrations($filePath) as $registration) {
+            $applied = false;
+            foreach ($registration['calls'] as $call) {
+                if ($this->anyEntry($this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'), $judge)) {
+                    continue 2;
+                }
+                $applied = $applied || $this->anyEntry($this->groupEntries($call, 'middleware', 'middleware'), $judge);
+            }
+            if ($applied) {
+                $found[] = $registration['file'];
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * The middleware a group call lists through its chain's ->$chainMethod(...) calls
+     * (lowercase) and under $attributeKey in its attribute array.
+     *
+     * @return array<Node\Expr>
+     */
+    private function groupEntries(MethodCall|StaticCall $call, string $chainMethod, string $attributeKey): array
+    {
+        return [
+            ...($call instanceof MethodCall ? $this->chainEntries($call->var, $chainMethod) : []),
+            ...$this->groupAttributeEntries($call->args, $attributeKey),
         ];
-
-        foreach ($groupCalls as $call) {
-            if (! ($call instanceof MethodCall || $call instanceof StaticCall)
-                || ! $call->name instanceof Identifier
-                || $call->name->name !== 'group') {
-                continue;
-            }
-
-            // The group must actually carry the middleware we're looking for.
-            if (($call instanceof MethodCall && $this->chainContainsMiddleware($call->var, $middlewareName))
-                || $this->argsCarryMiddleware($call->args, $middlewareName)) {
-                array_push($found, ...$this->filesLoadedByGroup($call, dirname($filePath)));
-            }
-        }
-
-        return $found;
     }
 
     /**
-     * The route files a group call loads, which inherit its middleware: each
-     * base_path('routes/X.php') argument, and each existing file a require/include
-     * inside a Closure argument loads, resolved against $dir.
+     * Route files the groups in $source load, each with the group calls it inherits
+     * middleware from, outermost first: a path argument, ->group(base_path('...')) or
+     * ->group(__DIR__.'/...'), which Router::loadRoutes() requires, or a file
+     * require'd/include'd inside a group's closure, at any depth of nested groups. Each
+     * file is read once, with class names resolved for matching.
      *
-     * @return array<string>
+     * @return list<array{file: string, calls: non-empty-list<MethodCall|StaticCall>}>
      */
-    private function filesLoadedByGroup(MethodCall|StaticCall $call, string $dir): array
+    private function groupRegistrations(string $source): array
     {
-        $found = [];
-        foreach ($call->args as $arg) {
-            $value = $arg instanceof Node\Arg ? $arg->value : null;
-            $basePathFile = $value === null ? null : $this->extractBasePathArgument($value);
-            $paths = match (true) {
-                $basePathFile !== null => array_filter([$this->normalizePath($basePathFile)]),
-                $value !== null => $this->extractIncludesFromClosure($value, $dir),
-                default => [],
-            };
-            array_push($found, ...$paths);
+        if (! isset($this->registrations[$source])) {
+            $found = [];
+            if (file_exists($source)) {
+                foreach ($this->resolveNamesForMatching($this->parser->parseFile($source)) as $node) {
+                    $this->collectGroupRegistrations($node, [], dirname($source), $found);
+                }
+            }
+            $this->registrations[$source] = $found;
         }
 
-        return $found;
+        return $this->registrations[$source];
     }
 
     /**
-     * Resolves the absolute paths of files require'd/include'd inside a ->group(Closure) body.
-     *
-     * @return array<string>
+     * @param  list<MethodCall|StaticCall>  $groups  The group calls enclosing $node, outermost first
+     * @param  list<array{file: string, calls: non-empty-list<MethodCall|StaticCall>}>  $found
      */
-    private function extractIncludesFromClosure(Node $closure, string $dir): array
+    private function collectGroupRegistrations(Node $node, array $groups, string $dir, array &$found): void
     {
-        if (! ($closure instanceof Node\Expr\Closure) && ! ($closure instanceof Node\Expr\ArrowFunction)) {
-            return [];
+        if ($node instanceof Include_ && $groups !== []) {
+            $path = $this->includedFile($node, $dir);
+            if ($path !== null) {
+                $found[] = ['file' => $path, 'calls' => $groups];
+            }
         }
 
-        $found = [];
-        $includes = $this->parser->findNodes([$closure], Include_::class);
-
-        foreach ($includes as $include) {
-            // findNodes() only ever yields Include_ nodes; the instanceof narrows the
-            // type for static analysis without an unreachable skip branch.
-            if ($include instanceof Include_) {
-                $path = $this->includedFile($include, $dir);
+        if ($this->isGroupCall($node)) {
+            $inner = [...$groups, $node];
+            foreach ($node->args as $arg) {
+                $path = $arg instanceof Node\Arg ? $this->groupRouteFile($arg->value, $dir) : null;
                 if ($path !== null) {
-                    $found[] = $path;
+                    $found[] = ['file' => $path, 'calls' => $inner];
+                } elseif ($arg instanceof Node\Arg) {
+                    $this->collectGroupRegistrations($arg->value, $inner, $dir, $found);
+                }
+            }
+            $children = [$node instanceof MethodCall ? $node->var : $node->class];
+        } else {
+            $children = [];
+            foreach ($node->getSubNodeNames() as $name) {
+                foreach (is_array($node->$name) ? $node->$name : [$node->$name] as $child) {
+                    if ($child instanceof Node) {
+                        $children[] = $child;
+                    }
                 }
             }
         }
 
-        return $found;
+        foreach ($children as $child) {
+            $this->collectGroupRegistrations($child, $groups, $dir, $found);
+        }
+    }
+
+    /**
+     * The existing route file a group argument names by path, in the forms withRouting()
+     * takes, or null.
+     */
+    private function groupRouteFile(Node\Expr $expr, string $dir): ?string
+    {
+        $path = $this->resolveWithRoutingPath($expr, $dir);
+        $normalized = $path === null ? null : $this->normalizePath($path);
+
+        return $normalized !== null && file_exists($normalized) ? $normalized : null;
+    }
+
+    /**
+     * Whether a node is a ->group(...) or Route::group(...) call, matched
+     * case-insensitively, as PHP calls methods.
+     *
+     * @phpstan-assert-if-true MethodCall|StaticCall $node
+     */
+    private function isGroupCall(Node $node): bool
+    {
+        return ($node instanceof MethodCall || $node instanceof StaticCall)
+            && $node->name instanceof Identifier
+            && $node->name->toLowerString() === 'group';
     }
 
     /**
@@ -724,84 +735,37 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered with a throttle middleware on their group
-     * in the given PHP file: in the group's method chain, or in the
-     * ['middleware' => ...] array of Route::group([...], base_path('...')).
+     * Finds route files registered with a throttle middleware on their group in the
+     * given PHP file, read as {@see self::filesGroupsApply()} reads them.
      *
      * @return array<string>
      */
     private function getFilesRegisteredWithThrottleMiddlewareInFile(string $filePath): array
     {
-        if (! file_exists($filePath)) {
-            return [];
-        }
-
-        $ast = $this->parser->parseFile($filePath);
-        if (empty($ast)) {
-            return [];
-        }
-        $ast = $this->resolveNamesForMatching($ast);
-
-        $found = [];
-        $groupCalls = [
-            ...$this->parser->findMethodCalls($ast, 'group'),
-            ...$this->parser->findNodes($ast, StaticCall::class),
-        ];
-
-        foreach ($groupCalls as $call) {
-            if (! ($call instanceof MethodCall || $call instanceof StaticCall)
-                || ! $call->name instanceof Identifier
-                || $call->name->name !== 'group') {
-                continue;
-            }
-
-            $routeFile = null;
-            foreach ($call->args as $arg) {
-                if ($arg instanceof Node\Arg) {
-                    $routeFile ??= $this->extractBasePathArgument($arg->value);
-                }
-            }
-            if ($routeFile === null) {
-                continue;
-            }
-
-            if (($call instanceof MethodCall && $this->chainContainsThrottleMiddleware($call->var))
-                || $this->argsCarryThrottleMiddleware($call->args)) {
-                $normalized = $this->normalizePath($routeFile);
-                if ($normalized !== null) {
-                    $found[] = $normalized;
-                }
-            }
-        }
-
-        return $found;
+        return $this->filesGroupsApply($filePath, $this->throttles->expressionIsThrottle(...));
     }
 
     /**
-     * Walks a method-call chain (right to left) looking for ->middleware(name)
-     * or Route::middleware(name) anywhere in the chain.
+     * The middleware every ->$method(...) call (lowercase) in a method-call chain lists,
+     * such as ->middleware('web'), ->middleware('auth', 'web') or
+     * ->withoutMiddleware(['web']).
      *
-     * Supports the string, argument-list and array forms:
-     *   ->middleware('web')
-     *   ->middleware('auth', 'web')
-     *   ->middleware(['web', 'throttle:60,1'])
+     * @return array<Node\Expr>
      */
-    private function chainContainsMiddleware(Node $node, string $middlewareName): bool
+    private function chainEntries(Node $node, string $method): array
     {
-        if ($node instanceof StaticCall || $node instanceof MethodCall) {
-            if ($node->name instanceof Identifier && $node->name->toLowerString() === 'middleware') {
-                foreach ($this->middlewareEntries($node) as $entry) {
-                    if ($entry instanceof String_ && $entry->value === $middlewareName) {
-                        return true;
-                    }
-                }
+        $entries = [];
+        while ($node instanceof MethodCall || $node instanceof StaticCall) {
+            if ($node->name instanceof Identifier && $node->name->toLowerString() === $method) {
+                array_push($entries, ...$this->middlewareEntries($node));
             }
-            if ($node instanceof MethodCall) {
-                return $this->chainContainsMiddleware($node->var, $middlewareName);
+            if (! $node instanceof MethodCall) {
+                break;
             }
+            $node = $node->var;
         }
 
-        return false;
+        return $entries;
     }
 
     /**
@@ -833,31 +797,6 @@ class BootstrapRouteParser
         }
 
         return $entries;
-    }
-
-    /**
-     * Walks a method-call chain (right to left) looking for a ->middleware(...)
-     * one of whose arguments is, or lists, a throttle MiddlewareThrottleDetector recognises:
-     *   ->middleware('throttle:5,1')
-     *   ->middleware(['api', ThrottleRequests::using('api')])
-     *   ->middleware('api', 'throttle:5,1')
-     */
-    private function chainContainsThrottleMiddleware(Node $node): bool
-    {
-        if ($node instanceof StaticCall || $node instanceof MethodCall) {
-            if ($node->name instanceof Identifier && $node->name->toLowerString() === 'middleware') {
-                foreach ($this->middlewareEntries($node) as $entry) {
-                    if ($this->throttles->expressionIsThrottle($entry)) {
-                        return true;
-                    }
-                }
-            }
-            if ($node instanceof MethodCall) {
-                return $this->chainContainsThrottleMiddleware($node->var);
-            }
-        }
-
-        return false;
     }
 
     /**

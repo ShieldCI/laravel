@@ -1134,8 +1134,10 @@ PHP;
 
     /**
      * @dataProvider groupAttributeArrayProvider
+     * @dataProvider groupNestingProvider
      */
     #[DataProvider('groupAttributeArrayProvider')]
+    #[DataProvider('groupNestingProvider')]
     public function test_group_membership_reads_the_group_attribute_array(string $registration, string $group, bool $expected): void
     {
         $tempDir = $this->createTempDir([
@@ -1177,7 +1179,32 @@ PHP;
             'web under another key' => ["Route::group(['prefix' => 'web'], {$file});", 'web', false],
             'name that only starts with web' => ["Route::group(['middleware' => 'webhooks'], {$file});", 'web', false],
             'api is not web' => ["Route::group(['middleware' => 'api'], {$file});", 'web', false],
-            'web that is excluded' => ["Route::group(['excluded_middleware' => 'web'], {$file});", 'web', false],
+            'web that is excluded' => ["Route::group(['middleware' => 'web', 'excluded_middleware' => 'web'], {$file});", 'web', false],
+            'web excluded from a list' => ["Route::group(['middleware' => 'web', 'excluded_middleware' => ['auth', 'web']], {$file});", 'web', false],
+            'group method in another case' => ["Route::Group(['middleware' => 'web'], {$file});", 'web', true],
+            'file given relative to __DIR__' => ["Route::group(['middleware' => 'web'], __DIR__.'/../routes/partner.php');", 'web', true],
+        ];
+    }
+
+    /**
+     * Group middleware as Laravel merges it: from every enclosing group, with exclusion at
+     * any level winning.
+     *
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function groupNestingProvider(): array
+    {
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'web excluded on the chain' => ["Route::middleware('web')->withoutMiddleware('web')->group({$file});", 'web', false],
+            'chain group method in another case' => ["Route::middleware('api')->Group({$file});", 'api', true],
+            'web from an enclosing group' => ["Route::middleware('web')->group(function () { Route::group(['prefix' => 'partner'], {$file}); });", 'web', true],
+            'api from an enclosing attribute array' => ["Route::group(['middleware' => 'api'], function () { Route::prefix('partner')->group({$file}); });", 'api', true],
+            'require two groups deep' => ["Route::middleware('web')->group(function () { Route::prefix('partner')->group(function () { require __DIR__.'/../routes/partner.php'; }); });", 'web', true],
+            'web excluded by an inner group' => ["Route::middleware('web')->group(function () { Route::withoutMiddleware('web')->group({$file}); });", 'web', false],
+            'web excluded by an outer group' => ["Route::group(['excluded_middleware' => 'web'], function () { Route::middleware('web')->group({$file}); });", 'web', false],
+            'sibling group does not reach' => ["Route::middleware('web')->group(function () {}); Route::prefix('partner')->group({$file});", 'web', false],
         ];
     }
 
@@ -1431,9 +1458,39 @@ PHP;
             $this->assertCount(2, $registrations);
             $this->assertStringEndsWith('/routes/signin.php', $registrations[0]['file']);
             $this->assertStringEndsWith('/routes/web.php', $registrations[0]['source']);
-            $this->assertInstanceOf(MethodCall::class, $registrations[0]['call']);
+            $this->assertCount(1, $registrations[0]['calls']);
+            $this->assertInstanceOf(MethodCall::class, $registrations[0]['calls'][0]);
             $this->assertStringEndsWith('/routes/admin.php', $registrations[1]['file']);
-            $this->assertInstanceOf(StaticCall::class, $registrations[1]['call']);
+            $this->assertCount(1, $registrations[1]['calls']);
+            $this->assertInstanceOf(StaticCall::class, $registrations[1]['calls'][0]);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_group_registered_route_files_record_every_enclosing_group_outermost_first(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+Route::middleware('signin')->group(function () {
+    Route::group(['prefix' => 'admin'], base_path('routes/admin.php'));
+});
+PHP;
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $registrations = $parser->getGroupRegisteredRouteFiles();
+
+            $this->assertCount(1, $registrations);
+            $this->assertStringEndsWith('/routes/admin.php', $registrations[0]['file']);
+            $this->assertCount(2, $registrations[0]['calls']);
+            $this->assertInstanceOf(MethodCall::class, $registrations[0]['calls'][0]);
+            $this->assertInstanceOf(StaticCall::class, $registrations[0]['calls'][1]);
         } finally {
             $this->removeDir($tempDir);
         }
@@ -1504,6 +1561,9 @@ PHP;
             'array-form group on a string' => ['', "Route::group(['middleware' => ['api', 'throttle:5,1']], {$file});"],
             'variadic names' => ['', "Route::middleware('api', 'throttle:5,1')->group({$file});"],
             'class as a later argument mid-chain' => [$import, "Route::prefix('partner')->middleware('auth', ThrottleRequests::class)->group({$file});"],
+            'file required inside the closure' => ['', "Route::middleware('throttle:5,1')->group(function () { require __DIR__.'/../routes/partner.php'; });"],
+            'throttle from an enclosing group' => ['', "Route::middleware('throttle:5,1')->group(function () { Route::prefix('partner')->group({$file}); });"],
+            'group method in another case' => ['', "Route::GROUP(['middleware' => 'throttle:5,1'], {$file});"],
         ];
     }
 

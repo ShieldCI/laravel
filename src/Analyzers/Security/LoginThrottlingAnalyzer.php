@@ -687,9 +687,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The middleware, and any Route::controller() controller, of the group each
+     * The middleware, and any Route::controller() controller, of the groups each
      * group-registered route file sits in, keyed by the file's normalized path, as
-     * a group that spans the whole file. Each group is resolved against the
+     * a group that spans the whole file. Middleware merges from every enclosing
+     * group and the innermost controller wins. Each group is resolved against the
      * imports of the file that declares it.
      *
      * @return array<string, array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>>
@@ -699,9 +700,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $groups = [];
         foreach ($bootstrapParser->getGroupRegisteredRouteFiles() as $registration) {
             $this->trackFileImports($this->parser->parseFile($registration['source']));
-            $call = $registration['call'];
-            [$classes, $controller] = $call instanceof Node\Expr\MethodCall ? $this->chainClasses($call->var) : [[], null];
-            array_push($classes, ...$this->groupAttributeMiddleware($call->args));
+            $classes = [];
+            $controller = null;
+            foreach ($registration['calls'] as $call) {
+                [$chainClasses, $chainController] = $call instanceof Node\Expr\MethodCall ? $this->chainClasses($call->var) : [[], null];
+                array_push($classes, ...$chainClasses, ...$this->groupAttributeMiddleware($call->args));
+                $controller = $chainController ?? $controller;
+            }
 
             if ($classes !== [] || $controller !== null) {
                 $groups[$registration['file']][] = ['start' => 1, 'end' => PHP_INT_MAX, 'classes' => $classes, 'controller' => $controller];

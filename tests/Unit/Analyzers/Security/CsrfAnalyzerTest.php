@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\CsrfAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -3476,6 +3477,64 @@ PHP;
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result);
+    }
+
+    /**
+     * @dataProvider externalGroupRegistrationProvider
+     */
+    #[DataProvider('externalGroupRegistrationProvider')]
+    public function test_route_file_registered_by_a_group_in_bootstrap(string $registration, bool $protected): void
+    {
+        $bootstrapApp = <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+use Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        if ($protected) {
+            $this->assertPassed($result);
+        } else {
+            $this->assertFailed($result);
+            $this->assertIssueCount(1, $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function externalGroupRegistrationProvider(): array
+    {
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'CSRF class in the attribute array' => ["Route::group(['middleware' => [VerifyCsrfToken::class]], {$file});", true],
+            'CSRF class on the chain' => ["Route::middleware(VerifyCsrfToken::class)->group({$file});", true],
+            'web from an enclosing group' => ["Route::middleware('web')->group(function () { Route::group(['prefix' => 'partner'], {$file}); });", true],
+            'file given relative to __DIR__' => ["Route::middleware('web')->group(__DIR__.'/../routes/partner.php');", true],
+            'CSRF class excluded by excluded_middleware' => ["Route::group(['middleware' => 'web', 'excluded_middleware' => [VerifyCsrfToken::class]], {$file});", false],
+            'CSRF class excluded on the chain' => ["Route::middleware('web')->withoutMiddleware(VerifyCsrfToken::class)->group({$file});", false],
+            'web excluded by an enclosing group' => ["Route::withoutMiddleware('web')->group(function () { Route::middleware('web')->group({$file}); });", false],
+        ];
     }
 
     public function test_skips_route_file_required_inside_web_group_closure_in_bootstrap(): void

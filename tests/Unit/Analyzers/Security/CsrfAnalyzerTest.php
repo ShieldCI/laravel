@@ -2126,6 +2126,26 @@ PHP);
         $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
     }
 
+    public function test_fails_when_kernel_alias_named_after_csrf_middleware_resolves_elsewhere(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            'VerifyCsrfToken',
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'VerifyCsrfToken' => \App\Http\Middleware\EncryptCookies::class,
+    ];
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
+    }
+
     public function test_fails_when_kernel_global_stack_names_csrf_only_through_an_alias(): void
     {
         $result = $this->analyzeKernel(<<<'PHP'

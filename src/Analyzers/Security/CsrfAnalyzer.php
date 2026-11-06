@@ -642,8 +642,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
-     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. A name the list
-     * gives for a group or an alias is followed into it once.
+     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. As Laravel
+     * resolves an entry, a group name comes first, then an alias, and only then a class name;
+     * a group is followed into once.
      *
      * @param  array<string, Expr>  $groups
      * @param  array<string, Expr>  $aliases
@@ -657,19 +658,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
 
             $name = explode(':', $entry, 2)[0];
-            $basename = substr((string) strrchr('\\'.$name, '\\'), 1);
 
-            // Case-sensitive, as the registration check's text match is
-            if (in_array($basename, self::CSRF_MIDDLEWARE, true)) {
-                return true;
+            if (isset($groups[$entry])) {
+                $runsCsrf = ! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true]);
+            } elseif (isset($aliases[$name])) {
+                $runsCsrf = $this->kernelListRunsCsrf($aliases[$name], [], [], $seen);
+            } else {
+                // Case-sensitive, as the registration check's text match is
+                $runsCsrf = in_array(substr((string) strrchr('\\'.$name, '\\'), 1), self::CSRF_MIDDLEWARE, true);
             }
 
-            // As Laravel resolves it, a group name shadows an alias of the same name
-            if (isset($groups[$entry])) {
-                if (! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true])) {
-                    return true;
-                }
-            } elseif (isset($aliases[$name]) && $this->kernelListRunsCsrf($aliases[$name], [], [], $seen)) {
+            if ($runsCsrf) {
                 return true;
             }
         }

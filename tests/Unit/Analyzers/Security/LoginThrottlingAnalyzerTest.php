@@ -2387,7 +2387,63 @@ PHP;
                 'routes/web.php' => '<?php',
                 'routes/session.php' => $sessionRoutes,
             ]],
+            'in-file group given a list' => [[
+                'routes/web.php' => str_replace("\n});", "\n}]);", self::groupedLoginRoutes('Route::middleware(ThrottleRequests::class)->group([function () {')),
+            ]],
+            'bootstrap registration of a list' => [[
+                'bootstrap/app.php' => $bootstrap("Route::middleware(['web', ThrottleRequests::class])->group([base_path('routes/orders.php'), base_path('routes/session.php')]);"),
+                'routes/web.php' => '<?php',
+                'routes/orders.php' => '<?php',
+                'routes/session.php' => $sessionRoutes,
+            ]],
         ];
+    }
+
+    public function test_route_files_listed_on_an_api_group_are_graded_as_api_routes(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->bootstrapThen("Route::prefix('api')->middleware('api')->group([base_path('routes/partner.php'), base_path('routes/mobile.php')]);"),
+            'routes/web.php' => '<?php',
+            'routes/partner.php' => "<?php\n\nRoute::post('/partner/login', [PartnerSessionController::class, 'store']);\n",
+            'routes/mobile.php' => "<?php\n\nRoute::post('/mobile/login', [MobileSessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'API authentication route "/mobile/login" lacks rate limiting protection',
+            'API authentication route "/partner/login" lacks rate limiting protection',
+        ], $this->sortedIssueMessages($result));
+    }
+
+    public function test_throttle_on_a_group_given_a_list_covers_every_listed_file(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->bootstrapThen("Route::group(['middleware' => ['web', 'throttle:5,1']], [base_path('routes/partner.php'), __DIR__.'/../routes/mobile.php']);"),
+            'routes/web.php' => '<?php',
+            'routes/partner.php' => "<?php\n\nRoute::post('/partner/login', [PartnerSessionController::class, 'store']);\n",
+            'routes/mobile.php' => "<?php\n\nRoute::post('/mobile/login', [MobileSessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_throttled_in_file_group_given_a_list_covers_each_closure(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group([function () {
+    Route::post('/partner/login', [PartnerSessionController::class, 'store']);
+}, fn () => Route::post('/mobile/login', [MobileSessionController::class, 'store'])]);
+Route::middleware('auth')->group([function () {
+    Route::post('/kiosk/login', [KioskSessionController::class, 'store']);
+}]);
+PHP;
+
+        $result = $this->analyzeApp(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/kiosk/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
     public function test_app_alias_for_throttle_on_the_route_group_covers_the_login_controller(): void
@@ -3775,6 +3831,23 @@ class Kernel extends HttpKernel
 PHP;
     }
 
+    private function bootstrapThen(string $registration): string
+    {
+        return "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\n"
+            ."return Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            {$registration}\n        },\n    )\n    ->create();\n";
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function sortedIssueMessages(ResultInterface $result): array
+    {
+        $messages = $this->issueMessages($result);
+        sort($messages);
+
+        return $messages;
+    }
+
     /**
      * A route file whose login route sits five lines inside the group the given
      * line opens, with ThrottleRequests imported as itself and as Cap.
@@ -4216,6 +4289,34 @@ PHP;
         $result = $this->analyzeApp([
             'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
             'routes/web.php' => $routes,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/signin" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_controller_group_given_a_list_covers_each_closure_and_file(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\SessionGate;
+
+Route::controller(SessionGate::class)->group([
+    function () {
+        Route::post('/signin', 'store');
+    },
+    base_path('routes/signin.php'),
+    fn () => Route::post('/session/login', 'store'),
+]);
+
+Route::post('/admin/signin', 'store');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionGate.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionGate'),
+            'routes/web.php' => $routes,
+            'routes/signin.php' => "<?php\n\nRoute::post('/partner/signin', 'store');\n",
         ]);
 
         $this->assertFailed($result);

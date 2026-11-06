@@ -3941,6 +3941,87 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider groupRouteListProvider
+     */
+    #[DataProvider('groupRouteListProvider')]
+    public function test_route_files_listed_on_a_group_in_bootstrap(string $registration, string $expected): void
+    {
+        $bootstrapApp = <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+use Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+            'routes/billing.php' => "<?php\nRoute::post('/invoices', [InvoiceController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        if ($expected === '') {
+            $this->assertPassed($result);
+        } else {
+            $this->assertFailed($result);
+            $this->assertIssueCount(2, $result);
+            $this->assertHasIssueContaining($expected, $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function groupRouteListProvider(): array
+    {
+        $list = "[base_path('routes/partner.php'), __DIR__.'/../routes/billing.php']";
+
+        return [
+            'web on the chain' => ["Route::middleware('web')->group({$list});", ''],
+            'web in the attribute array' => ["Route::group(['middleware' => ['web']], {$list});", ''],
+            'api in the attribute array' => ["Route::group(['middleware' => 'api', 'prefix' => 'api'], {$list});", ''],
+            'CSRF class excluded' => ["Route::middleware('web')->withoutMiddleware(VerifyCsrfToken::class)->group({$list});", 'the CSRF middleware is excluded from it'],
+            'no web' => ["Route::middleware('auth')->group({$list});", 'no "web" middleware detected'],
+        ];
+    }
+
+    public function test_in_file_group_given_a_list_covers_each_callback(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$billingRoutes = function () {
+    Route::post('/invoices', [InvoiceController::class, 'store']);
+};
+
+Route::middleware('web')->group([function () {
+    Route::post('/orders', [OrderController::class, 'store']);
+}, $billingRoutes, fn () => Route::post('/refunds', [RefundController::class, 'store'])]);
+
+Route::middleware('auth')->group([function () {
+    Route::post('/receipts', [ReceiptController::class, 'store']);
+}]);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(12, $result->getIssues()[0]->location?->line);
+    }
+
     public function test_csrf_exclusion_on_a_route_file_reaches_the_files_it_loads(): void
     {
         $bootstrapApp = <<<'PHP'

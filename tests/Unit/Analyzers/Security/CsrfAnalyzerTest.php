@@ -3516,6 +3516,7 @@ PHP;
         } else {
             $this->assertFailed($result);
             $this->assertIssueCount(1, $result);
+            $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - the CSRF middleware is excluded from it', $result);
         }
     }
 
@@ -3535,6 +3536,70 @@ PHP;
             'CSRF class excluded on the chain' => ["Route::middleware('web')->withoutMiddleware(VerifyCsrfToken::class)->group({$file});", false],
             'web excluded by an enclosing group' => ["Route::withoutMiddleware('web')->group(function () { Route::middleware('web')->group({$file}); });", false],
         ];
+    }
+
+    public function test_csrf_exclusion_on_a_route_file_reaches_the_files_it_loads(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::withoutMiddleware(VerifyCsrfToken::class)->group(base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::middleware('web')->group(function () {\n    require __DIR__.'/orders.php';\n});",
+            'routes/orders.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+        $this->assertStringEndsWith('orders.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_group_in_an_unloaded_route_file_does_not_strip_a_web_registered_file(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('web')->group(base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/legacy.php' => "<?php\nRoute::withoutMiddleware('web')->group(base_path('routes/partner.php'));",
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
     }
 
     public function test_skips_route_file_required_inside_web_group_closure_in_bootstrap(): void

@@ -1183,6 +1183,8 @@ PHP;
             'web excluded from a list' => ["Route::group(['middleware' => 'web', 'excluded_middleware' => ['auth', 'web']], {$file});", 'web', false],
             'group method in another case' => ["Route::Group(['middleware' => 'web'], {$file});", 'web', true],
             'file given relative to __DIR__' => ["Route::group(['middleware' => 'web'], __DIR__.'/../routes/partner.php');", 'web', true],
+            // Laravel requires a bare string from the working directory, not the declaring file's
+            'file given as a bare relative string' => ["Route::group(['middleware' => 'web'], '../routes/partner.php');", 'web', false],
         ];
     }
 

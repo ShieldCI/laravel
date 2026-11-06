@@ -971,8 +971,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * routes/web.php, routes/api.php and files registered under 'api' are skipped. A file
      * registered under 'web' externally, or loaded by a group 'web' or the CSRF middleware
-     * reaches, is covered, unless a group loading it excludes either, and so is any file a
-     * covered file requires outside a group that removes CSRF. The rest
+     * reaches, is covered, and so is any file a covered file requires outside a group that
+     * removes CSRF. A file a bootstrap or provider group strips CSRF from is not, and neither
+     * is any file it requires. The rest
      * are read through the AST: see walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
@@ -1006,12 +1007,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
         }
 
-        // A group that loads a file by path or require's it, in bootstrap/app.php, a provider
-        // or a route file, covers it when it or an enclosing group applies 'web' or the CSRF
-        // middleware; one that excludes either leaves the file unprotected, however else it loads
+        // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
+        // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
+        // either, however else it loads. Groups inside route files are read by the walk, which
+        // only trusts what a file that is itself loaded registers
         $covered = array_fill_keys($webProtectedFiles, true);
         $stripped = [];
+        $routesDir = rtrim(str_replace('\\', '/', $this->getBasePath()), '/').'/routes/';
         foreach ($routeParser->getGroupRegisteredRouteFiles() as $registration) {
+            if (str_starts_with(str_replace('\\', '/', $registration['source']), $routesDir)) {
+                continue;
+            }
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
             if ($state['strips']) {
                 $stripped[$registration['file']] = true;
@@ -1019,24 +1025,38 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $covered[$registration['file']] = true;
             }
         }
-        $covered = array_diff_key($covered, $stripped);
 
-        // Coverage passes down require chains of any depth
+        // Coverage passes down require chains of any depth, and so does stripping, which
+        // Laravel merges into every nested group and which wins over 'web'
         do {
-            $count = count($covered);
+            $changed = false;
             foreach ($walks as $path => $entry) {
                 foreach ($entry['walk']['includes'] as $include) {
-                    if (! isset($stripped[$include['file']]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
-                        $covered[$include['file']] = true;
+                    $file = $include['file'];
+                    if (isset($stripped[$path])) {
+                        $changed = $changed || ! isset($stripped[$file]);
+                        $stripped[$file] = true;
+                    } elseif (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
+                        $changed = true;
+                        $covered[$file] = true;
                     }
                 }
             }
-        } while (count($covered) > $count);
+        } while ($changed);
 
         foreach ($walks as $path => $entry) {
-            if (! isset($covered[$path])) {
-                $this->reportUnprotectedRoutes($entry['file'], $entry['walk']['routes'], $issues);
+            $fileStripped = isset($stripped[$path]);
+            if (isset($covered[$path]) && ! $fileStripped) {
+                continue;
             }
+
+            $unprotected = [];
+            foreach ($entry['walk']['routes'] as $route) {
+                if ($fileStripped || ! $route['web'] || $route['strips']) {
+                    $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'stripped' => $fileStripped || $route['web']];
+                }
+            }
+            $this->reportUnprotectedRoutes($entry['file'], $unprotected, $issues);
         }
     }
 
@@ -1076,11 +1096,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Walk a route file once and resolve what reaches each route: the state-changing routes
-     * 'web' does not reach or the CSRF middleware is excluded from, and the files it requires,
-     * each with what reaches its require.
+     * Walk a route file once and resolve what reaches each route: its state-changing routes,
+     * each with whether 'web' reaches it and whether the CSRF middleware is excluded from it,
+     * and the files it requires, each with what reaches its require.
      *
-     * @return array{routes: list<array{line: int, method: string, stripped: bool}>, includes: list<array{file: string, web: bool, strips: bool}>}
+     * @return array{routes: list<array{line: int, method: string, web: bool, strips: bool}>, includes: list<array{file: string, web: bool, strips: bool}>}
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
@@ -1098,9 +1118,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $routes = [];
         foreach ($walk['routes'] as $route) {
             [$web, $strips] = $this->groupsReaching($route['closures'], $groups, $route['web'], $route['strips']);
-            if (! $web || $strips) {
-                $routes[] = ['line' => $route['line'], 'method' => $route['method'], 'stripped' => $web];
-            }
+            $routes[] = ['line' => $route['line'], 'method' => $route['method'], 'web' => $web, 'strips' => $strips];
         }
 
         $includes = [];
@@ -1188,16 +1206,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function walkCallChain(Expr\MethodCall|Expr\StaticCall $call, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
     {
-        $chain = [];
-        $base = $call;
-        while ($base instanceof Expr\MethodCall) {
-            array_unshift($chain, $base);
-            $base = $base->var;
-        }
-        if ($base instanceof Expr\StaticCall) {
-            array_unshift($chain, $base);
-            $base = $base->class;
-        }
+        [$chain, $base] = $this->unwindChain($call);
 
         if (($base instanceof Name && $base->getLast() === 'Route')
             || ($base instanceof Expr\Variable && $base->name === 'router')) {
@@ -1280,6 +1289,28 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * A method-call chain's calls, root first, and the node it is called on: the class of a
+     * static root, such as Route, or the variable or expression of a method root.
+     *
+     * @return array{0: list<Expr\MethodCall|Expr\StaticCall>, 1: Node}
+     */
+    private function unwindChain(Expr\MethodCall|Expr\StaticCall $call): array
+    {
+        $chain = [];
+        $base = $call;
+        while ($base instanceof Expr\MethodCall) {
+            array_unshift($chain, $base);
+            $base = $base->var;
+        }
+        if ($base instanceof Expr\StaticCall) {
+            array_unshift($chain, $base);
+            $base = $base->class;
+        }
+
+        return [$chain, $base];
+    }
+
+    /**
      * Whether a chain applies 'web' or the CSRF middleware, and whether it excludes either:
      * through ->middleware(...) and ->withoutMiddleware(...) and, on a group, its
      * 'middleware' and 'excluded_middleware' attributes.
@@ -1319,17 +1350,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $web = false;
         $strips = false;
         foreach ($groups as $group) {
-            $chain = [];
-            $link = $group;
-            while ($link instanceof Expr\MethodCall) {
-                array_unshift($chain, $link);
-                $link = $link->var;
-            }
-            if ($link instanceof Expr\StaticCall) {
-                array_unshift($chain, $link);
-            }
-
-            $state = $this->chainCsrfState($this->callsByName($chain), $routeParser);
+            $state = $this->chainCsrfState($this->callsByName($this->unwindChain($group)[0]), $routeParser);
             $web = $web || $state['web'];
             $strips = $strips || $state['strips'];
         }

@@ -690,7 +690,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * The middleware, and any Route::controller() controller, of the groups each
      * group-registered route file sits in, keyed by the file's normalized path, as
      * a group that spans the whole file. Middleware merges from every enclosing
-     * group and the innermost controller wins. Each group is resolved against the
+     * group less what any of them excludes, and the innermost controller wins. Each group is resolved against the
      * imports of the file that declares it.
      *
      * @return array<string, array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>>
@@ -701,12 +701,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         foreach ($bootstrapParser->getGroupRegisteredRouteFiles() as $registration) {
             $this->trackFileImports($this->parser->parseFile($registration['source']));
             $classes = [];
+            $excluded = [];
             $controller = null;
             foreach ($registration['calls'] as $call) {
                 [$chainClasses, $chainController] = $call instanceof Node\Expr\MethodCall ? $this->chainClasses($call->var) : [[], null];
                 array_push($classes, ...$chainClasses, ...$this->groupAttributeMiddleware($call->args));
+                array_push($excluded, ...$this->chainExcludedClasses($call), ...$this->groupAttributeMiddleware($call->args, 'excluded_middleware'));
                 $controller = $chainController ?? $controller;
             }
+            $classes = array_values(array_diff($classes, $excluded));
 
             if ($classes !== [] || $controller !== null) {
                 $groups[$registration['file']][] = ['start' => 1, 'end' => PHP_INT_MAX, 'classes' => $classes, 'controller' => $controller];
@@ -717,12 +720,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The middleware classes a group's ['middleware' => ...] attribute array names.
+     * The middleware classes a group's ['middleware' => ...] attribute array names,
+     * or those under $key, such as 'excluded_middleware'.
      *
      * @param  array<Node>  $args
      * @return array<int, string>
      */
-    private function groupAttributeMiddleware(array $args): array
+    private function groupAttributeMiddleware(array $args, string $key = 'middleware'): array
     {
         $classes = [];
         foreach ($args as $arg) {
@@ -730,11 +734,33 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 foreach ($arg->value->items as $item) {
                     if ($item instanceof Node\Expr\ArrayItem
                         && $item->key instanceof Node\Scalar\String_
-                        && $item->key->value === 'middleware') {
+                        && $item->key->value === $key) {
                         array_push($classes, ...$this->middlewareClassesIn($item->value));
                     }
                 }
             }
+        }
+
+        return $classes;
+    }
+
+    /**
+     * The middleware classes the ->withoutMiddleware(...) calls on a group's
+     * method chain, up to and including the call itself, exclude.
+     *
+     * @return array<int, string>
+     */
+    private function chainExcludedClasses(Node\Expr $node): array
+    {
+        $classes = [];
+        while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+            if ($node->name instanceof Node\Identifier && $node->name->toLowerString() === 'withoutmiddleware') {
+                array_push($classes, ...$this->middlewareArgumentClasses($node));
+            }
+            if (! $node instanceof Node\Expr\MethodCall) {
+                break;
+            }
+            $node = $node->var;
         }
 
         return $classes;

@@ -233,14 +233,14 @@ class BootstrapRouteParser
         // Fluent form: Route::middleware([...'throttle'...])->group(function () {...}),
         // throttled on the chain; array form: Route::group(['middleware' =>
         // 'throttle...'], function () {...}), throttled in its attribute array.
-        foreach ((new NodeFinder)->find($ast, $this->isGroupCall(...)) as $call) {
-            if ($this->isGroupCall($call)) {
-                $this->collectThrottledGroupRange(
-                    $call->args,
-                    $call instanceof MethodCall && $this->anyEntry($this->chainEntries($call->var, 'middleware'), $this->throttles->expressionIsThrottle(...)),
-                    $ranges,
-                );
-            }
+        /** @var list<MethodCall|StaticCall> $calls */
+        $calls = (new NodeFinder)->find($ast, $this->isGroupCall(...));
+        foreach ($calls as $call) {
+            $this->collectThrottledGroupRange(
+                $call->args,
+                $call instanceof MethodCall && $this->anyEntry($this->chainEntries($call->var, 'middleware'), $this->throttles->expressionIsThrottle(...)),
+                $ranges,
+            );
         }
 
         return $ranges;
@@ -665,12 +665,13 @@ class BootstrapRouteParser
     }
 
     /**
-     * The existing route file a group argument names by path, in the forms withRouting()
-     * takes, or null.
+     * The existing route file a group argument names by path, __DIR__.'/...' or
+     * base_path('...'), or null. A bare string is not read: Router::loadRoutes()
+     * requires it from the include path, not the declaring file's directory.
      */
     private function groupRouteFile(Node\Expr $expr, string $dir): ?string
     {
-        $path = $this->resolveWithRoutingPath($expr, $dir);
+        $path = $expr instanceof String_ ? null : $this->resolveWithRoutingPath($expr, $dir);
         $normalized = $path === null ? null : $this->normalizePath($path);
 
         return $normalized !== null && file_exists($normalized) ? $normalized : null;

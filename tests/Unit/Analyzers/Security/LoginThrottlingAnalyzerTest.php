@@ -2652,6 +2652,35 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_throttle_an_inner_group_excludes_does_not_reach_the_route_file(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware(['api', 'throttle:5,1'])->group(function () {
+                Route::withoutMiddleware('throttle:5,1')->group(base_path('routes/partner_api.php'));
+            });
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
     // ==================== A route's throttle stops at its statement ====================
 
     public function test_next_routes_throttle_does_not_clear_a_one_line_login_route(): void

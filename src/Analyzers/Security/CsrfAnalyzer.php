@@ -582,34 +582,96 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether the Kernel's global $middleware or its web group lists CSRF middleware on an active
-     * entry. $middlewarePriority only orders middleware and an alias applies only where a route
-     * names it, so neither counts. A list that cannot be read counts only for what it shows.
+     * entry. A web group entry naming an alias or another group is followed, as Laravel resolves
+     * it. $middlewarePriority only orders middleware and an alias applies only where a route or
+     * group names it, so neither counts on its own. A list that cannot be read counts only for
+     * what it shows.
      */
     private function kernelRunsCsrfOnWebRoutes(string $kernelFile): bool
     {
+        $global = null;
+        $groups = [];
+        $aliases = [];
+        $routeMiddleware = [];
+
         $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
 
-        foreach ($this->parser->findNodes($ast, Stmt\Property::class) as $property) {
-            foreach ($property instanceof Stmt\Property ? $property->props : [] as $prop) {
-                $name = $prop->name->toString();
+        foreach ($this->parser->findNodes($ast, Stmt\Class_::class) as $class) {
+            // An anonymous class elsewhere in the file is not the Kernel
+            if (! $class instanceof Stmt\Class_ || $class->name === null) {
+                continue;
+            }
 
-                if ($name === 'middleware') {
-                    $list = $prop->default;
-                } elseif ($name === 'middlewareGroups' && $prop->default instanceof Expr\Array_) {
-                    $list = null;
-
-                    foreach ($prop->default->items as $item) {
-                        if ($item instanceof ArrayItem && $this->isWebGroupName($item->key)) {
-                            $list = $item->value;
-                        }
-                    }
-                } else {
-                    continue;
+            foreach ($class->getProperties() as $property) {
+                foreach ($property->props as $prop) {
+                    match ($prop->name->toString()) {
+                        'middleware' => $global = $prop->default,
+                        'middlewareGroups' => $groups = $this->keyedEntries($prop->default),
+                        'middlewareAliases' => $aliases = $this->keyedEntries($prop->default),
+                        'routeMiddleware' => $routeMiddleware = $this->keyedEntries($prop->default),
+                        default => null,
+                    };
                 }
+            }
+        }
 
-                if ($list !== null && $this->csrfMiddlewareInList($this->middlewareList($list) ?? []) !== null) {
+        // Laravel 10 registers both alias properties, $middlewareAliases winning a shared key
+        $aliases = array_merge($routeMiddleware, $aliases);
+
+        return $this->kernelListRunsCsrf($global, [], [], [])
+            || $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, ['web' => true]);
+    }
+
+    /**
+     * The string-keyed entries of an array property's default value.
+     *
+     * @return array<string, Expr>
+     */
+    private function keyedEntries(?Expr $default): array
+    {
+        $entries = [];
+
+        foreach ($default instanceof Expr\Array_ ? $default->items : [] as $item) {
+            if ($item instanceof ArrayItem && $item->key instanceof String_) {
+                $entries[$item->key->value] = $item->value;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
+     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. A name the list
+     * gives for a group or an alias is followed into it once.
+     *
+     * @param  array<string, Expr>  $groups
+     * @param  array<string, Expr>  $aliases
+     * @param  array<string, true>  $seen
+     */
+    private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, array $seen): bool
+    {
+        foreach ($this->middlewareList($list) ?? [] as $entry) {
+            if ($entry === null) {
+                continue;
+            }
+
+            $name = explode(':', $entry, 2)[0];
+            $basename = substr((string) strrchr('\\'.$name, '\\'), 1);
+
+            foreach (self::CSRF_MIDDLEWARE as $csrf) {
+                if (strcasecmp($basename, $csrf) === 0) {
                     return true;
                 }
+            }
+
+            // As Laravel resolves it, a group name shadows an alias of the same name
+            if (isset($groups[$entry])) {
+                if (! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true])) {
+                    return true;
+                }
+            } elseif (isset($aliases[$name]) && $this->kernelListRunsCsrf($aliases[$name], [], [], $seen)) {
+                return true;
             }
         }
 

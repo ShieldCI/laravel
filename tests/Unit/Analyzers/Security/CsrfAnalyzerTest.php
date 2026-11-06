@@ -3355,6 +3355,51 @@ PHP,
         ));
     }
 
+    public function test_application_csrf_class_is_matched_by_the_class_it_extends(): void
+    {
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\';
+        $files = ['app/Http/Middleware/ValidateCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken as Middleware;\n\nclass ValidateCsrfToken extends Middleware\n{\n}\n"];
+        $group = "\$middleware->group('web', [\\App\\Http\\Middleware\\ValidateCsrfToken::class]);";
+
+        // The framework's ValidateCsrfToken is its parent on every version; VerifyCsrfToken is
+        // an ancestor only before Laravel 13
+        $this->assertTrue($this->webPhpExclusionReported($group, "{$framework}ValidateCsrfToken", files: $files));
+        $this->assertSame(
+            version_compare(app()->version(), '13.0.0', '<'),
+            $this->webPhpExclusionReported($group, "{$framework}VerifyCsrfToken", files: $files),
+        );
+    }
+
+    public function test_application_prevent_request_forgery_subclass_keeps_protection_when_verify_csrf_token_is_excluded(): void
+    {
+        $this->skipUnlessDefaultWebGroupOf(13);
+
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\';
+        $this->assertFalse($this->webPhpExclusionReported(
+            "\$middleware->web(replace: [{$framework}PreventRequestForgery::class => \\App\\Http\\Middleware\\PreventRequestForgery::class]);",
+            "{$framework}VerifyCsrfToken",
+            files: ['app/Http/Middleware/PreventRequestForgery.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass PreventRequestForgery extends \\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery\n{\n}\n"],
+        ));
+    }
+
+    public function test_exclusion_from_a_web_group_without_csrf_middleware_removes_nothing(): void
+    {
+        // The redefined group is reported in bootstrap/app.php; the route has nothing left to lose
+        $this->assertFalse($this->webPhpExclusionReported(
+            "\$middleware->group('web', ['auth']);",
+            '\\App\\Http\\Middleware\\VerifyCsrfToken',
+        ));
+    }
+
+    public function test_exclusion_must_remove_every_csrf_middleware_in_the_web_group(): void
+    {
+        // The default CSRF middleware stays when only the appended application class is excluded
+        $this->assertFalse($this->webPhpExclusionReported(
+            '$middleware->web(append: [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);',
+            '\\App\\Http\\Middleware\\VerifyCsrfToken',
+        ));
+    }
+
     public function test_web_group_model_does_not_carry_over_to_the_next_analysis(): void
     {
         $this->assertFalse($this->webPhpExclusionReported(
@@ -3375,10 +3420,13 @@ PHP,
     /**
      * Whether a routes/web.php route excluding $excluded is reported when bootstrap/app.php
      * configures the web group with $statement.
+     *
+     * @param  array<string, string>  $files  Further files, such as application middleware
      */
-    private function webPhpExclusionReported(string $statement, string $excluded, ?CsrfAnalyzer $analyzer = null): bool
+    private function webPhpExclusionReported(string $statement, string $excluded, ?CsrfAnalyzer $analyzer = null, array $files = []): bool
     {
         $tempDir = $this->createTempDirectory([
+            ...$files,
             'bootstrap/app.php' => <<<PHP
 <?php
 
@@ -3754,6 +3802,18 @@ PHP,
         $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
     }
 
+    public function test_group_path_in_a_stripping_group_strips_the_file_it_loads(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => "<?php\n\nRoute::withoutMiddleware('web')->group(base_path('routes/hooks.php'));\n",
+            'routes/hooks.php' => "<?php\n\nRoute::middleware('web')->post('/hooks', HookController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_file_the_api_routes_load_under_web_strips_what_it_requires_outside_web(): void
     {
         $result = $this->analyzeRouteFiles([
@@ -4062,10 +4122,11 @@ Route::apiResource('orders', OrderController::class)->middlewareFor(['store', 'u
 Route::apiResource('refunds', RefundController::class)->middlewareFor('store', 'web');
 Route::apiResource('payments', PaymentController::class)->middleware('web')->middlewareFor('destroy', 'auth');
 Route::apiResource('credits', CreditController::class)->middlewareFor('destroy', 'auth')->middleware('web');
+Route::apiResource('vouchers', VoucherController::class)->middlewareFor('destroy', 'web');
 PHP);
 
         $this->assertFailed($result);
-        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertSame([4, 7], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
     public function test_resource_without_middleware_for_strips_csrf_from_a_write(): void

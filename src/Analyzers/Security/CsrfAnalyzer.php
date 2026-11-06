@@ -116,8 +116,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private const ROUTER_CLASSES = ['Illuminate\Routing\Router', 'Illuminate\Contracts\Routing\Registrar'];
 
     /**
-     * The CSRF middleware the web group holds, as modelled from bootstrap/app.php, or null when
-     * the application has a Kernel or the group holds an entry that cannot be read.
+     * The CSRF middleware the web group holds, as modelled from bootstrap/app.php, or null when it
+     * is not modelled: the application has a Kernel or no bootstrap/app.php, withMiddleware() is
+     * not given a closure, or a group, append, remove or replace list cannot be read.
      *
      * @var list<string>|null
      */
@@ -1220,7 +1221,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Walk a route file once and resolve what reaches each route: its state-changing routes,
      * each with whether 'web' reaches it and whether the CSRF middleware is excluded from it,
-     * and the files it requires, each with what reaches its require.
+     * and the files it loads by a require or a group() path argument, each with what reaches
+     * the require or the group.
      *
      * @return array{routes: list<array{line: int, method: string, web: bool, strips: bool}>, includes: list<array{file: string, web: bool, strips: bool}>}
      */
@@ -1301,8 +1303,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Walk one node of a route file, recording into $walk its route registrations, the groups
-     * that open a closure, closures assigned to variables, and require/include expressions,
-     * each route and include with the closures enclosing it.
+     * that open a closure, closures assigned to variables, require/include expressions, group()
+     * path arguments and the variables that hold the router, each route, include and path with
+     * the closures enclosing it.
      *
      * 'web' or the CSRF middleware reaches a route at any position in its own ->middleware(...),
      * read as Laravel reads it (a leading array is the whole list, otherwise every argument is
@@ -1954,8 +1957,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * or a CSRF middleware the web group's own CSRF middleware is or extends.
      *
      * Laravel's Router::resolveMiddleware() drops a middleware when it is an excluded name or a
-     * subclass of one. When bootstrap/app.php defines the web group, its CSRF entries are known
-     * and each is matched by csrfClassIsOrExtends(). Otherwise, for an application with a Kernel
+     * subclass of one. When bootstrap/app.php defines the web group, its CSRF entries are known,
+     * and the exclusion has to name each entry or a class it extends (see csrfAncestors()).
+     * Otherwise, for an application with a Kernel
      * or a group that cannot be read, the class is assumed: before Laravel 13 any CSRF name
      * removes it, as the framework's VerifyCsrfToken is the base class. Laravel 13 makes
      * PreventRequestForgery the base, with VerifyCsrfToken and ValidateCsrfToken as empty
@@ -1971,21 +1975,24 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        if ($this->webGroupCsrf !== null) {
+            // Every CSRF entry the group holds has to go: one left behind still checks the token
+            $excluded = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($names, is_string(...)));
+            foreach ($this->webGroupCsrf as $entry) {
+                if (array_intersect($this->csrfAncestors($entry), $excluded) === []) {
+                    return false;
+                }
+            }
+
+            return $this->webGroupCsrf !== [];
+        }
+
         foreach ($names as $name) {
             if ($name === null || $this->csrfMiddlewareIn($name) === null) {
                 continue;
             }
 
             $class = ltrim($name, '\\');
-            if ($this->webGroupCsrf !== null) {
-                foreach ($this->webGroupCsrf as $entry) {
-                    if ($this->csrfClassIsOrExtends(ltrim($entry, '\\'), $class)) {
-                        return true;
-                    }
-                }
-
-                continue;
-            }
 
             if (! $this->isLaravel13OrNewer()
                 || ! str_starts_with($class, 'Illuminate\\')
@@ -1999,26 +2006,62 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether CSRF middleware $entry is $class or a subclass of it. An application's own CSRF
-     * class extends the framework's VerifyCsrfToken. Laravel 13 derives VerifyCsrfToken and
+     * CSRF middleware $entry and every class it extends, nearest first: the classes an exclusion
+     * may name to remove it. An application class is read from its file under app/, following
+     * the App namespace; one whose file cannot be read is assumed to extend the framework's
+     * VerifyCsrfToken, as Laravel's stubs do. Laravel 13 derives VerifyCsrfToken and
      * ValidateCsrfToken from PreventRequestForgery; earlier versions derive ValidateCsrfToken
      * from VerifyCsrfToken.
+     *
+     * @return list<string>
      */
-    private function csrfClassIsOrExtends(string $entry, string $class): bool
+    private function csrfAncestors(string $entry): array
     {
-        if ($entry === $class) {
-            return true;
-        }
-
         $framework = 'Illuminate\\Foundation\\Http\\Middleware\\';
-        if (! str_starts_with($class, $framework)) {
-            return false;
+        $ancestors = [];
+        $class = ltrim($entry, '\\');
+
+        // A few levels of application subclasses, then the framework hierarchy
+        for ($depth = 0; $depth < 5 && ! str_starts_with($class, 'Illuminate\\'); $depth++) {
+            $ancestors[] = $class;
+            $class = $this->applicationParent($class) ?? self::FRAMEWORK_VERIFY_CSRF;
         }
+        $ancestors[] = $class;
 
         $base = $this->isLaravel13OrNewer() ? $framework.'PreventRequestForgery' : self::FRAMEWORK_VERIFY_CSRF;
+        if (str_starts_with($class, $framework) && $class !== $base && $this->csrfMiddlewareIn($class) !== null) {
+            $ancestors[] = $base;
+        }
 
-        return $class === $base
-            || ($class === self::FRAMEWORK_VERIFY_CSRF && ! str_starts_with($entry, 'Illuminate\\'));
+        return $ancestors;
+    }
+
+    /**
+     * The class an App-namespaced class extends, read from its file under app/, or null when
+     * the file or its extends clause cannot be read.
+     */
+    private function applicationParent(string $class): ?string
+    {
+        if (! str_starts_with($class, 'App\\')) {
+            return null;
+        }
+
+        $segments = explode('\\', substr($class, 4));
+        $path = $this->buildPath('app', ...$segments).'.php';
+        if (! file_exists($path)) {
+            return null;
+        }
+
+        $short = $segments[count($segments) - 1];
+        foreach ($this->parser->findNodes($this->resolveNamesForMatching($this->parser->parseFile($path)), Stmt\Class_::class) as $node) {
+            if ($node instanceof Stmt\Class_ && $node->name?->toString() === $short && $node->extends !== null) {
+                $resolved = $node->extends->getAttribute('resolvedName');
+
+                return ($resolved instanceof Name ? $resolved : $node->extends)->toString();
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -2126,6 +2126,96 @@ PHP);
         $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
     }
 
+    public function test_fails_when_kernel_global_stack_names_csrf_only_through_an_alias(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middleware = [
+        'csrf',
+    ];
+
+    protected $middlewareGroups = [
+        'web' => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
+    }
+
+    public function test_fails_when_kernel_middleware_aliases_override_a_csrf_route_middleware_alias(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            'csrf',
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\EncryptCookies::class,
+    ];
+
+    protected $routeMiddleware = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
+    }
+
+    public function test_keeps_commented_out_finding_when_kernel_web_group_lists_csrf_in_other_case(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \App\Http\Middleware\verifycsrftoken::class,
+        ],
+    ];
+
+    protected $middlewarePriority = [
+        // \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
+    }
+
+    public function test_fails_when_another_class_in_the_kernel_file_lists_csrf_middleware(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+}
+
+class LegacyKernel
+{
+    protected $middlewareGroups = [
+        'web' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
+    }
+
     public function test_fails_when_kernel_web_group_lists_a_class_whose_name_only_contains_csrf_middleware(): void
     {
         $result = $this->analyzeKernel(<<<'PHP'

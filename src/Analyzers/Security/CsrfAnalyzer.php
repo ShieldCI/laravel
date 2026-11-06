@@ -597,8 +597,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
 
         foreach ($this->parser->findNodes($ast, Stmt\Class_::class) as $class) {
-            // An anonymous class elsewhere in the file is not the Kernel
-            if (! $class instanceof Stmt\Class_ || $class->name === null) {
+            // Only the Kernel class counts, not an anonymous or helper class elsewhere in the file
+            if (! $class instanceof Stmt\Class_ || $class->name?->toString() !== 'Kernel') {
                 continue;
             }
 
@@ -659,10 +659,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $name = explode(':', $entry, 2)[0];
             $basename = substr((string) strrchr('\\'.$name, '\\'), 1);
 
-            foreach (self::CSRF_MIDDLEWARE as $csrf) {
-                if (strcasecmp($basename, $csrf) === 0) {
-                    return true;
-                }
+            // Case-sensitive, as the registration check's text match is
+            if (in_array($basename, self::CSRF_MIDDLEWARE, true)) {
+                return true;
             }
 
             // As Laravel resolves it, a group name shadows an alias of the same name

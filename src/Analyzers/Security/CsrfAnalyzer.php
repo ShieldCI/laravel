@@ -536,7 +536,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $commentedEntry = '/^\s*\/\/\s*[\'"]?\\\\?(?:\w+\\\\)*('.implode('|', self::CSRF_MIDDLEWARE).')(?:::class|[\'"])/';
         $commentedOut = [];
 
-        foreach (FileParser::getLines($kernelFile) as $lineNumber => $line) {
+        // A commented-out entry is a leftover, not a gap, while an active entry runs CSRF on web routes
+        $lines = $this->kernelRunsCsrfOnWebRoutes($kernelFile) ? [] : FileParser::getLines($kernelFile);
+
+        foreach ($lines as $lineNumber => $line) {
             if (! is_string($line) || preg_match($commentedEntry, $line, $matches) !== 1) {
                 continue;
             }
@@ -575,6 +578,42 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         array_push($issues, ...$commentedOut);
+    }
+
+    /**
+     * Whether the Kernel's global $middleware or its web group lists CSRF middleware on an active
+     * entry. $middlewarePriority only orders middleware and an alias applies only where a route
+     * names it, so neither counts. A list that cannot be read counts only for what it shows.
+     */
+    private function kernelRunsCsrfOnWebRoutes(string $kernelFile): bool
+    {
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
+
+        foreach ($this->parser->findNodes($ast, Stmt\Property::class) as $property) {
+            foreach ($property instanceof Stmt\Property ? $property->props : [] as $prop) {
+                $name = $prop->name->toString();
+
+                if ($name === 'middleware') {
+                    $list = $prop->default;
+                } elseif ($name === 'middlewareGroups' && $prop->default instanceof Expr\Array_) {
+                    $list = null;
+
+                    foreach ($prop->default->items as $item) {
+                        if ($item instanceof ArrayItem && $this->isWebGroupName($item->key)) {
+                            $list = $item->value;
+                        }
+                    }
+                } else {
+                    continue;
+                }
+
+                if ($list !== null && $this->csrfMiddlewareInList($this->middlewareList($list) ?? []) !== null) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**

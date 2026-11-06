@@ -1774,6 +1774,8 @@ PHP;
             'missing file entry is skipped' => ["Route::middleware('web')->group([base_path('routes/missing.php'), base_path('routes/reports.php')]);", 'web', ['reports.php']],
             'list under another middleware' => ["Route::middleware('auth')->group({$list});", 'web', []],
             'list excluding the middleware' => ["Route::middleware('web')->withoutMiddleware('web')->group({$list});", 'web', []],
+            'unpacked arguments are not expanded' => ["Route::middleware('web')->group(...[base_path('routes/orders.php'), base_path('routes/reports.php')]);", 'web', []],
+            'named argument in another case' => ["Route::group(ROUTES: {$list}, attributes: ['middleware' => 'web']);", 'web', []],
             'a file in the attribute array is not loaded' => ["Route::group(['middleware' => 'web', 'prefix' => base_path('routes/admin.php')], {$list});", 'web', $both],
         ];
     }

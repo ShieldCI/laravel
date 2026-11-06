@@ -316,7 +316,8 @@ class BootstrapRouteParser
 
     /**
      * The argument a group() call passes its routes in: the one named routes: or callback:,
-     * otherwise the last positional one.
+     * matched case-sensitively as PHP matches parameter names, otherwise the last positional
+     * one. Null when an argument is unpacked, as its items' positions cannot be read.
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      */
@@ -327,9 +328,12 @@ class BootstrapRouteParser
             if (! $arg instanceof Node\Arg) {
                 continue;
             }
+            if ($arg->unpack) {
+                return null;
+            }
             if ($arg->name === null) {
                 $positional = $arg;
-            } elseif (in_array($arg->name->toLowerString(), ['routes', 'callback'], true)) {
+            } elseif (in_array($arg->name->toString(), ['routes', 'callback'], true)) {
                 return $arg;
             }
         }

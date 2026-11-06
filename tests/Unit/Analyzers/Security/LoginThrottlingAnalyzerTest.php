@@ -3831,10 +3831,6 @@ class Kernel extends HttpKernel
 PHP;
     }
 
-    /**
-     * A route file whose login route sits five lines inside the group the given
-     * line opens, with ThrottleRequests imported as itself and as Cap.
-     */
     private function bootstrapThen(string $registration): string
     {
         return "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\n"
@@ -3852,6 +3848,10 @@ PHP;
         return $messages;
     }
 
+    /**
+     * A route file whose login route sits five lines inside the group the given
+     * line opens, with ThrottleRequests imported as itself and as Cap.
+     */
     private static function groupedLoginRoutes(string $groupOpening): string
     {
         return <<<PHP

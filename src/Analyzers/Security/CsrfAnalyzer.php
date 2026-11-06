@@ -74,6 +74,22 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private const CSRF_MIDDLEWARE = ['VerifyCsrfToken', 'ValidateCsrfToken', 'PreventRequestForgery'];
 
     /**
+     * The RouteRegistrar attribute methods, lowercased: calls a chain makes before it registers
+     * a route or group.
+     *
+     * @var list<string>
+     */
+    private const REGISTRAR_ATTRIBUTES = [
+        'as', 'can', 'controller', 'domain', 'metadata', 'middleware', 'missing', 'name',
+        'namespace', 'prefix', 'scopebindings', 'where', 'withoutmiddleware', 'withoutscopedbindings',
+    ];
+
+    /**
+     * The framework's VerifyCsrfToken, which an application's own CSRF middleware extends.
+     */
+    private const FRAMEWORK_VERIFY_CSRF = 'Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken';
+
+    /**
      * Router methods that register resource routes, lowercased, each with the method label its
      * findings carry and whether it is a plural form that takes a list of resources.
      *
@@ -97,6 +113,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * @var list<string>
      */
     private const ROUTER_CLASSES = ['Illuminate\Routing\Router', 'Illuminate\Contracts\Routing\Registrar'];
+
+    /**
+     * The CSRF middleware the web group holds, as modelled from bootstrap/app.php, or null when
+     * the application has a Kernel or the group holds an entry that cannot be read.
+     *
+     * @var list<string>|null
+     */
+    private ?array $webGroupCsrf = null;
 
     public function __construct(
         private AstParser $parser
@@ -139,6 +163,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $issues = [];
+        $this->webGroupCsrf = null;
 
         // Check Blade templates for forms without @csrf
         $bladeFiles = $this->getBladeFiles();
@@ -834,6 +859,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $unknown = in_array(null, $entries, true);
 
+        // The group the routes run with: removals take exact names, then prepends and appends join
+        $final = [...array_diff($entries, array_keys($removals)), ...$additions];
+        $this->webGroupCsrf = in_array(null, $final, true)
+            ? null
+            : array_values(array_filter($final, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null));
+
         foreach ($removals as $name => $line) {
             $removed = $this->csrfMiddlewareIn($name);
 
@@ -1001,9 +1032,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
      * CSRF middleware reaches, and any file a covered file requires outside a group that removes
      * CSRF. In a covered file only routes that exclude the CSRF middleware are reported. A file a
-     * bootstrap or provider group strips CSRF from is not covered, and neither is any file it,
-     * or a group in a route file that excludes CSRF, requires. Every file is read through the
-     * AST: see walkRouteNode() for what reaches a route.
+     * bootstrap or provider group strips CSRF from is not covered, and neither is any file it
+     * requires, or that a group excluding CSRF requires in a route file known to load. Every file
+     * is read through the AST: see walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
      *
@@ -1043,10 +1074,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
         // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
-        // either, however else it loads. Groups inside route files are read by the walk, which
-        // only trusts what a file that is itself loaded registers
+        // either, however else it loads. Groups inside route files that require a file are read
+        // by the walk, which only trusts what a file that is itself loaded registers; a group()
+        // path argument inside a route file is not followed
         $stripped = [];
+        $loaded = $covered;
         foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
+            $loaded[$registration['file']] = true;
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
             if ($state['strips']) {
                 $stripped[$registration['file']] = true;
@@ -1061,7 +1095,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // is known to load: routes/web.php, a file bootstrap or a provider registers, or a file
         // one of them requires. A file nothing is known to load may never run, so its require
         // can extend coverage but never take it away
-        $loaded = $covered + $stripped;
         do {
             $changed = false;
             foreach ($walks as $path => $entry) {
@@ -1445,7 +1478,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $calls = $this->callsByName($resourceAt === null ? $chain : array_slice($chain, 0, $resourceAt + 1));
         ['web' => $web, 'strips' => $strips] = $resourceAt === null
-            ? $this->chainCsrfState($calls, $routeParser)
+            ? $this->chainCsrfState($chain, $routeParser)
             : ['web' => false, 'strips' => false];
 
         if (isset($calls['group'])) {
@@ -1521,21 +1554,36 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * through ->middleware(...) and ->withoutMiddleware(...) and, on a group, its
      * 'middleware' and 'excluded_middleware' attributes.
      *
-     * @param  array<string, non-empty-list<Expr\MethodCall|Expr\StaticCall>>  $calls  Chain calls by lowercase name
+     * Calls before the route or group is registered set RouteRegistrar attributes, where each
+     * middleware() call replaces the last; after it, a route's middleware() calls add up.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $chain  The chain's calls, root first
      * @return array{web: bool, strips: bool}
      */
-    private function chainCsrfState(array $calls, BootstrapRouteParser $routeParser): array
+    private function chainCsrfState(array $chain, BootstrapRouteParser $routeParser): array
     {
         $web = false;
-        foreach ($calls['middleware'] ?? [] as $link) {
-            $web = $web || $this->namesCarryCsrf($this->entryNames($routeParser->middlewareEntries($link)));
-        }
-
+        $registrarWeb = false;
         $strips = false;
-        foreach ($calls['withoutmiddleware'] ?? [] as $link) {
-            $strips = $strips || $this->namesStripCsrf($this->entryNames($routeParser->middlewareEntries($link)));
-        }
+        $registered = false;
+        foreach ($chain as $link) {
+            $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
+            $registered = $registered || ! in_array($name, self::REGISTRAR_ATTRIBUTES, true);
 
+            if ($name === 'middleware') {
+                $carries = $this->namesCarryCsrf($this->entryNames($routeParser->middlewareEntries($link)));
+                if ($registered) {
+                    $web = $web || $carries;
+                } else {
+                    $registrarWeb = $carries;
+                }
+            } elseif ($name === 'withoutmiddleware') {
+                $strips = $strips || $this->namesStripCsrf($this->entryNames($routeParser->middlewareEntries($link)));
+            }
+        }
+        $web = $web || $registrarWeb;
+
+        $calls = $this->callsByName($chain);
         $args = isset($calls['group']) ? $calls['group'][0]->args : [];
 
         return [
@@ -1556,7 +1604,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $web = false;
         $strips = false;
         foreach ($groups as $group) {
-            $state = $this->chainCsrfState($this->callsByName($this->unwindChain($group)[0]), $routeParser);
+            $state = $this->chainCsrfState($this->unwindChain($group)[0], $routeParser);
             $web = $web || $state['web'];
             $strips = $strips || $state['strips'];
         }
@@ -1829,13 +1877,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * or a CSRF middleware the web group's own CSRF middleware is or extends.
      *
      * Laravel's Router::resolveMiddleware() drops a middleware when it is an excluded name or a
-     * subclass of one. Before Laravel 13 the framework's VerifyCsrfToken is the base class, so
-     * any CSRF name removes it. Laravel 13 makes PreventRequestForgery the base and the web
-     * group's default, with VerifyCsrfToken and ValidateCsrfToken as empty subclasses, so
-     * excluding either of the framework's old names leaves the check running. The exceptions
-     * are an application's own CSRF class, which is the one its web group holds, and the
+     * subclass of one. When bootstrap/app.php defines the web group, its CSRF entries are known
+     * and each is matched by csrfClassIsOrExtends(). Otherwise, for an application with a Kernel
+     * or a group that cannot be read, the class is assumed: before Laravel 13 any CSRF name
+     * removes it, as the framework's VerifyCsrfToken is the base class. Laravel 13 makes
+     * PreventRequestForgery the base, with VerifyCsrfToken and ValidateCsrfToken as empty
+     * subclasses, so there only PreventRequestForgery, an application's own CSRF class, or the
      * framework's VerifyCsrfToken when the application has a CSRF subclass in
-     * app/Http/Middleware, which extends it.
+     * app/Http/Middleware, which extends it, removes the check.
      *
      * @param  list<string|null>  $names
      */
@@ -1851,15 +1900,48 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
 
             $class = ltrim($name, '\\');
+            if ($this->webGroupCsrf !== null) {
+                foreach ($this->webGroupCsrf as $entry) {
+                    if ($this->csrfClassIsOrExtends(ltrim($entry, '\\'), $class)) {
+                        return true;
+                    }
+                }
+
+                continue;
+            }
+
             if (! $this->isLaravel13OrNewer()
                 || ! str_starts_with($class, 'Illuminate\\')
                 || str_ends_with($class, '\\PreventRequestForgery')
-                || ($class === 'Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken' && $this->csrfMiddlewareFile() !== null)) {
+                || ($class === self::FRAMEWORK_VERIFY_CSRF && $this->csrfMiddlewareFile() !== null)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Whether CSRF middleware $entry is $class or a subclass of it. An application's own CSRF
+     * class extends the framework's VerifyCsrfToken. Laravel 13 derives VerifyCsrfToken and
+     * ValidateCsrfToken from PreventRequestForgery; earlier versions derive ValidateCsrfToken
+     * from VerifyCsrfToken.
+     */
+    private function csrfClassIsOrExtends(string $entry, string $class): bool
+    {
+        if ($entry === $class) {
+            return true;
+        }
+
+        $framework = 'Illuminate\\Foundation\\Http\\Middleware\\';
+        if (! str_starts_with($class, $framework)) {
+            return false;
+        }
+
+        $base = $this->isLaravel13OrNewer() ? $framework.'PreventRequestForgery' : self::FRAMEWORK_VERIFY_CSRF;
+
+        return $class === $base
+            || ($class === self::FRAMEWORK_VERIFY_CSRF && ! str_starts_with($entry, 'Illuminate\\'));
     }
 
     /**

@@ -1269,8 +1269,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * a route that names no method, any of its methods and middleware count.
      *
      * Null when nothing credits the class and this run cannot read all of it: it is
-     * outside App\, its file is missing or does not declare it (as one that does not
-     * parse), or a trait it uses or the class it extends cannot be read.
+     * outside App\ and the framework, its file is missing or does not declare it (as
+     * one that does not parse), or a trait it uses or the class it extends cannot be
+     * read.
      *
      * @param  bool  $middlewareOnly  Credit only registered middleware: the class's
      *                                method is overridden by the class that reached it
@@ -1280,6 +1281,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         // The framework's own throttle middleware, which 'throttle' names
         if (in_array($fqn, MiddlewareThrottleDetector::THROTTLE_MIDDLEWARE, true)) {
             return true;
+        }
+
+        // The framework's other classes are known not to, though this run cannot read
+        // them, so neither a framework parent or trait nor 'throttle' re-registered to
+        // one (Authenticate::class, say) leaves the verdict unknown
+        if (str_starts_with($fqn, 'Illuminate\\')) {
+            return false;
         }
 
         $method = $method === null ? null : strtolower($method);
@@ -1363,7 +1371,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         foreach ($this->parser->findNodes($ast, Node\Stmt\ClassLike::class) as $class) {
             if (! ($class instanceof Node\Stmt\Class_ || $class instanceof Node\Stmt\Trait_)
-                || $class->name?->toString() !== $shortName) {
+                || strcasecmp($class->name?->toString() ?? '', $shortName) !== 0) {
                 continue;
             }
 

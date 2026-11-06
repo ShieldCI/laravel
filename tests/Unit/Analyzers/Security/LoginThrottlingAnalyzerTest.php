@@ -2538,6 +2538,56 @@ PHP;
         ], $this->issueMessages($result));
     }
 
+    /**
+     * @param  array<string, string>  $files
+     *
+     * @dataProvider knownNonThrottleClassProvider
+     */
+    #[DataProvider('knownNonThrottleClassProvider')]
+    public function test_throttle_re_registered_to_a_class_known_not_to_throttle_does_not_cover_the_route_group(array $files): void
+    {
+        $result = $this->analyzeApp($files + [
+            'routes/web.php' => self::groupedLoginRoutes("Route::middleware('throttle:6,1')->group(function () {"),
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'Login route "/session/login" lacks rate limiting protection',
+            'Authentication method LoginController::login() lacks rate limiting',
+        ], $this->issueMessages($result));
+    }
+
+    /**
+     * 'throttle' re-registered to a class that does not throttle, though it is the
+     * framework's or reaches framework code the analyzer does not read.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function knownNonThrottleClassProvider(): array
+    {
+        $kernel = static fn (string $class): string => self::appKernel("protected \$middlewareAliases = ['throttle' => {$class}::class];");
+        $passThrough = "class PassThrough\n{\n    public function handle(\$request, \\Closure \$next)\n    {\n        return \$next(\$request);\n    }\n}";
+        $middleware = static fn (string $declaration): string => "<?php\n\nnamespace App\\Http\\Middleware;\n\n{$declaration}\n";
+
+        return [
+            'framework class in bootstrap/app.php' => [[
+                'bootstrap/app.php' => self::laravel11Bootstrap("\$middleware->alias(['throttle' => \\Illuminate\\Auth\\Middleware\\Authenticate::class]);"),
+            ]],
+            'framework class in the Kernel' => [[
+                'app/Http/Kernel.php' => $kernel('\\Illuminate\\Auth\\Middleware\\Authenticate'),
+            ]],
+            'app class using a framework trait' => [[
+                'app/Http/Kernel.php' => $kernel('\\App\\Http\\Middleware\\PassThrough'),
+                'app/Http/Middleware/PassThrough.php' => $middleware(str_replace("PassThrough\n{\n", "PassThrough\n{\n    use \\Illuminate\\Support\\Traits\\Macroable;\n\n", $passThrough)),
+            ]],
+            'app class extending a framework class' => [[
+                'app/Http/Kernel.php' => $kernel('\\App\\Http\\Middleware\\PassThrough'),
+                'app/Http/Middleware/PassThrough.php' => $middleware("use Illuminate\\Http\\Middleware\\TrustHosts;\n\n".str_replace('class PassThrough', 'class PassThrough extends TrustHosts', $passThrough)),
+            ]],
+        ];
+    }
+
     public function test_chained_throttle_removed_from_web_group_does_not_clear_web_login(): void
     {
         $result = $this->analyzeApp([

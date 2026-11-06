@@ -3007,7 +3007,7 @@ PHP);
         $result = $this->analyzeRouteFile(<<<'PHP'
 <?php
 
-use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken as CsrfGuard;
+use App\Http\Middleware\VerifyCsrfToken as CsrfGuard;
 
 Route::middleware('web')->group(function () {
     Route::post('/payments/callback', PaymentCallbackController::class)->withoutMiddleware(CsrfGuard::class);
@@ -3202,6 +3202,153 @@ PHP,
         $this->assertStringEndsWith('hooks.php', (string) $result->getIssues()[0]->location?->file);
     }
 
+    public function test_excluding_the_framework_verify_csrf_token_keeps_laravel_13_protection(): void
+    {
+        // On Laravel 13 VerifyCsrfToken is an empty subclass of PreventRequestForgery, which the
+        // web group holds, and excluding a subclass leaves its parent running
+        $this->skipUnlessDefaultWebGroupOf(13);
+
+        $result = $this->analyzeRouteFiles(['routes/web.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Http\Middleware\PreventRequestForgery;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', OrderController::class)->withoutMiddleware(VerifyCsrfToken::class);
+Route::post('/refunds', RefundController::class)->withoutMiddleware(ValidateCsrfToken::class);
+Route::post('/hooks', HookController::class)->withoutMiddleware(PreventRequestForgery::class);
+PHP]);
+
+        $this->assertFailed($result);
+        $this->assertSame([9], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_excluding_the_framework_verify_csrf_token_strips_protection_before_laravel_13(): void
+    {
+        $this->skipUnlessDefaultWebGroupOf(12);
+
+        $result = $this->analyzeRouteFiles(['routes/web.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', OrderController::class)->withoutMiddleware(VerifyCsrfToken::class);
+PHP]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_excluding_the_framework_verify_csrf_token_strips_an_application_subclass(): void
+    {
+        // The application's own VerifyCsrfToken extends the framework's, so excluding the
+        // framework class removes it on every version
+        $result = $this->analyzeRouteFiles([
+            'app/Http/Middleware/VerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n",
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', OrderController::class)->withoutMiddleware(VerifyCsrfToken::class);
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_require_in_a_file_nothing_loads_does_not_strip_a_covered_file(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: [__DIR__.'/../routes/web.php', __DIR__.'/../routes/shop.php'])
+    ->create();
+PHP,
+            'routes/web.php' => '<?php',
+            'routes/shop.php' => "<?php\n\nRoute::post('/cart', [CartController::class, 'store']);\n",
+            'routes/legacy.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/shop.php';
+});
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_require_in_a_file_nothing_loads_keeps_the_no_web_message(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/legacy.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/admin.php';
+});
+PHP,
+            'routes/admin.php' => "<?php\n\nRoute::post('/admin/users', [UserController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result);
+    }
+
+    public function test_exclusion_in_a_file_loaded_through_a_require_chain_strips_what_it_requires(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => "<?php\n\nrequire __DIR__.'/account.php';\n",
+            'routes/account.php' => "<?php\n\nrequire __DIR__.'/account-billing.php';\n",
+            'routes/account-billing.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/account-hooks.php';
+});
+PHP,
+            'routes/account-hooks.php' => "<?php\n\nRoute::post('/hooks/billing', BillingHookController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('account-hooks.php', (string) $result->getIssues()[0]->location?->file);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_exclusion_in_a_file_nothing_loads_does_not_cover_what_it_requires(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/legacy.php' => <<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    require __DIR__.'/legacy-admin.php';
+});
+PHP,
+            'routes/legacy-admin.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/legacy-hooks.php';
+});
+PHP,
+            'routes/legacy-hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
     // ==================== Router Roots Other Than Route:: ====================
 
     public function test_reads_web_group_opened_on_app_router(): void
@@ -3336,6 +3483,26 @@ PHP);
         $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
+    public function test_variable_group_callback_parameter_is_the_router(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$billing = function ($routes) {
+    $routes->post('/invoices', [InvoiceController::class, 'store']);
+};
+Route::prefix('billing')->group($billing);
+
+$orders = function ($routes) {
+    $routes->post('/orders', [OrderController::class, 'store']);
+};
+Route::middleware('web')->group($orders);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
     // ==================== Resource Forms ====================
 
     public function test_reports_api_resource_and_plural_resource_forms(): void
@@ -3445,6 +3612,37 @@ PHP);
         $this->assertFailed($result);
         $this->assertSame([6, 8, 9], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
         $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_registrar_middleware_is_replaced_by_a_later_resource_middleware_call(): void
+    {
+        // RouteRegistrar passes its attributes as the resource's options, so a later
+        // middleware() call on the pending registration replaces 'web'
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->apiResource('orders', OrderController::class)->middleware('auth');
+Route::middleware('auth')->resource('refunds', RefundController::class, ['middleware' => 'web']);
+Route::middleware('web')->singleton('profile', ProfileController::class);
+Route::middleware('web', 'auth')->resource('payments', PaymentController::class);
+Route::middleware('web')->withoutMiddleware('web')->resource('credits', CreditController::class);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([3, 4, 7], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_registrar_without_middleware_replaces_the_excluded_middleware_option(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    Route::withoutMiddleware('auth')->resource('orders', OrderController::class, ['excluded_middleware' => ['web']]);
+});
+PHP);
+
+        $this->assertPassed($result);
     }
 
     /**
@@ -3849,7 +4047,7 @@ PHP;
 <?php
 
 use Illuminate\\Foundation\\Application;
-use Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken;
+use App\\Http\\Middleware\\VerifyCsrfToken;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -3904,7 +4102,7 @@ PHP;
 <?php
 
 use Illuminate\Foundation\Application;
-use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
+use App\Http\Middleware\VerifyCsrfToken;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(

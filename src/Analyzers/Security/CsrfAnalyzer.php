@@ -47,6 +47,8 @@ use ShieldCI\Support\BootstrapRouteParser;
  *     variables: array<string, int>,
  *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
  *     routers: array<int, array<string, true>>,
+ *     callbacks: array<int, true>,
+ *     late: bool,
  * }
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
@@ -1055,16 +1057,25 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // Coverage passes down require chains of any depth, and so does stripping, which
         // Laravel merges into every nested group and which wins over 'web'. A group in a route
-        // file that excludes CSRF strips every file it requires
+        // file that excludes CSRF strips every file it requires, but only once that route file
+        // is known to load: routes/web.php, a file bootstrap or a provider registers, or a file
+        // one of them requires. A file nothing is known to load may never run, so its require
+        // can extend coverage but never take it away
+        $loaded = $covered + $stripped;
         do {
             $changed = false;
             foreach ($walks as $path => $entry) {
                 foreach ($entry['walk']['includes'] as $include) {
                     $file = $include['file'];
-                    if (isset($stripped[$path]) || $include['strips']) {
+                    if (isset($loaded[$path]) && ! isset($loaded[$file])) {
+                        $changed = true;
+                        $loaded[$file] = true;
+                    }
+
+                    if (isset($stripped[$path]) || ($include['strips'] && isset($loaded[$path]))) {
                         $changed = $changed || ! isset($stripped[$file]);
                         $stripped[$file] = true;
-                    } elseif (! isset($covered[$file]) && ($include['web'] || isset($covered[$path]))) {
+                    } elseif (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
                         $changed = true;
                         $covered[$file] = true;
                     }
@@ -1143,15 +1154,23 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
-        /** @var RouteWalk $walk */
-        $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'routers' => []];
-
         // A file that does not parse yields no nodes; the report's parse-failure notice covers it.
         // Names are resolved here, not left to whichever analyzer last resolved the cached AST,
         // so an aliased CSRF import reads as its class
-        foreach ($this->resolveNamesForMatching($this->parser->parseFile($file)) as $node) {
-            $this->walkRouteNode($node, [], 0, $walk, $routeParser);
-        }
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($file));
+
+        // A closure handed to a group through a variable is walked before the group call that
+        // makes its first parameter the router, so the walk runs again knowing every such
+        // callback until it finds no new one
+        $callbacks = [];
+        do {
+            /** @var RouteWalk $walk */
+            $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'routers' => [], 'callbacks' => $callbacks, 'late' => false];
+            foreach ($ast as $node) {
+                $this->walkRouteNode($node, [], 0, $walk, $routeParser);
+            }
+            $callbacks += array_fill_keys(array_keys($walk['groups']), true);
+        } while ($walk['late']);
         $groups = $walk['groups'];
 
         $routes = [];
@@ -1272,7 +1291,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         foreach ($function->getParams() as $index => $param) {
             if ($param->var instanceof Expr\Variable && is_string($param->var->name)
-                && ($this->isRouterType($param->type) || ($index === 0 && isset($walk['groups'][$id])))) {
+                && ($this->isRouterType($param->type) || ($index === 0 && (isset($walk['groups'][$id]) || isset($walk['callbacks'][$id]))))) {
                 $routers[$param->var->name] = true;
             }
         }
@@ -1425,7 +1444,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         $calls = $this->callsByName($resourceAt === null ? $chain : array_slice($chain, 0, $resourceAt + 1));
-        ['web' => $web, 'strips' => $strips] = $this->chainCsrfState($calls, $routeParser);
+        ['web' => $web, 'strips' => $strips] = $resourceAt === null
+            ? $this->chainCsrfState($calls, $routeParser)
+            : ['web' => false, 'strips' => false];
 
         if (isset($calls['group'])) {
             $args = $calls['group'][0]->args;
@@ -1440,6 +1461,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 default => null,
             };
             if ($closureId !== null) {
+                // The variable's closure was walked before its first parameter was known as the router
+                $walk['late'] = $walk['late'] || ($closure === null && ! isset($walk['callbacks'][$closureId]));
                 $walk['groups'][$closureId] = [
                     'web' => $state['web'] || ($walk['groups'][$closureId]['web'] ?? false),
                     'strips' => $state['strips'] || ($walk['groups'][$closureId]['strips'] ?? false),
@@ -1451,10 +1474,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $method = $this->stateChangingRouteMethod($calls);
         if ($resourceAt !== null) {
-            [$writes, $resourceWeb, $resourceStrips] = $this->resourceState($chain[$resourceAt], array_slice($chain, $resourceAt + 1), $routeParser);
+            [$writes, $web, $strips] = $this->resourceState(
+                $chain[$resourceAt],
+                array_slice($chain, 0, $resourceAt),
+                array_slice($chain, $resourceAt + 1),
+                $routeParser,
+            );
             $method = $writes ? $this->resourceRegistration($chain[$resourceAt])[0] : null;
-            $web = $web || $resourceWeb;
-            $strips = $strips || $resourceStrips;
         }
 
         if ($method !== null && $chain !== []) {
@@ -1507,14 +1533,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $strips = false;
         foreach ($calls['withoutmiddleware'] ?? [] as $link) {
-            $strips = $strips || $this->namesCarryCsrf($this->entryNames($routeParser->middlewareEntries($link)));
+            $strips = $strips || $this->namesStripCsrf($this->entryNames($routeParser->middlewareEntries($link)));
         }
 
         $args = isset($calls['group']) ? $calls['group'][0]->args : [];
 
         return [
             'web' => $web || $this->namesCarryCsrf($this->entryNames($routeParser->groupAttributeEntries($args, 'middleware'))),
-            'strips' => $strips || $this->namesCarryCsrf($this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware'))),
+            'strips' => $strips || $this->namesStripCsrf($this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware'))),
         ];
     }
 
@@ -1579,7 +1605,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * options and return nothing to chain; any other first argument is skipped.
      *
      * The options array sets only, except, middleware, excluded_middleware, creatable and
-     * destroyable. The calls chained after it then change those options in order, as the
+     * destroyable. Calls before the registration, such as Route::middleware('web')->resource(),
+     * build RouteRegistrar attributes that take the place of the same options: the last
+     * middleware() call, read as a route's, and every withoutMiddleware() first argument. The
+     * calls chained after it then change those options in order, as the
      * pending registration does: only(), except() and middleware() replace theirs, and
      * withoutMiddleware() adds to excluded_middleware. middlewareFor() gives the listed methods
      * the middleware set so far plus its own, and a later middleware() adds to those too;
@@ -1589,10 +1618,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * middleware() does. A method list that cannot be read is skipped by middlewareFor(), so it
      * protects nothing, and applies to every method in withoutMiddlewareFor().
      *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $registrar  The calls before the registration
      * @param  list<Expr\MethodCall|Expr\StaticCall>  $pending  The calls chained after the registration
      * @return array{bool, bool, bool}
      */
-    private function resourceState(Expr\MethodCall|Expr\StaticCall $resource, array $pending, BootstrapRouteParser $routeParser): array
+    private function resourceState(Expr\MethodCall|Expr\StaticCall $resource, array $registrar, array $pending, BootstrapRouteParser $routeParser): array
     {
         [$label, $plural] = $this->resourceRegistration($resource);
 
@@ -1611,6 +1641,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $destroyable = $this->resourceOption($options, 'destroyable') !== null;
         $middleware = $this->entryNames($this->resourceOption($options, 'middleware') ?? []);
         $excluded = $this->entryNames($this->resourceOption($options, 'excluded_middleware') ?? []);
+
+        $attributes = $this->callsByName($registrar);
+        if (isset($attributes['middleware'])) {
+            $middleware = $this->entryNames($routeParser->middlewareEntries($attributes['middleware'][count($attributes['middleware']) - 1]));
+        }
+        if (isset($attributes['withoutmiddleware'])) {
+            $excluded = [];
+            foreach ($attributes['withoutmiddleware'] as $link) {
+                $excluded = [...$excluded, ...$this->entryNames($this->wrappedFirstArgument($link))];
+            }
+        }
+
         $middlewareFor = [];
         $excludedFor = [];
 
@@ -1669,7 +1711,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $strips = false;
         foreach ($writes as $method) {
             $web = $web && $this->namesCarryCsrf($middlewareFor[$method] ?? $middleware);
-            $strips = $strips || $this->namesCarryCsrf([...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
+            $strips = $strips || $this->namesStripCsrf([...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
         }
 
         return [$writes !== [], $web, $strips];
@@ -1772,14 +1814,52 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether these middleware carry CSRF protection, so that applying them protects a route
-     * and excluding them removes it: they name 'web' or a CSRF middleware.
+     * Whether these middleware carry CSRF protection, so that applying them protects a route:
+     * they name 'web' or a CSRF middleware.
      *
      * @param  list<string|null>  $names
      */
     private function namesCarryCsrf(array $names): bool
     {
         return in_array('web', $names, true) || $this->csrfMiddlewareInList($names) !== null;
+    }
+
+    /**
+     * Whether excluding these middleware removes CSRF protection from a route: they name 'web',
+     * or a CSRF middleware the web group's own CSRF middleware is or extends.
+     *
+     * Laravel's Router::resolveMiddleware() drops a middleware when it is an excluded name or a
+     * subclass of one. Before Laravel 13 the framework's VerifyCsrfToken is the base class, so
+     * any CSRF name removes it. Laravel 13 makes PreventRequestForgery the base and the web
+     * group's default, with VerifyCsrfToken and ValidateCsrfToken as empty subclasses, so
+     * excluding either of the framework's old names leaves the check running. The exceptions
+     * are an application's own CSRF class, which is the one its web group holds, and the
+     * framework's VerifyCsrfToken when the application has a CSRF subclass in
+     * app/Http/Middleware, which extends it.
+     *
+     * @param  list<string|null>  $names
+     */
+    private function namesStripCsrf(array $names): bool
+    {
+        if (in_array('web', $names, true)) {
+            return true;
+        }
+
+        foreach ($names as $name) {
+            if ($name === null || $this->csrfMiddlewareIn($name) === null) {
+                continue;
+            }
+
+            $class = ltrim($name, '\\');
+            if (! $this->isLaravel13OrNewer()
+                || ! str_starts_with($class, 'Illuminate\\')
+                || str_ends_with($class, '\\PreventRequestForgery')
+                || ($class === 'Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken' && $this->csrfMiddlewareFile() !== null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -250,8 +250,9 @@ class BootstrapRouteParser
     }
 
     /**
-     * Records the closure argument's line range when the group is throttled —
-     * either through its method chain ($chainThrottled) or a config-array argument.
+     * Records the line range of each closure the group loads, as closureArguments() reads
+     * them, when the group is throttled: through its method chain ($chainThrottled) or a
+     * config-array argument.
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @param  array<int, array{start: int, end: int}>  $ranges

@@ -3389,6 +3389,95 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_skips_route_file_registered_with_web_in_a_group_attribute_array(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::group(['middleware' => 'web'], base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_skips_route_file_registered_with_api_in_a_group_attribute_array(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::group(['middleware' => ['api']], base_path('routes/partner-api.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner-api.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        // Should pass: a file registered under 'api' uses token authentication, not CSRF
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_fails_route_file_registered_in_a_group_attribute_array_without_web(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::group(['middleware' => 'auth'], base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result);
+    }
+
     public function test_skips_route_file_required_inside_web_group_closure_in_bootstrap(): void
     {
         // Compass pattern: auth.php is require'd inside a ->group(Closure) on a

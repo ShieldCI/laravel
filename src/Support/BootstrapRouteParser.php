@@ -24,7 +24,9 @@ use ShieldCI\Concerns\ResolvesClassNames;
  *   1. Files require'd/include'd from routes/web.php or routes/api.php
  *      (inherit that file's middleware group automatically)
  *   2. Files registered via Route::middleware('web|api')->...->group(base_path('...'))
- *      in bootstrap/app.php's withRouting(then: ...) callback or in app/Providers/*.php
+ *      or Route::group(['middleware' => 'web|api'], base_path('...')), or require'd inside
+ *      such a group's closure, in bootstrap/app.php's withRouting(then: ...) callback or
+ *      in app/Providers/*.php
  *
  * It also exposes {@see self::getThrottledGroupLineRanges()} for the in-file case:
  * the line spans of throttled Route::...->group(Closure) blocks declared directly
@@ -207,17 +209,8 @@ class BootstrapRouteParser
                     continue;
                 }
 
-                foreach ($call->args as $arg) {
-                    $value = $arg instanceof Node\Arg ? $arg->value : null;
-                    $basePathFile = $value === null ? null : $this->extractBasePathArgument($value);
-                    $paths = match (true) {
-                        $basePathFile !== null => array_filter([$this->normalizePath($basePathFile)]),
-                        $value !== null => $this->extractIncludesFromClosure($value, dirname($source)),
-                        default => [],
-                    };
-                    foreach ($paths as $path) {
-                        $found[] = ['file' => $path, 'source' => $source, 'call' => $call];
-                    }
+                foreach ($this->filesLoadedByGroup($call, dirname($source)) as $path) {
+                    $found[] = ['file' => $path, 'source' => $source, 'call' => $call];
                 }
             }
         }
@@ -318,6 +311,23 @@ class BootstrapRouteParser
     {
         foreach ($this->groupAttributeEntries($args, 'middleware') as $entry) {
             if ($this->throttles->expressionIsThrottle($entry)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Detects the array-config group form for a named middleware: a ['middleware' => 'web']
+     * or ['middleware' => ['auth', 'web']] entry among the call arguments.
+     *
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     */
+    private function argsCarryMiddleware(array $args, string $middlewareName): bool
+    {
+        foreach ($this->groupAttributeEntries($args, 'middleware') as $entry) {
+            if ($entry instanceof String_ && $entry->value === $middlewareName) {
                 return true;
             }
         }
@@ -505,8 +515,9 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered via Route::middleware('web')->group(base_path('...'))
-     * inside bootstrap/app.php's withRouting(then: ...) callback.
+     * Finds route files registered on a 'web' group inside bootstrap/app.php's
+     * withRouting(then: ...) callback, in the forms
+     * {@see self::getFilesRegisteredWithMiddlewareInFile()} reads.
      *
      * @return array<string>
      */
@@ -518,8 +529,9 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered via Route::middleware('api')->group(base_path('...'))
-     * inside bootstrap/app.php's withRouting(then: ...) callback.
+     * Finds route files registered on an 'api' group inside bootstrap/app.php's
+     * withRouting(then: ...) callback, in the forms
+     * {@see self::getFilesRegisteredWithMiddlewareInFile()} reads.
      *
      * @return array<string>
      */
@@ -531,8 +543,8 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered via Route::middleware('web')->group(base_path('...'))
-     * in any PHP file under app/Providers/ (e.g. RouteServiceProvider, RoutingServiceProvider).
+     * Finds route files registered on a 'web' group in any PHP file under app/Providers/
+     * (e.g. RouteServiceProvider, RoutingServiceProvider).
      *
      * @return array<string>
      */
@@ -542,8 +554,7 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered via Route::middleware('api')->group(base_path('...'))
-     * in any PHP file under app/Providers/.
+     * Finds route files registered on an 'api' group in any PHP file under app/Providers/.
      *
      * @return array<string>
      */
@@ -553,8 +564,7 @@ class BootstrapRouteParser
     }
 
     /**
-     * Scans all PHP files in app/Providers/ for Route::middleware(...)->group(base_path(...))
-     * chains matching the given middleware name.
+     * Scans all PHP files in app/Providers/ for groups that carry the given middleware name.
      *
      * @return array<string>
      */
@@ -574,8 +584,11 @@ class BootstrapRouteParser
     }
 
     /**
-     * Finds route files registered via Route::middleware(middlewareName)->group(base_path('...'))
-     * in the given PHP file. Supports both string and array middleware forms.
+     * Finds route files registered on a group carrying middlewareName in the given PHP file:
+     * in the group's method chain, Route::middleware(middlewareName)->group(...), or in its
+     * attribute array, Route::group(['middleware' => middlewareName], ...). The group loads
+     * them through base_path('...') or require's them inside its closure. Supports both
+     * string and array middleware forms.
      *
      * @return array<string>
      */
@@ -591,39 +604,47 @@ class BootstrapRouteParser
         }
 
         $found = [];
-        $groupCalls = $this->parser->findMethodCalls($ast, 'group');
+        $groupCalls = [
+            ...$this->parser->findMethodCalls($ast, 'group'),
+            ...$this->parser->findNodes($ast, StaticCall::class),
+        ];
 
         foreach ($groupCalls as $call) {
-            if (! ($call instanceof MethodCall)) {
-                continue;
-            }
-
-            $firstArg = $call->args[0] ?? null;
-            if (! ($firstArg instanceof Node\Arg)) {
+            if (! ($call instanceof MethodCall || $call instanceof StaticCall)
+                || ! $call->name instanceof Identifier
+                || $call->name->name !== 'group') {
                 continue;
             }
 
             // The group must actually carry the middleware we're looking for.
-            if (! $this->chainContainsMiddleware($call->var, $middlewareName)) {
-                continue;
+            if (($call instanceof MethodCall && $this->chainContainsMiddleware($call->var, $middlewareName))
+                || $this->argsCarryMiddleware($call->args, $middlewareName)) {
+                array_push($found, ...$this->filesLoadedByGroup($call, dirname($filePath)));
             }
+        }
 
-            // Form 1: ->group(base_path('routes/X.php'))
-            $routeFile = $this->extractBasePathArgument($firstArg->value);
-            if ($routeFile !== null) {
-                $normalized = $this->normalizePath($routeFile);
-                if ($normalized !== null) {
-                    $found[] = $normalized;
-                }
+        return $found;
+    }
 
-                continue;
-            }
-
-            // Form 2: ->group(function () { require __DIR__.'/auth.php'; })
-            // Files require'd inside the closure inherit the group's middleware.
-            foreach ($this->extractIncludesFromClosure($firstArg->value, dirname($filePath)) as $included) {
-                $found[] = $included;
-            }
+    /**
+     * The route files a group call loads, which inherit its middleware: each
+     * base_path('routes/X.php') argument, and each existing file a require/include
+     * inside a Closure argument loads, resolved against $dir.
+     *
+     * @return array<string>
+     */
+    private function filesLoadedByGroup(MethodCall|StaticCall $call, string $dir): array
+    {
+        $found = [];
+        foreach ($call->args as $arg) {
+            $value = $arg instanceof Node\Arg ? $arg->value : null;
+            $basePathFile = $value === null ? null : $this->extractBasePathArgument($value);
+            $paths = match (true) {
+                $basePathFile !== null => array_filter([$this->normalizePath($basePathFile)]),
+                $value !== null => $this->extractIncludesFromClosure($value, $dir),
+                default => [],
+            };
+            array_push($found, ...$paths);
         }
 
         return $found;

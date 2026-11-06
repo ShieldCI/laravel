@@ -1130,6 +1130,95 @@ PHP;
         }
     }
 
+    // ==================== Middleware in the group attribute array ====================
+
+    /**
+     * @dataProvider groupAttributeArrayProvider
+     */
+    #[DataProvider('groupAttributeArrayProvider')]
+    public function test_group_membership_reads_the_group_attribute_array(string $registration, string $group, bool $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $group === 'web'
+                ? $parser->getWebProtectedRouteFiles()
+                : $parser->getApiRegisteredRouteFiles();
+
+            if ($expected) {
+                $this->assertCount(1, $result);
+                $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+            } else {
+                $this->assertSame([], $result);
+            }
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function groupAttributeArrayProvider(): array
+    {
+        $file = "base_path('routes/partner.php')";
+
+        return [
+            'web as a string' => ["Route::group(['middleware' => 'web'], {$file});", 'web', true],
+            'web in a list after another middleware' => ["Route::group(['middleware' => ['auth', 'web']], {$file});", 'web', true],
+            'api in a list' => ["Route::group(['middleware' => ['api']], {$file});", 'api', true],
+            'api next to a prefix' => ["Route::group(['prefix' => 'partner', 'middleware' => 'api'], {$file});", 'api', true],
+            'web on a router variable' => ["\$router->group(['middleware' => 'web'], {$file});", 'web', true],
+            'web on a closure that requires the file' => ["Route::group(['middleware' => 'web'], function () { require __DIR__.'/../routes/partner.php'; });", 'web', true],
+            'web under another key' => ["Route::group(['prefix' => 'web'], {$file});", 'web', false],
+            'name that only starts with web' => ["Route::group(['middleware' => 'webhooks'], {$file});", 'web', false],
+            'api is not web' => ["Route::group(['middleware' => 'api'], {$file});", 'web', false],
+            'web that is excluded' => ["Route::group(['excluded_middleware' => 'web'], {$file});", 'web', false],
+        ];
+    }
+
+    public function test_detects_api_group_attribute_array_in_providers_dir(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            Route::group(['middleware' => 'api', 'prefix' => 'partner'], base_path('routes/partner.php'));
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/partner.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $parser->getApiRegisteredRouteFiles();
+
+            $this->assertCount(1, $result);
+            $this->assertStringEndsWith('/routes/partner.php', $result[0]);
+            $this->assertSame([], $parser->getWebProtectedRouteFiles());
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_detects_files_required_inside_web_middleware_group_closure(): void
     {
         // Compass pattern: route files are require'd inside a ->group(Closure) on a

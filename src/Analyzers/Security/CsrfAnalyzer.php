@@ -644,7 +644,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
      * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. As Laravel
      * resolves an entry, a group name comes first, then an alias, and only then a class name;
-     * a group is followed into once.
+     * a group is never followed back into itself.
      *
      * @param  array<string, Expr>  $groups
      * @param  array<string, Expr>  $aliases

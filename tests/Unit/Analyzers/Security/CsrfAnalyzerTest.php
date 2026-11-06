@@ -12,6 +12,8 @@ use ShieldCI\Tests\AnalyzerTestCase;
 
 class CsrfAnalyzerTest extends AnalyzerTestCase
 {
+    private const APP_VERIFY_CSRF_TOKEN = "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n";
+
     protected function createAnalyzer(): CsrfAnalyzer
     {
         return new CsrfAnalyzer($this->parser);
@@ -3454,13 +3456,27 @@ PHP,
         $this->assertPassed($result);
     }
 
-    public function test_excluding_web_removes_a_csrf_class_that_extends_the_web_group_csrf_middleware(): void
+    public function test_excluding_web_removes_a_csrf_class_the_route_applies_when_the_group_is_not_modelled(): void
     {
-        // Router::resolveMiddleware() expands an excluded 'web' to the group's members
-        $files = ['app/Http/Middleware/VerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"];
-        $route = "<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class)->withoutMiddleware('web');\n";
+        // Router::resolveMiddleware() expands an excluded 'web' to the group's members; without
+        // bootstrap/app.php the group is assumed to hold the application's CSRF middleware
+        $result = $this->analyzeRouteFiles([
+            'app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN,
+            'routes/partner.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class)->withoutMiddleware('web');\n",
+        ]);
 
-        $result = $this->analyzeRouteFiles([...$files, 'routes/partner.php' => $route]);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_excluding_web_removes_a_csrf_class_only_when_it_extends_the_modelled_group_csrf_middleware(): void
+    {
+        $route = "->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class)->withoutMiddleware('web'";
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(then: function () {})\n    ->withMiddleware(function (\$middleware) {})\n    ->create();\n",
+            'app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN,
+            'routes/partner.php' => "<?php\n\nRoute::post('/orders', OrderController::class){$route});\n",
+        ]);
 
         // The application class extends PreventRequestForgery, the default group's, only on Laravel 13
         if (version_compare(app()->version(), '13.0.0', '>=')) {
@@ -3469,6 +3485,97 @@ PHP,
         } else {
             $this->assertPassed($result);
         }
+    }
+
+    public function test_application_csrf_class_is_matched_through_every_parent(): void
+    {
+        $this->assertTrue($this->webPhpExclusionReported(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\TenantVerifyCsrfToken::class]);",
+            '\\App\\Http\\Middleware\\BaseVerifyCsrfToken',
+            files: [
+                'app/Http/Middleware/TenantVerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass TenantVerifyCsrfToken extends BaseVerifyCsrfToken\n{\n}\n",
+                'app/Http/Middleware/BaseVerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass BaseVerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n",
+            ],
+        ));
+    }
+
+    public function test_file_the_api_routes_also_load_is_reported_when_a_web_load_strips_it(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        then: function () {
+            Route::middleware('web')->withoutMiddleware('web')->group(base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP,
+            // A file web.php requires is covered, so a group there that strips CSRF strips a web load
+            'routes/web.php' => "<?php\n\nrequire __DIR__.'/account.php';\n",
+            'routes/account.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/shared-hooks.php';
+});
+PHP,
+            // The stripped partner file passes its strip down to what it requires
+            'routes/partner.php' => "<?php\n\nrequire __DIR__.'/shared-orders.php';\n",
+            'routes/api.php' => "<?php\n\nrequire __DIR__.'/shared-hooks.php';\nrequire __DIR__.'/shared-orders.php';\n",
+            'routes/shared-hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+            'routes/shared-orders.php' => "<?php\n\nRoute::post('/orders', OrderController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $files = array_map(fn ($issue) => basename((string) $issue->location?->file), $result->getIssues());
+        sort($files);
+        $this->assertSame(['shared-hooks.php', 'shared-orders.php'], $files);
+    }
+
+    public function test_csrf_exclusion_on_an_api_load_removes_nothing(): void
+    {
+        // The api group never ran CSRF, so excluding it out of habit leaves the file an api file
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/RouteServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->prefix('api')->group(base_path('routes/api.php'));
+        Route::middleware('api')->withoutMiddleware([VerifyCsrfToken::class])->prefix('webhooks')->group(base_path('routes/webhooks.php'));
+    }
+}
+PHP,
+            'routes/api.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', [OrderController::class, 'store']);
+Route::withoutMiddleware(VerifyCsrfToken::class)->group(function () {
+    require __DIR__.'/api-hooks.php';
+});
+PHP,
+            'routes/api-hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+            'routes/webhooks.php' => "<?php\n\nRoute::post('/stripe', StripeController::class);\n",
+        ]);
+
+        $this->assertPassed($result);
     }
 
     public function test_exclusion_from_a_web_group_without_csrf_middleware_removes_nothing(): void

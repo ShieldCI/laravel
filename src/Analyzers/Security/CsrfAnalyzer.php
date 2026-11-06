@@ -46,6 +46,7 @@ use ShieldCI\Support\BootstrapRouteParser;
  *     groups: array<int, array{web: bool, strips: bool}>,
  *     variables: array<string, int>,
  *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
+ *     routers: array<int, array<string, true>>,
  * }
  */
 class CsrfAnalyzer extends AbstractFileAnalyzer
@@ -69,6 +70,31 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * @var array<int, string>
      */
     private const CSRF_MIDDLEWARE = ['VerifyCsrfToken', 'ValidateCsrfToken', 'PreventRequestForgery'];
+
+    /**
+     * Router methods that register resource routes, lowercased, each with the method label its
+     * findings carry and whether it is a plural form that takes a list of resources.
+     *
+     * @var array<string, array{string, bool}>
+     */
+    private const RESOURCE_REGISTRATIONS = [
+        'resource' => ['RESOURCE', false],
+        'apiresource' => ['RESOURCE', false],
+        'resources' => ['RESOURCE', true],
+        'apiresources' => ['RESOURCE', true],
+        'softdeletableresources' => ['RESOURCE', true],
+        'singleton' => ['SINGLETON', false],
+        'apisingleton' => ['SINGLETON', false],
+        'singletons' => ['SINGLETON', true],
+        'apisingletons' => ['SINGLETON', true],
+    ];
+
+    /**
+     * The classes the container resolves the router as, besides its 'router' binding.
+     *
+     * @var list<string>
+     */
+    private const ROUTER_CLASSES = ['Illuminate\Routing\Router', 'Illuminate\Contracts\Routing\Registrar'];
 
     public function __construct(
         private AstParser $parser
@@ -969,12 +995,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
-     * routes/web.php, routes/api.php and files registered under 'api' are skipped. A file
-     * registered under 'web' externally, or loaded by a group 'web' or the CSRF middleware
-     * reaches, is covered, and so is any file a covered file requires outside a group that
-     * removes CSRF. A file a bootstrap or provider group strips CSRF from is not, and neither
-     * is any file it requires. The rest
-     * are read through the AST: see walkRouteNode() for what reaches a route.
+     * routes/api.php and files registered under 'api' are skipped. routes/web.php is covered,
+     * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
+     * CSRF middleware reaches, and any file a covered file requires outside a group that removes
+     * CSRF. In a covered file only routes that exclude the CSRF middleware are reported. A file a
+     * bootstrap or provider group strips CSRF from is not covered, and neither is any file it,
+     * or a group in a route file that excludes CSRF, requires. Every file is read through the
+     * AST: see walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
      *
@@ -991,17 +1018,22 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         array $apiRegisteredFiles = [],
     ): void {
         $walks = [];
+        $covered = array_fill_keys($webProtectedFiles, true);
 
         foreach ($routeFiles as $file) {
             $real = realpath($file);
             $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
             // routes/api.php and files registered under 'api' use token authentication, not
-            // CSRF cookies; routes/web.php gets 'web' applied globally
+            // CSRF cookies
             if (str_ends_with($normalizedPath, '/routes/api.php')
-                || str_ends_with($normalizedPath, '/routes/web.php')
                 || in_array($normalizedPath, $apiRegisteredFiles, true)) {
                 continue;
+            }
+
+            // routes/web.php gets 'web' applied globally
+            if (str_ends_with($normalizedPath, '/routes/web.php')) {
+                $covered[$normalizedPath] = true;
             }
 
             $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
@@ -1011,7 +1043,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
         // either, however else it loads. Groups inside route files are read by the walk, which
         // only trusts what a file that is itself loaded registers
-        $covered = array_fill_keys($webProtectedFiles, true);
         $stripped = [];
         foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
@@ -1023,16 +1054,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         // Coverage passes down require chains of any depth, and so does stripping, which
-        // Laravel merges into every nested group and which wins over 'web'
+        // Laravel merges into every nested group and which wins over 'web'. A group in a route
+        // file that excludes CSRF strips every file it requires
         do {
             $changed = false;
             foreach ($walks as $path => $entry) {
                 foreach ($entry['walk']['includes'] as $include) {
                     $file = $include['file'];
-                    if (isset($stripped[$path])) {
+                    if (isset($stripped[$path]) || $include['strips']) {
                         $changed = $changed || ! isset($stripped[$file]);
                         $stripped[$file] = true;
-                    } elseif (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
+                    } elseif (! isset($covered[$file]) && ($include['web'] || isset($covered[$path]))) {
                         $changed = true;
                         $covered[$file] = true;
                     }
@@ -1042,14 +1074,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         foreach ($walks as $path => $entry) {
             $fileStripped = isset($stripped[$path]);
-            if (isset($covered[$path]) && ! $fileStripped) {
-                continue;
-            }
+            $fileCovered = isset($covered[$path]) && ! $fileStripped;
 
             $unprotected = [];
             foreach ($entry['walk']['routes'] as $route) {
-                if ($fileStripped || ! $route['web'] || $route['strips']) {
-                    $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'stripped' => $fileStripped || $route['web']];
+                if ($fileCovered) {
+                    if ($route['strips']) {
+                        $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'reason' => 'excluded'];
+                    }
+                } elseif ($fileStripped || ! $route['web'] || $route['strips']) {
+                    $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'reason' => $fileStripped || $route['web'] ? 'stripped' : 'missing'];
                 }
             }
             $this->reportUnprotectedRoutes($entry['file'], $unprotected, $issues);
@@ -1057,7 +1091,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * @param  list<array{line: int, method: string, stripped: bool}>  $routes
+     * Report each unprotected route once per line. The reason picks the message: 'missing' when
+     * 'web' never reaches the route, 'stripped' when the CSRF middleware is excluded from a route
+     * in a file 'web' does not cover, and 'excluded' when a route in a covered file, such as
+     * routes/web.php, excludes it.
+     *
+     * @param  list<array{line: int, method: string, reason: 'missing'|'stripped'|'excluded'}>  $routes
      * @param  array<int, Issue>  $issues
      */
     private function reportUnprotectedRoutes(string $file, array $routes, array &$issues): void
@@ -1072,20 +1111,24 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $reportedLines[$line] = true;
 
             $issues[] = $this->createIssueWithSnippet(
-                message: $route['stripped']
-                    ? sprintf('%s route in custom route file missing CSRF protection - the CSRF middleware is excluded from it', $route['method'])
-                    : sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $route['method']),
+                message: match ($route['reason']) {
+                    'missing' => sprintf('%s route in custom route file missing CSRF protection - no "web" middleware detected', $route['method']),
+                    'stripped' => sprintf('%s route in custom route file missing CSRF protection - the CSRF middleware is excluded from it', $route['method']),
+                    'excluded' => sprintf('%s route excludes the CSRF middleware through withoutMiddleware() or excluded_middleware', $route['method']),
+                },
                 filePath: $file,
                 lineNumber: $line,
                 severity: Severity::High,
-                recommendation: $route['stripped']
-                    ? 'Stop excluding the web group or the CSRF middleware from this route through withoutMiddleware() or excluded_middleware. A route that cannot send a token, such as a webhook, belongs in the CSRF middleware exceptions instead, where the exemption is reviewed with the others.'
-                    : 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.',
+                recommendation: $route['reason'] === 'missing'
+                    ? 'Apply the web middleware group to this route or move it into a route group that includes the web middleware, which provides CSRF protection.'
+                    : 'Stop excluding the web group or the CSRF middleware from this route through withoutMiddleware() or excluded_middleware. A route that cannot send a token, such as a webhook, belongs in the CSRF middleware exceptions instead, where the exemption is reviewed with the others.',
                 metadata: [
                     'method' => $route['method'],
                     'file' => basename($file),
                     'line' => $line,
-                    'severity_reason' => 'High severity for custom route files - web.php is automatically protected',
+                    'severity_reason' => $route['reason'] === 'excluded'
+                        ? 'High severity - excluding the CSRF middleware removes the protection the web group gives this route'
+                        : 'High severity for custom route files - web.php is automatically protected',
                 ]
             );
         }
@@ -1101,13 +1144,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
         /** @var RouteWalk $walk */
-        $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => []];
+        $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'routers' => []];
 
         // A file that does not parse yields no nodes; the report's parse-failure notice covers it.
         // Names are resolved here, not left to whichever analyzer last resolved the cached AST,
         // so an aliased CSRF import reads as its class
         foreach ($this->resolveNamesForMatching($this->parser->parseFile($file)) as $node) {
-            $this->walkRouteNode($node, [], $walk, $routeParser);
+            $this->walkRouteNode($node, [], 0, $walk, $routeParser);
         }
         $groups = $walk['groups'];
 
@@ -1160,53 +1203,175 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * naming either excludes it again, at any level. Method names are matched
      * case-insensitively, as PHP calls them.
      *
+     * Each function scope keeps the variables that hold the router (see openScope()), and an
+     * assignment updates its own scope's set as the walk reaches it, in source order.
+     *
      * @param  list<int>  $closures  spl_object_id()s of the closures enclosing $node, outermost first
+     * @param  int  $scope  spl_object_id() of the function enclosing $node, or 0 for the file
      * @param  RouteWalk  $walk
      */
-    private function walkRouteNode(Node $node, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
+    private function walkRouteNode(Node $node, array $closures, int $scope, array &$walk, BootstrapRouteParser $routeParser): void
     {
         if ($node instanceof Expr\MethodCall || $node instanceof Expr\StaticCall) {
-            $this->walkCallChain($node, $closures, $walk, $routeParser);
+            $this->walkCallChain($node, $closures, $scope, $walk, $routeParser);
 
             return;
+        }
+
+        if ($node instanceof Node\FunctionLike) {
+            $scope = $this->openScope($node, $scope, $walk);
         }
 
         if ($node instanceof Expr\Closure || $node instanceof Expr\ArrowFunction) {
             $closures[] = spl_object_id($node);
         } elseif ($node instanceof Expr\Include_) {
             $walk['includes'][] = ['include' => $node, 'closures' => $closures];
-        } elseif ($node instanceof Expr\Assign
-            && $node->var instanceof Expr\Variable
-            && is_string($node->var->name)
-            && ($node->expr instanceof Expr\Closure || $node->expr instanceof Expr\ArrowFunction)) {
-            $walk['variables'][$node->var->name] = spl_object_id($node->expr);
+        } elseif ($node instanceof Expr\Assign && $node->var instanceof Expr\Variable && is_string($node->var->name)) {
+            if ($node->expr instanceof Expr\Closure || $node->expr instanceof Expr\ArrowFunction) {
+                $walk['variables'][$node->var->name] = spl_object_id($node->expr);
+            }
+
+            if ($this->isRouterExpr($node->expr, $scope, $walk)) {
+                $walk['routers'][$scope][$node->var->name] = true;
+            } else {
+                unset($walk['routers'][$scope][$node->var->name]);
+            }
         }
 
         foreach ($node->getSubNodeNames() as $name) {
             $sub = $node->$name;
             foreach (is_array($sub) ? $sub : [$sub] as $child) {
                 if ($child instanceof Node) {
-                    $this->walkRouteNode($child, $closures, $walk, $routeParser);
+                    $this->walkRouteNode($child, $closures, $scope, $walk, $routeParser);
                 }
             }
         }
     }
 
     /**
+     * Open the scope of a function the walk enters, recording the variables that hold the router
+     * in it: parameters typed Router or Registrar, the first parameter of a group callback, which
+     * Laravel calls with the router, and router variables a closure captures through use(). An
+     * arrow function sees its parent scope's variables, as PHP binds them by value.
+     *
+     * @param  RouteWalk  $walk
+     */
+    private function openScope(Node\FunctionLike $function, int $parent, array &$walk): int
+    {
+        $id = spl_object_id($function);
+        $parentRouters = $walk['routers'][$parent] ?? [];
+
+        $routers = $function instanceof Expr\ArrowFunction ? $parentRouters : [];
+        if ($function instanceof Expr\Closure) {
+            foreach ($function->uses as $use) {
+                if (is_string($use->var->name) && isset($parentRouters[$use->var->name])) {
+                    $routers[$use->var->name] = true;
+                }
+            }
+        }
+
+        foreach ($function->getParams() as $index => $param) {
+            if ($param->var instanceof Expr\Variable && is_string($param->var->name)
+                && ($this->isRouterType($param->type) || ($index === 0 && isset($walk['groups'][$id])))) {
+                $routers[$param->var->name] = true;
+            }
+        }
+
+        $walk['routers'][$id] = $routers;
+
+        return $id;
+    }
+
+    /**
+     * Whether a parameter type is the router: Illuminate\Routing\Router or the
+     * Illuminate\Contracts\Routing\Registrar contract, nullable or not.
+     */
+    private function isRouterType(?Node $type): bool
+    {
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if (! $type instanceof Name) {
+            return false;
+        }
+
+        $resolved = $type->getAttribute('resolvedName');
+
+        return in_array(($resolved instanceof Name ? $resolved : $type)->toString(), self::ROUTER_CLASSES, true);
+    }
+
+    /**
+     * Whether an expression is the router: a variable named $router, which Laravel defines in
+     * every route file it loads, or a variable that holds it in this scope; $this->router, the
+     * RouteFileRegistrar a route file runs in; app() or resolve() given 'router', Router or
+     * Registrar; and app()->make() given the same.
+     *
+     * @param  RouteWalk  $walk
+     */
+    private function isRouterExpr(Node $expr, int $scope, array $walk): bool
+    {
+        if ($expr instanceof Expr\Variable) {
+            return is_string($expr->name) && ($expr->name === 'router' || isset($walk['routers'][$scope][$expr->name]));
+        }
+
+        if ($expr instanceof Expr\PropertyFetch) {
+            return $expr->var instanceof Expr\Variable && $expr->var->name === 'this'
+                && $expr->name instanceof Identifier && $expr->name->toLowerString() === 'router';
+        }
+
+        if ($expr instanceof Expr\FuncCall && $this->isFunctionNamed($expr, ['app', 'resolve'])) {
+            return $this->namesRouter($expr);
+        }
+
+        return $expr instanceof Expr\MethodCall
+            && $expr->name instanceof Identifier && $expr->name->toLowerString() === 'make'
+            && $expr->var instanceof Expr\FuncCall && $this->isFunctionNamed($expr->var, ['app']) && $expr->var->args === []
+            && $this->namesRouter($expr);
+    }
+
+    /**
+     * Whether a call names an unqualified or fully qualified function in $names, case-insensitively.
+     *
+     * @param  list<string>  $names
+     */
+    private function isFunctionNamed(Expr\FuncCall $call, array $names): bool
+    {
+        return $call->name instanceof Name && in_array($call->name->toLowerString(), $names, true);
+    }
+
+    /**
+     * Whether a container call's first argument is the router's binding: 'router', Router::class
+     * or Registrar::class.
+     */
+    private function namesRouter(Expr\FuncCall|Expr\MethodCall $call): bool
+    {
+        $first = $call->args[0] ?? null;
+        if (! $first instanceof Node\Arg) {
+            return false;
+        }
+
+        $name = $this->middlewareName($first->value);
+
+        return $name !== null && in_array(ltrim($name, '\\'), ['router', ...self::ROUTER_CLASSES], true);
+    }
+
+    /**
      * Walk a method-call chain as one unit: read it as a route registration when its root is
-     * the Route facade or a $router variable, then walk its root and each call's arguments,
-     * which may hold further routes.
+     * the router (see isRouterChainRoot()), then walk its root and each call's arguments, which
+     * may hold further routes.
      *
      * @param  list<int>  $closures
      * @param  RouteWalk  $walk
      */
-    private function walkCallChain(Expr\MethodCall|Expr\StaticCall $call, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
+    private function walkCallChain(Expr\MethodCall|Expr\StaticCall $call, array $closures, int $scope, array &$walk, BootstrapRouteParser $routeParser): void
     {
         [$chain, $base] = $this->unwindChain($call);
 
-        if (($base instanceof Name && $base->getLast() === 'Route')
-            || ($base instanceof Expr\Variable && $base->name === 'router')) {
-            $this->readRouteChain($chain, $closures, $walk, $routeParser);
+        // app()->make('router') unwinds with make() as the chain's first call
+        $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isRouterExpr($chain[0], $scope, $walk) ? 1 : 0;
+        if ($start === 1 || $this->isRouterChainRoot($base, $scope, $walk)) {
+            $this->readRouteChain(array_slice($chain, $start), $closures, $walk, $routeParser);
         }
 
         $children = [$base];
@@ -1215,8 +1380,26 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         foreach ($children as $child) {
-            $this->walkRouteNode($child, $closures, $walk, $routeParser);
+            $this->walkRouteNode($child, $closures, $scope, $walk, $routeParser);
         }
+    }
+
+    /**
+     * Whether a chain's root is the router: the Route facade, by any alias it is imported
+     * under, or an expression isRouterExpr() accepts.
+     *
+     * @param  RouteWalk  $walk
+     */
+    private function isRouterChainRoot(Node $base, int $scope, array $walk): bool
+    {
+        if ($base instanceof Name) {
+            $resolved = $base->getAttribute('resolvedName');
+
+            return $base->getLast() === 'Route'
+                || ($resolved instanceof Name && $resolved->toString() === 'Illuminate\Support\Facades\Route');
+        }
+
+        return $this->isRouterExpr($base, $scope, $walk);
     }
 
     /**
@@ -1229,11 +1412,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function readRouteChain(array $chain, array $closures, array &$walk, BootstrapRouteParser $routeParser): void
     {
-        // Calls after resource() configure its PendingResourceRegistration, which reads them
-        // by its own rules (see resourceState()); calls up to it read as on any route
+        // Calls after resource() and the other resource registrations configure their pending
+        // registration, which reads them by its own rules (see resourceState()); calls up to
+        // it read as on any route
         $resourceAt = null;
         foreach ($chain as $index => $link) {
-            if ($link->name instanceof Identifier && $link->name->toLowerString() === 'resource') {
+            if ($link->name instanceof Identifier && isset(self::RESOURCE_REGISTRATIONS[$link->name->toLowerString()])) {
                 $resourceAt = $index;
 
                 break;
@@ -1268,7 +1452,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $method = $this->stateChangingRouteMethod($calls);
         if ($resourceAt !== null) {
             [$writes, $resourceWeb, $resourceStrips] = $this->resourceState($chain[$resourceAt], array_slice($chain, $resourceAt + 1), $routeParser);
-            $method = $writes ? 'RESOURCE' : null;
+            $method = $writes ? $this->resourceRegistration($chain[$resourceAt])[0] : null;
             $web = $web || $resourceWeb;
             $strips = $strips || $resourceStrips;
         }
@@ -1383,55 +1567,125 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * What a resource() registration applies, as Laravel's PendingResourceRegistration and
-     * ResourceRegistrar read it: whether it keeps any of store, update and destroy, whether
-     * its own middleware lists 'web', and whether it excludes 'web' or the CSRF middleware.
+     * What a resource or singleton registration applies, as Laravel's pending registrations and
+     * ResourceRegistrar read it: whether it keeps any write method, whether 'web' reaches every
+     * kept write through its own middleware, and whether 'web' or the CSRF middleware is
+     * excluded from any of them.
      *
-     * The options array (the third argument) sets only, except, middleware and
-     * excluded_middleware. A later only(), except() or middleware() call replaces that
-     * option, and withoutMiddleware() adds to excluded_middleware. middleware() and
-     * withoutMiddleware() wrap their first argument and ignore any others; only() and
-     * except() take a list or every argument, as a route's middleware() does.
+     * A resource writes through store, update and destroy, and a singleton through update, plus
+     * store and destroy when creatable or destroy when destroyable. apiResource() and
+     * apiSingleton() narrow 'only' to a list that keeps every write, so they read as resource()
+     * and singleton(). The plural forms register each entry of a literal array with the same
+     * options and return nothing to chain; any other first argument is skipped.
      *
-     * @param  list<Expr\MethodCall|Expr\StaticCall>  $pending  The calls chained after resource()
+     * The options array sets only, except, middleware, excluded_middleware, creatable and
+     * destroyable. The calls chained after it then change those options in order, as the
+     * pending registration does: only(), except() and middleware() replace theirs, and
+     * withoutMiddleware() adds to excluded_middleware. middlewareFor() gives the listed methods
+     * the middleware set so far plus its own, and a later middleware() adds to those too;
+     * withoutMiddlewareFor() replaces the listed methods' own exclusions, which add to
+     * excluded_middleware. middleware() and withoutMiddleware() wrap their first argument and
+     * ignore any others; only() and except() take a list or every argument, as a route's
+     * middleware() does. A method list that cannot be read is skipped by middlewareFor(), so it
+     * protects nothing, and applies to every method in withoutMiddlewareFor().
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $pending  The calls chained after the registration
      * @return array{bool, bool, bool}
      */
     private function resourceState(Expr\MethodCall|Expr\StaticCall $resource, array $pending, BootstrapRouteParser $routeParser): array
     {
-        $optionsArg = $resource->args[2] ?? null;
-        $options = $optionsArg instanceof Node\Arg && $optionsArg->value instanceof Expr\Array_ ? $optionsArg->value : null;
-        $calls = $this->callsByName($pending);
+        [$label, $plural] = $this->resourceRegistration($resource);
 
-        $writes = ['store', 'update', 'destroy'];
+        if ($plural) {
+            $registered = $resource->args[0] ?? null;
+            if (! $registered instanceof Node\Arg || ! $registered->value instanceof Expr\Array_ || $registered->value->items === []) {
+                return [false, false, false];
+            }
+        }
+
+        $optionsArg = $resource->args[$plural ? 1 : 2] ?? null;
+        $options = $optionsArg instanceof Node\Arg && $optionsArg->value instanceof Expr\Array_ ? $optionsArg->value : null;
+
+        $filters = ['only' => $this->resourceOption($options, 'only'), 'except' => $this->resourceOption($options, 'except')];
+        $creatable = $this->resourceOption($options, 'creatable') !== null;
+        $destroyable = $this->resourceOption($options, 'destroyable') !== null;
+        $middleware = $this->entryNames($this->resourceOption($options, 'middleware') ?? []);
+        $excluded = $this->entryNames($this->resourceOption($options, 'excluded_middleware') ?? []);
+        $middlewareFor = [];
+        $excludedFor = [];
+
+        foreach ($pending as $link) {
+            $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
+            match ($name) {
+                'only', 'except' => $filters[$name] = $routeParser->middlewareEntries($link),
+                'creatable' => $creatable = true,
+                'destroyable' => $destroyable = true,
+                default => null,
+            };
+
+            if ($name === 'middleware') {
+                $middleware = $this->entryNames($this->wrappedFirstArgument($link));
+                foreach ($middlewareFor as $method => $names) {
+                    $middlewareFor[$method] = [...$names, ...$middleware];
+                }
+            } elseif ($name === 'withoutmiddleware') {
+                $excluded = [...$excluded, ...$this->entryNames($this->wrappedFirstArgument($link))];
+            } elseif ($name === 'middlewarefor' || $name === 'withoutmiddlewarefor') {
+                $methods = $this->entryNames($this->wrappedFirstArgument($link));
+                $second = $link->args[1] ?? null;
+                $names = $second instanceof Node\Arg ? $this->entryNames($this->wrapped($second->value)) : [];
+
+                foreach ($methods as $method) {
+                    if ($name === 'middlewarefor') {
+                        if ($method !== null) {
+                            $middlewareFor[$method] = [...$middleware, ...$names];
+                        }
+                    } else {
+                        $excludedFor[$method ?? '*'] = $names;
+                    }
+                }
+            }
+        }
+
+        $writes = match (true) {
+            $label === 'RESOURCE' => ['store', 'update', 'destroy'],
+            $creatable => ['update', 'store', 'destroy'],
+            $destroyable => ['update', 'destroy'],
+            default => ['update'],
+        };
         foreach (['only' => true, 'except' => false] as $filter => $keeps) {
-            $entries = isset($calls[$filter])
-                ? $routeParser->middlewareEntries($calls[$filter][count($calls[$filter]) - 1])
-                : $this->resourceOption($options, $filter);
-            if ($entries === null) {
+            if ($filters[$filter] === null) {
                 continue;
             }
 
-            $names = $this->entryNames($entries);
+            $names = $this->entryNames($filters[$filter]);
             if (in_array(null, $names, true)) {
                 return [false, false, false];
             }
             $writes = $keeps ? array_intersect($writes, $names) : array_diff($writes, $names);
         }
 
-        $middleware = isset($calls['middleware'])
-            ? $this->wrappedFirstArgument($calls['middleware'][count($calls['middleware']) - 1])
-            : ($this->resourceOption($options, 'middleware') ?? []);
-
-        $excluded = $this->resourceOption($options, 'excluded_middleware') ?? [];
-        foreach ($calls['withoutmiddleware'] ?? [] as $link) {
-            $excluded = [...$excluded, ...$this->wrappedFirstArgument($link)];
+        $web = $writes !== [];
+        $strips = false;
+        foreach ($writes as $method) {
+            $web = $web && $this->namesCarryCsrf($middlewareFor[$method] ?? $middleware);
+            $strips = $strips || $this->namesCarryCsrf([...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
         }
 
-        return [
-            $writes !== [],
-            $this->namesCarryCsrf($this->entryNames($middleware)),
-            $this->namesCarryCsrf($this->entryNames($excluded)),
-        ];
+        return [$writes !== [], $web, $strips];
+    }
+
+    /**
+     * The method label a resource registration call reports under, and whether it is a plural
+     * form that registers a list of resources.
+     *
+     * @return array{string, bool}
+     */
+    private function resourceRegistration(Expr\MethodCall|Expr\StaticCall $call): array
+    {
+        $name = $call->name instanceof Identifier ? $call->name->toLowerString() : '';
+
+        return self::RESOURCE_REGISTRATIONS[$name] ?? ['RESOURCE', false];
     }
 
     /**

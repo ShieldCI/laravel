@@ -3538,6 +3538,48 @@ PHP,
         $files = array_map(fn ($issue) => basename((string) $issue->location?->file), $result->getIssues());
         sort($files);
         $this->assertSame(['shared-hooks.php', 'shared-orders.php'], $files);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringContainsString('the CSRF middleware is excluded from it', $issue->message);
+        }
+    }
+
+    public function test_csrf_exclusion_on_an_api_load_leaves_a_file_web_also_loads_protected(): void
+    {
+        // Laravel registers the file twice: the web copy keeps CSRF, the api copy never had it
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/RouteServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->withoutMiddleware(VerifyCsrfToken::class)->prefix('api')->group(base_path('routes/api.php'));
+        Route::middleware('web')->group(base_path('routes/web.php'));
+    }
+}
+PHP,
+            'routes/web.php' => "<?php\n\nrequire __DIR__.'/shared.php';\n",
+            'routes/api.php' => <<<'PHP'
+<?php
+
+require __DIR__.'/shared.php';
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/shared-account.php';
+});
+PHP,
+            'routes/shared.php' => "<?php\n\nrequire __DIR__.'/shared-child.php';\n\nRoute::post('/newsletter', NewsletterController::class);\n",
+            'routes/shared-child.php' => "<?php\n\nRoute::post('/newsletter/confirm', NewsletterController::class);\n",
+            'routes/shared-account.php' => "<?php\n\nRoute::post('/account', AccountController::class);\n",
+        ]);
+
+        $this->assertPassed($result);
     }
 
     public function test_csrf_exclusion_on_an_api_load_removes_nothing(): void

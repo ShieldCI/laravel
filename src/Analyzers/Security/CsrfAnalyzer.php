@@ -1159,7 +1159,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         $changed = $changed || ! isset($stripped[$file]);
                         $stripped[$file] = true;
 
-                        if (! isset($webStripped[$file]) && (isset($webStripped[$path]) || ($include['strips'] && $include['reached']) || isset($covered[$path]))) {
+                        // A covered file's own stripping group strips a web load; a strip it
+                        // only inherits from an api load does not pass on
+                        if (! isset($webStripped[$file]) && (isset($webStripped[$path]) || ($include['strips'] && ($include['reached'] || isset($covered[$path]))))) {
                             $changed = true;
                             $webStripped[$file] = true;
                         }
@@ -1178,7 +1180,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $fileStripped = isset($stripped[$path]);
+            // A strip only an api load applies removes nothing from the file's web load
+            $fileStripped = isset($webStripped[$path]) || (isset($stripped[$path]) && ! isset($api[$path]));
             $fileCovered = isset($covered[$path]) && ! $fileStripped;
 
             $unprotected = [];

@@ -2536,6 +2536,150 @@ PHP;
         $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
     }
 
+    public function test_route_file_registered_in_an_api_group_attribute_array_is_matched_as_api_routes(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::group(['middleware' => ['api']], base_path('routes/partner_api.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/token" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
+    }
+
+    public function test_web_group_throttle_does_not_clear_a_file_registered_in_an_api_group_attribute_array(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::group(['middleware' => ['api']], base_path('routes/partner_api.php'));
+        },
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->web(append: ['throttle:60,1']);
+    })
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['API authentication route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_file_inherits_api_from_an_enclosing_group(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware('api')->group(function () {
+                Route::prefix('partner')->group(base_path('routes/partner_api.php'));
+            });
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/token', [SessionTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame('api', $result->getIssues()[0]->metadata['route_type']);
+    }
+
+    public function test_route_file_inherits_throttle_from_an_enclosing_group(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware(['api', 'throttle:5,1'])->group(function () {
+                Route::prefix('partner')->group(base_path('routes/partner_api.php'));
+            });
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excluding_another_throttle_keeps_the_group_throttle(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            Route::middleware(['api', 'throttle:5,1'])->group(function () {
+                Route::withoutMiddleware('throttle:api')->group(base_path('routes/partner_api.php'));
+            });
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/web.php' => '<?php',
+            'routes/partner_api.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     // ==================== A route's throttle stops at its statement ====================
 
     public function test_next_routes_throttle_does_not_clear_a_one_line_login_route(): void

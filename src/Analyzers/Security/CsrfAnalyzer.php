@@ -75,7 +75,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The RouteRegistrar attribute methods, lowercased: calls a chain makes before it registers
-     * a route or group.
+     * a route or group. The where*() constraint helpers stay on the registrar too.
      *
      * @var list<string>
      */
@@ -754,6 +754,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $removals = [];
         /** @var list<string|null> $additions */
         $additions = [];
+        // An append, prepend or removal list that cannot be read leaves the group unknown
+        $unreadable = false;
 
         foreach ($calls as $call) {
             if (! $call->name instanceof Identifier) {
@@ -765,12 +767,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $removing = [];
 
             if ($method === 'web') {
-                $removing = $this->middlewareList($this->callArgument($call, 2, 'remove')) ?? [];
-                $additions = array_merge(
-                    $additions,
-                    $this->middlewareList($this->callArgument($call, 0, 'append')) ?? [],
-                    $this->middlewareList($this->callArgument($call, 1, 'prepend')) ?? [],
-                );
+                $lists = [
+                    $this->middlewareList($this->callArgument($call, 2, 'remove')),
+                    $this->middlewareList($this->callArgument($call, 0, 'append')),
+                    $this->middlewareList($this->callArgument($call, 1, 'prepend')),
+                ];
+                $unreadable = $unreadable || in_array(null, $lists, true);
+                $removing = $lists[0] ?? [];
+                $additions = array_merge($additions, $lists[1] ?? [], $lists[2] ?? []);
 
                 $replace = $this->callArgument($call, 3, 'replace');
                 foreach ($replace instanceof Expr\Array_ ? $replace->items : [] as $item) {
@@ -791,10 +795,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                     case 'appendtogroup':
                     case 'prependtogroup':
+                        $unreadable = $unreadable || $middleware === null;
                         $additions = array_merge($additions, $middleware ?? []);
                         break;
 
                     case 'removefromgroup':
+                        $unreadable = $unreadable || $middleware === null;
                         $removing = $middleware ?? [];
                         break;
 
@@ -861,7 +867,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // The group the routes run with: removals take exact names, then prepends and appends join
         $final = [...array_diff($entries, array_keys($removals)), ...$additions];
-        $this->webGroupCsrf = in_array(null, $final, true)
+        $this->webGroupCsrf = $unreadable || in_array(null, $final, true)
             ? null
             : array_values(array_filter($final, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null));
 
@@ -1028,7 +1034,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
-     * routes/api.php and files registered under 'api' are skipped. routes/web.php is covered,
+     * routes/api.php, files registered under 'api', and any file they load outside a web group
+     * are skipped. A route file loads a file by requiring it or through a group() path argument,
+     * which then counts as a require at that place. routes/web.php is covered,
      * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
      * CSRF middleware reaches, and any file a covered file requires outside a group that removes
      * CSRF. In a covered file only routes that exclude the CSRF middleware are reported. A file a
@@ -1052,16 +1060,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     ): void {
         $walks = [];
         $covered = array_fill_keys($webProtectedFiles, true);
+        // routes/api.php and files registered under 'api' use token authentication, not CSRF
+        // cookies, and so does any file they load outside a web group
+        $api = array_fill_keys($apiRegisteredFiles, true);
 
         foreach ($routeFiles as $file) {
             $real = realpath($file);
             $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
-            // routes/api.php and files registered under 'api' use token authentication, not
-            // CSRF cookies
-            if (str_ends_with($normalizedPath, '/routes/api.php')
-                || in_array($normalizedPath, $apiRegisteredFiles, true)) {
-                continue;
+            if (str_ends_with($normalizedPath, '/routes/api.php')) {
+                $api[$normalizedPath] = true;
             }
 
             // routes/web.php gets 'web' applied globally
@@ -1072,16 +1080,29 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
         }
 
+        // The files each route file loads: what it requires, read by the walk, and what a
+        // group() path argument in it registers
+        $loads = array_map(fn (array $entry): array => $entry['walk']['includes'], $walks);
+
         // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
         // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
-        // either, however else it loads. Groups inside route files that require a file are read
-        // by the walk, which only trusts what a file that is itself loaded registers; a group()
-        // path argument inside a route file is not followed
+        // either, however else it loads. A group in a route file loads it like a require there
         $stripped = [];
-        $loaded = $covered;
-        foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
-            $loaded[$registration['file']] = true;
+        $loaded = $covered + $api;
+        foreach ($routeParser->getGroupRegisteredRouteFiles() as $registration) {
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
+            $real = realpath($registration['source']);
+            $source = str_replace('\\', '/', $real !== false ? $real : $registration['source']);
+
+            if (str_contains($source, '/routes/')) {
+                if (isset($walks[$source])) {
+                    $loads[$source][] = ['file' => $registration['file'], 'web' => $state['web'], 'strips' => $state['strips']];
+                }
+
+                continue;
+            }
+
+            $loaded[$registration['file']] = true;
             if ($state['strips']) {
                 $stripped[$registration['file']] = true;
             } elseif ($state['web']) {
@@ -1097,12 +1118,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // can extend coverage but never take it away
         do {
             $changed = false;
-            foreach ($walks as $path => $entry) {
-                foreach ($entry['walk']['includes'] as $include) {
+            foreach ($loads as $path => $includes) {
+                foreach ($includes as $include) {
                     $file = $include['file'];
                     if (isset($loaded[$path]) && ! isset($loaded[$file])) {
                         $changed = true;
                         $loaded[$file] = true;
+                    }
+
+                    if (isset($api[$path]) && ! $include['web'] && ! isset($api[$file])) {
+                        $changed = true;
+                        $api[$file] = true;
                     }
 
                     if (isset($stripped[$path]) || ($include['strips'] && isset($loaded[$path]))) {
@@ -1117,6 +1143,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         } while ($changed);
 
         foreach ($walks as $path => $entry) {
+            if (isset($api[$path])) {
+                continue;
+            }
+
             $fileStripped = isset($stripped[$path]);
             $fileCovered = isset($covered[$path]) && ! $fileStripped;
 
@@ -1568,7 +1598,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $registered = false;
         foreach ($chain as $link) {
             $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
-            $registered = $registered || ! in_array($name, self::REGISTRAR_ATTRIBUTES, true);
+            $registered = $registered
+                || ! (in_array($name, self::REGISTRAR_ATTRIBUTES, true) || ($name !== null && str_starts_with($name, 'where')));
 
             if ($name === 'middleware') {
                 $carries = $this->namesCarryCsrf($this->entryNames($routeParser->middlewareEntries($link)));
@@ -1578,7 +1609,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     $registrarWeb = $carries;
                 }
             } elseif ($name === 'withoutmiddleware') {
-                $strips = $strips || $this->namesStripCsrf($this->entryNames($routeParser->middlewareEntries($link)));
+                // Route::withoutMiddleware() and the registrar take one argument and wrap it
+                $strips = $strips || $this->namesStripCsrf($this->entryNames($this->wrappedFirstArgument($link)));
             }
         }
         $web = $web || $registrarWeb;

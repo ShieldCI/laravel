@@ -3298,6 +3298,39 @@ PHP,
         ));
     }
 
+    /**
+     * @dataProvider unreadableWebGroupListProvider
+     */
+    #[DataProvider('unreadableWebGroupListProvider')]
+    public function test_unreadable_web_group_list_falls_back_to_the_assumed_csrf_class(string $statement): void
+    {
+        $this->assertTrue($this->webPhpExclusionReported($statement, '\\App\\Http\\Middleware\\VerifyCsrfToken'));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unreadableWebGroupListProvider(): array
+    {
+        return [
+            'web(append:)' => ['$middleware->web(append: $extra);'],
+            'web(remove:)' => ['$middleware->web(remove: $extra);'],
+            'appendToGroup()' => ["\$middleware->appendToGroup('web', \$extra);"],
+            'removeFromGroup()' => ["\$middleware->removeFromGroup('web', \$extra);"],
+        ];
+    }
+
+    public function test_csrf_middleware_appended_to_the_web_group_counts(): void
+    {
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\';
+        $app = '\\App\\Http\\Middleware\\VerifyCsrfToken';
+
+        $this->assertTrue($this->webPhpExclusionReported(
+            "\$middleware->group('web', [{$framework}ValidateCsrfToken::class]); \$middleware->web(remove: [{$framework}ValidateCsrfToken::class], append: [{$app}::class]);",
+            "{$framework}VerifyCsrfToken",
+        ));
+    }
+
     public function test_web_group_model_does_not_carry_over_to_the_next_analysis(): void
     {
         $this->assertFalse($this->webPhpExclusionReported(
@@ -3520,6 +3553,81 @@ PHP,
         $this->assertHasIssueContaining('no "web" middleware detected', $result);
     }
 
+    public function test_skips_files_the_api_routes_load_through_requires_and_group_paths(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        api: __DIR__.'/../routes/api.php',
+        then: function () {
+            Route::middleware('api')->prefix('v2')->group(base_path('routes/api-v2.php'));
+        },
+    )
+    ->create();
+PHP,
+            'routes/api.php' => <<<'PHP'
+<?php
+
+Route::prefix('v1')->group(base_path('routes/api/v1.php'));
+require __DIR__.'/api/legacy.php';
+PHP,
+            'routes/api/v1.php' => "<?php\n\nRoute::apiResource('orders', OrderController::class);\n",
+            'routes/api/legacy.php' => "<?php\n\nrequire __DIR__.'/legacy/orders.php';\n",
+            'routes/api/legacy/orders.php' => "<?php\n\nRoute::apiResource('orders', OrderController::class);\n",
+            'routes/api-v2.php' => "<?php\n\nrequire __DIR__.'/api-v2-admin.php';\n",
+            'routes/api-v2-admin.php' => "<?php\n\nRoute::apiResource('users', UserController::class);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_file_the_api_routes_load_inside_a_web_group_is_covered_not_skipped(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => "<?php\n\nRoute::middleware('web')->group(base_path('routes/portal.php'));\n",
+            'routes/portal.php' => <<<'PHP'
+<?php
+
+Route::post('/portal/messages', [MessageController::class, 'store']);
+Route::post('/portal/hooks', HookController::class)->withoutMiddleware('web');
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
+    }
+
+    public function test_file_web_php_loads_through_a_group_path_is_covered(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => "<?php\n\nRoute::prefix('billing')->group(base_path('routes/billing.php'));\n",
+            'routes/billing.php' => "<?php\n\nRoute::post('/invoices', [InvoiceController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_without_middleware_reads_only_its_first_argument(): void
+    {
+        $result = $this->analyzeRouteFiles(['routes/web.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', OrderController::class)->withoutMiddleware('auth', VerifyCsrfToken::class);
+Route::withoutMiddleware('auth', VerifyCsrfToken::class)->post('/refunds', RefundController::class);
+PHP]);
+
+        $this->assertPassed($result);
+    }
+
     // ==================== Router Roots Other Than Route:: ====================
 
     public function test_reads_web_group_opened_on_app_router(): void
@@ -3632,6 +3740,19 @@ PHP);
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertSame(8, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_only_the_first_group_callback_parameter_is_the_router(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('auth')->group(function ($routes, $client) {
+    $client->post('/hooks', ['event' => 'paid']);
+});
+PHP);
+
+        $this->assertPassed($result);
     }
 
     public function test_router_variable_captured_by_closure_and_arrow_function(): void
@@ -3823,6 +3944,19 @@ PHP);
 
         $this->assertFailed($result);
         $this->assertSame([3, 4, 7, 9], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_where_helpers_keep_the_chain_on_the_registrar(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->whereNumber('id')->middleware('auth')->post('/orders/{id}', [OrderController::class, 'update']);
+Route::middleware('web')->whereNumber('id')->post('/refunds/{id}', [RefundController::class, 'update']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([3], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
     public function test_later_registrar_middleware_call_replaces_web_on_routes_and_groups(): void

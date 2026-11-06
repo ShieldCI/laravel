@@ -25,10 +25,11 @@ use ShieldCI\Concerns\ResolvesClassNames;
  *   1. Files require'd/include'd from routes/web.php or routes/api.php
  *      (inherit that file's middleware group automatically)
  *   2. Files registered via Route::middleware('web|api')->...->group(base_path('...'))
- *      or Route::group(['middleware' => 'web|api'], base_path('...')), or require'd inside
- *      such a group's closure, in bootstrap/app.php's withRouting(then: ...) callback or
- *      in app/Providers/*.php. The middleware reaches the file from any enclosing group
- *      unless one excludes it, as Laravel merges group attributes
+ *      or Route::group(['middleware' => 'web|api'], base_path('...')), each file of a list
+ *      given in their place, or require'd inside such a group's closure, in
+ *      bootstrap/app.php's withRouting(then: ...) callback or in app/Providers/*.php.
+ *      The middleware reaches the file from any enclosing group unless one excludes
+ *      it, as Laravel merges group attributes
  *
  * It also exposes {@see self::getThrottledGroupLineRanges()} for the in-file case:
  * the line spans of throttled Route::...->group(Closure) blocks declared directly
@@ -209,8 +210,9 @@ class BootstrapRouteParser
      * Returns the line ranges of throttled Route::...->group(Closure) blocks
      * declared inside the given route file. Covers both the fluent form
      * (Route::middleware([...'throttle'...])->group(fn)) and the array form
-     * (Route::group(['middleware' => 'throttle...'], fn)), with the throttle
-     * variants {@see self::getThrottleProtectedRouteFiles()} matches, and is nesting-safe:
+     * (Route::group(['middleware' => 'throttle...'], fn)), one range for each closure a
+     * list passes, with the throttle variants
+     * {@see self::getThrottleProtectedRouteFiles()} matches, and is nesting-safe:
      * overlapping ranges are returned as-is, so a route line inside any range
      * is treated as covered. Path-argument groups (->group(base_path(...))) open
      * no closure and are intentionally ignored here.
@@ -256,27 +258,83 @@ class BootstrapRouteParser
      */
     private function collectThrottledGroupRange(array $args, bool $chainThrottled, array &$ranges): void
     {
-        $closure = $this->closureArgument($args);
-        if ($closure !== null && ($chainThrottled || $this->anyEntry($this->groupAttributeEntries($args, 'middleware'), $this->throttles->expressionIsThrottle(...)))) {
-            $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+        $closures = $this->closureArguments($args);
+        if ($closures !== [] && ($chainThrottled || $this->anyEntry($this->groupAttributeEntries($args, 'middleware'), $this->throttles->expressionIsThrottle(...)))) {
+            foreach ($closures as $closure) {
+                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+            }
         }
     }
 
     /**
-     * Returns the first Closure/ArrowFunction argument of a group() call, if any.
+     * The Closure/ArrowFunction callbacks a group() call loads, as {@see self::groupRoutes()}
+     * reads them, in argument order.
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     * @return list<Node\Expr\Closure|Node\Expr\ArrowFunction>
      */
-    public function closureArgument(array $args): ?Node
+    public function closureArguments(array $args): array
     {
+        return array_values(array_filter(
+            $this->groupRoutes($args),
+            fn (Node\Expr $entry): bool => $entry instanceof Node\Expr\Closure || $entry instanceof Node\Expr\ArrowFunction,
+        ));
+    }
+
+    /**
+     * What a group() call loads, as Router::group() reads its routes argument through
+     * Arr::wrap(): each item of a list, or the value itself. The routes argument is the one
+     * named routes: (Router::group()) or callback: (RouteRegistrar::group()), otherwise the
+     * last positional one, as Router::group() takes its attribute array first. The other
+     * arguments' values follow as they are, so an attribute array is never read as routes.
+     *
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     * @return list<Node\Expr>
+     */
+    public function groupRoutes(array $args): array
+    {
+        $routes = $this->routesArgument($args);
+        $entries = [];
         foreach ($args as $arg) {
-            if ($arg instanceof Node\Arg
-                && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
-                return $arg->value;
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+            if ($arg !== $routes || ! $arg->value instanceof Node\Expr\Array_) {
+                $entries[] = $arg->value;
+
+                continue;
+            }
+            foreach ($arg->value->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    $entries[] = $item->value;
+                }
             }
         }
 
-        return null;
+        return $entries;
+    }
+
+    /**
+     * The argument a group() call passes its routes in: the one named routes: or callback:,
+     * otherwise the last positional one.
+     *
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     */
+    private function routesArgument(array $args): ?Node\Arg
+    {
+        $positional = null;
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg) {
+                continue;
+            }
+            if ($arg->name === null) {
+                $positional = $arg;
+            } elseif (in_array($arg->name->toLowerString(), ['routes', 'callback'], true)) {
+                return $arg;
+            }
+        }
+
+        return $positional;
     }
 
     /**
@@ -606,7 +664,8 @@ class BootstrapRouteParser
     /**
      * Route files the groups in $source load, each with the group calls it inherits
      * middleware from, outermost first: a path argument, ->group(base_path('...')) or
-     * ->group(__DIR__.'/...'), which Router::loadRoutes() requires, or a file
+     * ->group(__DIR__.'/...'), which Router::loadRoutes() requires, each such path in a
+     * list read as {@see self::groupRoutes()} reads it, or a file
      * require'd/include'd inside a group's closure, at any depth of nested groups. Each
      * file is read once, with class names resolved for matching.
      *
@@ -642,12 +701,12 @@ class BootstrapRouteParser
 
         if ($this->isGroupCall($node)) {
             $inner = [...$groups, $node];
-            foreach ($node->args as $arg) {
-                $path = $arg instanceof Node\Arg ? $this->groupRouteFile($arg->value, $dir) : null;
+            foreach ($this->groupRoutes($node->args) as $entry) {
+                $path = $this->groupRouteFile($entry, $dir);
                 if ($path !== null) {
                     $found[] = ['file' => $path, 'calls' => $inner];
-                } elseif ($arg instanceof Node\Arg) {
-                    $this->collectGroupRegistrations($arg->value, $inner, $dir, $found);
+                } else {
+                    $this->collectGroupRegistrations($entry, $inner, $dir, $found);
                 }
             }
             $children = [$node instanceof MethodCall ? $node->var : $node->class];

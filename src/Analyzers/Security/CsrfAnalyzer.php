@@ -1247,19 +1247,20 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $args = $calls['group'][0]->args;
             $state = ['web' => $web, 'strips' => $strips];
 
-            // A variable callback opens the closure assigned to it last before this call, as PHP reads it
-            $closure = $routeParser->closureArgument($args);
-            $variable = $this->variableArgument($args);
-            $closureId = match (true) {
-                $closure !== null => spl_object_id($closure),
-                $variable !== null => $walk['variables'][$variable] ?? null,
-                default => null,
-            };
-            if ($closureId !== null) {
-                $walk['groups'][$closureId] = [
-                    'web' => $state['web'] || ($walk['groups'][$closureId]['web'] ?? false),
-                    'strips' => $state['strips'] || ($walk['groups'][$closureId]['strips'] ?? false),
-                ];
+            // Each callback the group loads, including each item of a list, opens its closure; a
+            // variable callback opens the closure assigned to it last before this call, as PHP reads it
+            foreach ($routeParser->groupRoutes($args) as $callback) {
+                $closureId = match (true) {
+                    $callback instanceof Expr\Closure, $callback instanceof Expr\ArrowFunction => spl_object_id($callback),
+                    $callback instanceof Expr\Variable && is_string($callback->name) => $walk['variables'][$callback->name] ?? null,
+                    default => null,
+                };
+                if ($closureId !== null) {
+                    $walk['groups'][$closureId] = [
+                        'web' => $state['web'] || ($walk['groups'][$closureId]['web'] ?? false),
+                        'strips' => $state['strips'] || ($walk['groups'][$closureId]['strips'] ?? false),
+                    ];
+                }
             }
 
             return;
@@ -1526,22 +1527,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function namesCarryCsrf(array $names): bool
     {
         return in_array('web', $names, true) || $this->csrfMiddlewareInList($names) !== null;
-    }
-
-    /**
-     * The name of the first variable a group is given as its callback, or null.
-     *
-     * @param  array<Node>  $args
-     */
-    private function variableArgument(array $args): ?string
-    {
-        foreach ($args as $arg) {
-            if ($arg instanceof Node\Arg && $arg->value instanceof Expr\Variable && is_string($arg->value->name)) {
-                return $arg->value->name;
-            }
-        }
-
-        return null;
     }
 
     /**

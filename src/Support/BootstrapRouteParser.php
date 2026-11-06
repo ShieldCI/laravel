@@ -283,11 +283,13 @@ class BootstrapRouteParser
     }
 
     /**
-     * What a group() call loads, as Router::group() reads its routes argument through
-     * Arr::wrap(): each item of a list, or the value itself. The routes argument is the one
-     * named routes: (Router::group()) or callback: (RouteRegistrar::group()), otherwise the
-     * last positional one, as Router::group() takes its attribute array first. The other
-     * arguments' values follow as they are, so an attribute array is never read as routes.
+     * The values a group() call is given, with its routes argument read as Router::group()
+     * reads it through Arr::wrap(): each item of a list, or the value itself. The routes
+     * argument is the one named routes: (Router::group()) or callback:
+     * (RouteRegistrar::group()), otherwise the last positional one, as Router::group()
+     * takes its attribute array first and RouteRegistrar::group() takes only the routes.
+     * The other arguments' values follow as they are, so an attribute array is never read
+     * as routes; callers find no route file or closure in it.
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return list<Node\Expr>

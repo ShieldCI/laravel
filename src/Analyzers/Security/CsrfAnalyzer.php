@@ -43,9 +43,10 @@ use ShieldCI\Support\BootstrapRouteParser;
  *
  * @phpstan-type RouteWalk array{
  *     routes: list<array{line: int, method: string, web: bool, strips: bool, closures: list<int>}>,
- *     groups: array<int, array{web: bool, strips: bool}>,
+ *     groups: array<int, array{web: bool, strips: bool, closures: list<int>}>,
  *     variables: array<string, int>,
  *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
+ *     paths: list<array{path: Expr, web: bool, strips: bool, closures: list<int>}>,
  *     routers: array<int, array<string, true>>,
  *     callbacks: array<int, true>,
  *     late: bool,
@@ -1099,30 +1100,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
         }
 
-        // The files each route file loads: what it requires, read by the walk, and what a
-        // group() path argument in it registers
+        // The files each route file loads, by a require or a group() path argument, as the walk reads them
         $loads = array_map(fn (array $entry): array => $entry['walk']['includes'], $walks);
 
         // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
         // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
-        // either, however else it loads. A group in a route file loads it like a require there
+        // either, however else it loads. Groups in route files are read by the walk
         $stripped = [];
         $loaded = $covered + $api;
-        $realBase = realpath($this->getBasePath());
-        $routesDir = str_replace('\\', '/', $realBase !== false ? $realBase : $this->getBasePath()).'/routes/';
-        foreach ($routeParser->getGroupRegisteredRouteFiles() as $registration) {
+        foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
-            $real = realpath($registration['source']);
-            $source = str_replace('\\', '/', $real !== false ? $real : $registration['source']);
-
-            if (str_starts_with($source, $routesDir)) {
-                if (isset($walks[$source])) {
-                    $loads[$source][] = ['file' => $registration['file'], 'web' => $state['web'], 'strips' => $state['strips']];
-                }
-
-                continue;
-            }
-
             $loaded[$registration['file']] = true;
             if ($state['strips']) {
                 $stripped[$registration['file']] = true;
@@ -1250,7 +1237,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $callbacks = [];
         do {
             /** @var RouteWalk $walk */
-            $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'routers' => [], 'callbacks' => $callbacks, 'late' => false];
+            $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'paths' => [], 'routers' => [], 'callbacks' => $callbacks, 'late' => false];
             foreach ($ast as $node) {
                 $this->walkRouteNode($node, [], 0, $walk, $routeParser);
             }
@@ -1272,6 +1259,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $includes[] = ['file' => $path, 'web' => $web, 'strips' => $strips];
             }
         }
+        foreach ($walk['paths'] as $load) {
+            $path = $routeParser->groupRouteFile($load['path'], dirname($file));
+            if ($path !== null) {
+                [$web, $strips] = $this->groupsReaching($load['closures'], $groups, $load['web'], $load['strips']);
+                $includes[] = ['file' => $path, 'web' => $web, 'strips' => $strips];
+            }
+        }
 
         return ['routes' => $routes, 'includes' => $includes];
     }
@@ -1280,16 +1274,26 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * Whether 'web' reaches a node, and whether the CSRF middleware is excluded from it,
      * given its own chain's state and the closures enclosing it. Laravel merges a group's
      * middleware and excluded middleware into every route inside it, and excluding wins.
+     * A group callback is also reached by the closures around the group() call that runs
+     * it, which differ from its own when it is passed through a variable.
      *
      * @param  list<int>  $closures
-     * @param  array<int, array{web: bool, strips: bool}>  $groups
+     * @param  array<int, array{web: bool, strips: bool, closures: list<int>}>  $groups
      * @return array{bool, bool}
      */
     private function groupsReaching(array $closures, array $groups, bool $web, bool $strips): array
     {
-        foreach ($closures as $closure) {
-            $web = $web || ($groups[$closure]['web'] ?? false);
-            $strips = $strips || ($groups[$closure]['strips'] ?? false);
+        $seen = [];
+        while ($closures !== []) {
+            $closure = array_pop($closures);
+            if (isset($seen[$closure]) || ! isset($groups[$closure])) {
+                continue;
+            }
+            $seen[$closure] = true;
+
+            $web = $web || $groups[$closure]['web'];
+            $strips = $strips || $groups[$closure]['strips'];
+            $closures = [...$closures, ...$groups[$closure]['closures']];
         }
 
         return [$web, $strips];
@@ -1555,10 +1559,19 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             if ($closureId !== null) {
                 // The variable's closure was walked before its first parameter was known as the router
                 $walk['late'] = $walk['late'] || ($closure === null && ! isset($walk['callbacks'][$closureId]));
+                // The closures around this call reach the callback too, wherever it was written
                 $walk['groups'][$closureId] = [
                     'web' => $state['web'] || ($walk['groups'][$closureId]['web'] ?? false),
                     'strips' => $state['strips'] || ($walk['groups'][$closureId]['strips'] ?? false),
+                    'closures' => [...($walk['groups'][$closureId]['closures'] ?? []), ...$closures],
                 ];
+            }
+
+            // A path argument is a route file Router::loadRoutes() requires inside this group
+            foreach ($args as $arg) {
+                if ($arg instanceof Node\Arg && $arg->value !== $closure) {
+                    $walk['paths'][] = ['path' => $arg->value, 'web' => $state['web'], 'strips' => $state['strips'], 'closures' => $closures];
+                }
             }
 
             return;

@@ -3725,6 +3725,54 @@ PHP,
         $this->assertStringEndsWith('admin-users.php', (string) $result->getIssues()[0]->location?->file);
     }
 
+    public function test_group_path_in_a_variable_callback_is_reached_by_the_group_running_it(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+$hooks = function () {
+    Route::group([], base_path('routes/hooks.php'));
+};
+Route::withoutMiddleware('web')->group($hooks);
+PHP,
+            'routes/hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+            'routes/portal.php' => <<<'PHP'
+<?php
+
+$portal = function () {
+    Route::group([], base_path('routes/portal-web.php'));
+};
+Route::middleware('web')->group($portal);
+PHP,
+            'routes/portal-web.php' => "<?php\n\nRoute::post('/portal', PortalController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('hooks.php', (string) $result->getIssues()[0]->location?->file);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_file_the_api_routes_load_under_web_strips_what_it_requires_outside_web(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => "<?php\n\nRoute::middleware('web')->group(base_path('routes/portal.php'));\n",
+            'routes/portal.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(function () {
+    require __DIR__.'/portal-hooks.php';
+});
+PHP,
+            'routes/portal-hooks.php' => "<?php\n\nRoute::post('/portal/hooks', HookController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('portal-hooks.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
     // ==================== Router Roots Other Than Route:: ====================
 
     public function test_reads_web_group_opened_on_app_router(): void
@@ -3837,6 +3885,23 @@ PHP);
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertSame(8, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_variable_group_callback_is_reached_by_groups_around_the_call_running_it(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$billing = function ($routes) {
+    $routes->post('/invoices', [InvoiceController::class, 'store']);
+};
+
+Route::middleware('web')->group(function () use ($billing) {
+    Route::prefix('billing')->group($billing);
+});
+PHP);
+
+        $this->assertPassed($result);
     }
 
     public function test_only_the_first_group_callback_parameter_is_the_router(): void

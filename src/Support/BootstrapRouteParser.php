@@ -672,7 +672,7 @@ class BootstrapRouteParser
      * base_path('...'), or null. A bare string is not read: Router::loadRoutes()
      * requires it from the include path, not the declaring file's directory.
      */
-    private function groupRouteFile(Node\Expr $expr, string $dir): ?string
+    public function groupRouteFile(Node\Expr $expr, string $dir): ?string
     {
         $path = $expr instanceof String_ ? null : $this->resolveWithRoutingPath($expr, $dir);
         $normalized = $path === null ? null : $this->normalizePath($path);

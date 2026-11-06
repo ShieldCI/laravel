@@ -536,7 +536,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $commentedEntry = '/^\s*\/\/\s*[\'"]?\\\\?(?:\w+\\\\)*('.implode('|', self::CSRF_MIDDLEWARE).')(?:::class|[\'"])/';
         $commentedOut = [];
 
-        foreach (FileParser::getLines($kernelFile) as $lineNumber => $line) {
+        // A commented-out entry is a leftover, not a gap, while an active entry runs CSRF on web routes
+        $lines = $this->kernelRunsCsrfOnWebRoutes($kernelFile) ? [] : FileParser::getLines($kernelFile);
+
+        foreach ($lines as $lineNumber => $line) {
             if (! is_string($line) || preg_match($commentedEntry, $line, $matches) !== 1) {
                 continue;
             }
@@ -575,6 +578,102 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         array_push($issues, ...$commentedOut);
+    }
+
+    /**
+     * Whether the Kernel's global $middleware or its web group lists CSRF middleware on an active
+     * entry. A web group entry naming an alias or another group is followed, as Laravel resolves
+     * it. $middlewarePriority only orders middleware and an alias applies only where a route or
+     * group names it, so neither counts on its own. A list that cannot be read counts only for
+     * what it shows.
+     */
+    private function kernelRunsCsrfOnWebRoutes(string $kernelFile): bool
+    {
+        $global = null;
+        $groups = [];
+        $aliases = [];
+        $routeMiddleware = [];
+
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
+
+        foreach ($this->parser->findNodes($ast, Stmt\Class_::class) as $class) {
+            // Only the Kernel class counts, not an anonymous or helper class elsewhere in the file
+            if (! $class instanceof Stmt\Class_ || $class->name?->toString() !== 'Kernel') {
+                continue;
+            }
+
+            foreach ($class->getProperties() as $property) {
+                foreach ($property->props as $prop) {
+                    match ($prop->name->toString()) {
+                        'middleware' => $global = $prop->default,
+                        'middlewareGroups' => $groups = $this->keyedEntries($prop->default),
+                        'middlewareAliases' => $aliases = $this->keyedEntries($prop->default),
+                        'routeMiddleware' => $routeMiddleware = $this->keyedEntries($prop->default),
+                        default => null,
+                    };
+                }
+            }
+        }
+
+        // Laravel 10 registers both alias properties, $middlewareAliases winning a shared key
+        $aliases = array_merge($routeMiddleware, $aliases);
+
+        return $this->kernelListRunsCsrf($global, [], [], [])
+            || $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, ['web' => true]);
+    }
+
+    /**
+     * The string-keyed entries of an array property's default value.
+     *
+     * @return array<string, Expr>
+     */
+    private function keyedEntries(?Expr $default): array
+    {
+        $entries = [];
+
+        foreach ($default instanceof Expr\Array_ ? $default->items : [] as $item) {
+            if ($item instanceof ArrayItem && $item->key instanceof String_) {
+                $entries[$item->key->value] = $item->value;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
+     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. As Laravel
+     * resolves an entry, a group name comes first, then an alias, and only then a class name;
+     * a group is never followed back into itself.
+     *
+     * @param  array<string, Expr>  $groups
+     * @param  array<string, Expr>  $aliases
+     * @param  array<string, true>  $seen
+     */
+    private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, array $seen): bool
+    {
+        foreach ($this->middlewareList($list) ?? [] as $entry) {
+            if ($entry === null) {
+                continue;
+            }
+
+            $name = explode(':', $entry, 2)[0];
+
+            if (isset($groups[$entry])) {
+                $runsCsrf = ! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true]);
+            } elseif (isset($aliases[$name])) {
+                $runsCsrf = $this->kernelListRunsCsrf($aliases[$name], [], [], $seen);
+            } else {
+                // Case-sensitive, as the registration check's text match is
+                $runsCsrf = in_array(substr((string) strrchr('\\'.$name, '\\'), 1), self::CSRF_MIDDLEWARE, true);
+            }
+
+            if ($runsCsrf) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -34,9 +34,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether a class throttles login, keyed by fully qualified name and the method
-     * judged (see classThrottlesLogin()), for this run.
+     * judged (see classThrottleVerdict()), for this run; null when it cannot be read.
      *
-     * @var array<string, bool>
+     * @var array<string, bool|null>
      */
     private array $throttlingClasses = [];
 
@@ -1246,6 +1246,15 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Whether a class throttles login (see classThrottleVerdict()). A class this run
+     * cannot read does not.
+     */
+    private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
+    {
+        return $this->classThrottleVerdict($fqn, $method, $middlewareOnly) === true;
+    }
+
+    /**
      * Whether an App\ class throttles login: its file has login throttling, it uses
      * AuthenticatesUsers or ThrottlesLogins, one of its methods delegates to a
      * throttling FormRequest, or a class it reaches does: the middleware it
@@ -1259,10 +1268,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * middleware they register still runs. Without one, as for a middleware class or
      * a route that names no method, any of its methods and middleware count.
      *
+     * Null when nothing credits the class and this run cannot read all of it: it is
+     * outside App\, its file is missing or does not declare it (as one that does not
+     * parse), or a trait it uses or the class it extends cannot be read.
+     *
      * @param  bool  $middlewareOnly  Credit only registered middleware: the class's
      *                                method is overridden by the class that reached it
      */
-    private function classThrottlesLogin(string $fqn, ?string $method = null, bool $middlewareOnly = false): bool
+    private function classThrottleVerdict(string $fqn, ?string $method = null, bool $middlewareOnly = false): ?bool
     {
         // The framework's own throttle middleware, which 'throttle' names
         if (in_array($fqn, MiddlewareThrottleDetector::THROTTLE_MIDDLEWARE, true)) {
@@ -1271,7 +1284,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         $method = $method === null ? null : strtolower($method);
         $key = $fqn.'::'.($method ?? '*').($middlewareOnly ? ':middleware' : '');
-        if (isset($this->throttlingClasses[$key])) {
+        if (array_key_exists($key, $this->throttlingClasses)) {
             return $this->throttlingClasses[$key];
         }
 
@@ -1280,7 +1293,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         $path = $this->appClassPath($fqn);
         if ($path === null) {
-            return false;
+            return $this->throttlingClasses[$key] = null;
         }
 
         $facts = $this->classFacts($path, $fqn);
@@ -1311,13 +1324,20 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             return $this->throttlingClasses[$key] = true;
         }
 
+        // A file that does not declare the class says nothing about it, and a trait or
+        // parent that cannot be read leaves what it adds unknown
+        $verdict = $facts['found'] ? false : null;
         foreach ($facts['inherited'] as $class) {
-            if ($this->classThrottlesLogin($class, $method, $middlewareOnly || $declared)) {
+            $inherited = $this->classThrottleVerdict($class, $method, $middlewareOnly || $declared);
+            if ($inherited === true) {
                 return $this->throttlingClasses[$key] = true;
+            }
+            if ($inherited === null) {
+                $verdict = null;
             }
         }
 
-        return false;
+        return $this->throttlingClasses[$key] = $verdict;
     }
 
     /**
@@ -1325,15 +1345,16 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * methods, those of them that delegate to a throttling FormRequest, the
      * middleware it registers on itself (in a constructor, $this->middleware(...),
      * or through HasMiddleware's static middleware()), and the traits it uses and
-     * the class it extends. Method names are lowercased.
+     * the class it extends. Method names are lowercased. found says whether the file
+     * declares the class at all; one that does not parse declares nothing.
      *
-     * @return array{methods: array<string, true>, delegating: array<string, true>, middleware: array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>, inherited: array<int, string>}
+     * @return array{found: bool, methods: array<string, true>, delegating: array<string, true>, middleware: array<int, array{class: string, only: array<int, string>|null, except: array<int, string>}>, inherited: array<int, string>}
      */
     private function classFacts(string $path, string $fqn): array
     {
         $ast = $this->parser->parseFile($path);
         $shortName = substr($fqn, (int) strrpos($fqn, '\\') + 1);
-        $facts = ['methods' => [], 'delegating' => [], 'middleware' => [], 'inherited' => []];
+        $facts = ['found' => false, 'methods' => [], 'delegating' => [], 'middleware' => [], 'inherited' => []];
 
         // Names in the class resolve against its own imports. The caller's table is
         // put back afterwards: a route file's remaining routes are still read with it.
@@ -1346,6 +1367,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            $facts['found'] = true;
             foreach ($class->getMethods() as $classMethod) {
                 $name = $classMethod->name->toLowerString();
                 $facts['methods'][$name] = true;
@@ -1542,8 +1564,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * import table: X::class, X::class.':5,1', a class-name string, an alias
      * string ('signin.cap:5,1'), or a list of any of these.
      * 'throttle' resolves to the framework's ThrottleRequests unless the app
-     * registers it; any other name that resolves to no class (a built-in alias
-     * like 'auth' that the app does not register) is dropped.
+     * registers a class this run can read; any other name that resolves to no
+     * class (a built-in alias like 'auth' that the app does not register) is dropped.
      *
      * @return array<int, string>
      */
@@ -1599,7 +1621,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * The middleware classes a middleware name resolves to, as Laravel's
      * MiddlewareNameResolver does: a class name, a group the app defines (its
      * entries resolved in turn), or an alias. 'throttle' resolves to the
-     * framework's ThrottleRequests unless the app registers it.
+     * framework's ThrottleRequests unless the app registers a class this run can
+     * read.
      *
      * @param  array<string, true>  $expanding  Groups being expanded, so a group naming itself ends
      * @return array<int, string>
@@ -1629,7 +1652,14 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         if (isset($this->middlewareAliases[$name])) {
-            return [$this->middlewareAliases[$name]];
+            $class = $this->middlewareAliases[$name];
+
+            // Re-registering 'throttle' is deliberate, so a class this run cannot read,
+            // such as a package's, keeps the framework's verdict: only one read as not
+            // throttling replaces it.
+            return $name === 'throttle' && $this->classThrottleVerdict($class) === null
+                ? [MiddlewareThrottleDetector::THROTTLE_MIDDLEWARE[0]]
+                : [$class];
         }
 
         // Laravel registers 'throttle' itself, so an app need not

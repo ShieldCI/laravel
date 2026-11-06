@@ -1090,7 +1090,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $walks = [];
         $covered = array_fill_keys($webProtectedFiles, true);
         // routes/api.php and files registered under 'api' use token authentication, not CSRF
-        // cookies, and so does any file they load outside a web group
+        // cookies, and so does any file they load where neither 'web' nor a CSRF class reaches
         $api = array_fill_keys($apiRegisteredFiles, true);
 
         foreach ($routeFiles as $file) {
@@ -1143,7 +1143,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         $loaded[$file] = true;
                     }
 
-                    if (isset($api[$path]) && ! $include['web'] && ! isset($api[$file])) {
+                    if (isset($api[$path]) && ! $include['reached'] && ! isset($api[$file])) {
                         $changed = true;
                         $api[$file] = true;
                     }
@@ -1160,8 +1160,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         } while ($changed);
 
         foreach ($walks as $path => $entry) {
-            // A file the api routes load is skipped unless something also loads it under 'web'
-            if (isset($api[$path]) && ! isset($covered[$path])) {
+            // A file the api routes load is skipped unless something also loads it under 'web',
+            // or loads it through a group that strips CSRF from it
+            if (isset($api[$path]) && ! isset($covered[$path]) && ! isset($stripped[$path])) {
                 continue;
             }
 
@@ -1232,11 +1233,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Walk a route file once and resolve what reaches each route: its state-changing routes,
-     * each with whether 'web' reaches it and whether the CSRF middleware is excluded from it,
-     * and the files it loads by a require or a group() path argument, each with what reaches
-     * the require or the group.
+     * each with the CSRF state of its chain and every group around it, and the files it loads
+     * by a require or a group() path argument, each with the flags csrfFlags() hands them.
      *
-     * @return array{routes: list<array{line: int, method: string, state: CsrfState}>, includes: list<array{file: string, web: bool, strips: bool}>}
+     * @return array{routes: list<array{line: int, method: string, state: CsrfState}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool}>}
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
@@ -1282,11 +1282,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether 'web' reaches a node, and whether the CSRF middleware is excluded from it,
-     * given its own chain's state and the closures enclosing it. Laravel merges a group's
-     * middleware and excluded middleware into every route inside it, and excluding wins.
-     * A group callback is also reached by the closures around the group() call that runs
-     * it, which differ from its own when it is passed through a variable.
+     * The CSRF state that reaches a node: its own chain's, merged with that of every group
+     * whose closure encloses it, as Laravel merges a group's middleware and excluded middleware
+     * into every route inside it. csrfRuns() then judges the result. A group callback is also
+     * reached by the closures around the group() call that runs it, which differ from its own
+     * when it is passed through a variable.
      *
      * @param  list<int>  $closures
      * @param  array<int, array{state: CsrfState, closures: list<int>}>  $groups
@@ -1329,7 +1329,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Whether a CSRF check still runs on a route: the web group's, when 'web' reaches it and
      * the exclusions do not remove every CSRF entry it holds, or a CSRF class applied directly
-     * that no exclusion names, by itself or a class it extends.
+     * that no exclusion names, by itself or a class it extends. Excluding 'web' excludes the
+     * group's members, as Router::resolveMiddleware() resolves it, so it also removes a class
+     * applied directly that is or extends the group's CSRF middleware.
      *
      * @param  list<string>  $applied
      * @param  list<string|null>  $excluded
@@ -1341,6 +1343,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         $names = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($excluded, is_string(...)));
+        if (in_array('web', $names, true)) {
+            $names = [...$names, ...($this->webGroupCsrf ?? [$this->defaultWebCsrfMiddleware()])];
+        }
         foreach ($applied as $class) {
             if (array_intersect($this->csrfAncestors($class), $names) === []) {
                 return true;
@@ -1352,16 +1357,19 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * What a group or registration hands the file it loads: 'web' when a CSRF check runs there,
-     * and strips when an exclusion removes the web group's CSRF from everything inside it.
+     * strips when an exclusion removes the web group's CSRF from everything inside it, and
+     * reached when 'web' or a CSRF class is applied at all, so the load is a web load even
+     * when the check is then excluded.
      *
      * @param  CsrfState  $state
-     * @return array{web: bool, strips: bool}
+     * @return array{web: bool, strips: bool, reached: bool}
      */
     private function csrfFlags(array $state): array
     {
         return [
             'web' => $this->csrfRuns($state['group'], $state['applied'], $state['excluded']),
             'strips' => $this->namesStripCsrf($state['excluded']),
+            'reached' => $state['group'] || $state['applied'] !== [],
         ];
     }
 
@@ -1684,9 +1692,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a chain applies 'web' or the CSRF middleware, and whether it excludes either:
-     * through ->middleware(...) and ->withoutMiddleware(...) and, on a group, its
-     * 'middleware' and 'excluded_middleware' attributes.
+     * The CSRF state of a chain: whether it applies 'web', the CSRF classes it applies, and
+     * what it excludes, through ->middleware(...) and ->withoutMiddleware(...) and, on a group,
+     * its 'middleware' and 'excluded_middleware' attributes.
      *
      * Calls before the route or group is registered set RouteRegistrar attributes, where each
      * middleware() call replaces the last; after it, a route's middleware() calls add up.
@@ -1745,8 +1753,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether the groups a route file is loaded through, outermost first, apply 'web' or
-     * the CSRF middleware to it, and whether one excludes either.
+     * The CSRF state the groups a route file is loaded through, outermost first, hand it,
+     * merged as chainCsrfState() reads each.
      *
      * @param  non-empty-list<Expr\MethodCall|Expr\StaticCall>  $groups
      * @return CsrfState
@@ -1794,9 +1802,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * What a resource or singleton registration applies, as Laravel's pending registrations and
-     * ResourceRegistrar read it: whether it keeps any write method, whether 'web' reaches every
-     * kept write through its own middleware, and whether 'web' or the CSRF middleware is
-     * excluded from any of them.
+     * ResourceRegistrar read it: whether it keeps any write method, and the CSRF state of its
+     * kept writes, holding 'web' and the CSRF classes when every kept write applies them, and
+     * what any of them excludes.
      *
      * A resource writes through store, update and destroy, and a singleton through update, plus
      * store and destroy when creatable or destroy when destroyable. apiResource() and

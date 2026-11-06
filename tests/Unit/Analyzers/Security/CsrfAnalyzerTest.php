@@ -3422,6 +3422,55 @@ PHP,
         $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
     }
 
+    public function test_csrf_class_a_covered_route_applies_survives_an_exclusion_of_the_web_group_class(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(function ($middleware) {
+        $middleware->group('web', [ValidateCsrfToken::class]);
+    })
+    ->create();
+PHP,
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+
+// The route's own VerifyCsrfToken is not a ValidateCsrfToken, so it still checks the token
+Route::post('/orders', OrderController::class)
+    ->middleware(VerifyCsrfToken::class)
+    ->withoutMiddleware(ValidateCsrfToken::class);
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_excluding_web_removes_a_csrf_class_that_extends_the_web_group_csrf_middleware(): void
+    {
+        // Router::resolveMiddleware() expands an excluded 'web' to the group's members
+        $files = ['app/Http/Middleware/VerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"];
+        $route = "<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class)->withoutMiddleware('web');\n";
+
+        $result = $this->analyzeRouteFiles([...$files, 'routes/partner.php' => $route]);
+
+        // The application class extends PreventRequestForgery, the default group's, only on Laravel 13
+        if (version_compare(app()->version(), '13.0.0', '>=')) {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
     public function test_exclusion_from_a_web_group_without_csrf_middleware_removes_nothing(): void
     {
         // The redefined group is reported in bootstrap/app.php; the route has nothing left to lose
@@ -3714,6 +3763,43 @@ PHP,
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
+    }
+
+    public function test_file_the_api_routes_load_through_a_stripping_web_group_is_reported(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::middleware('web')->withoutMiddleware('web')->group(base_path('routes/spa.php'));
+Route::middleware('web')->withoutMiddleware(VerifyCsrfToken::class)->group(function () {
+    require __DIR__.'/spa-admin.php';
+});
+PHP,
+            'routes/spa.php' => "<?php\n\nRoute::post('/spa/orders', [OrderController::class, 'store']);\n",
+            'routes/spa-admin.php' => "<?php\n\nRoute::post('/spa/users', [UserController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_file_the_api_routes_load_where_a_csrf_class_is_applied_is_not_api(): void
+    {
+        // On Laravel 13 excluding the class it applies leaves the group no CSRF, yet the load is
+        // not an api load: the file is judged on its own routes
+        $this->skipUnlessDefaultWebGroupOf(13);
+
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => "<?php\n\nuse Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken;\n\nRoute::middleware(ValidateCsrfToken::class)->withoutMiddleware(ValidateCsrfToken::class)->group(base_path('routes/spa.php'));\n",
+            'routes/spa.php' => "<?php\n\nRoute::post('/spa/orders', [OrderController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
     }
 
     public function test_file_web_php_loads_through_a_group_path_is_covered(): void

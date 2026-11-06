@@ -3317,7 +3317,31 @@ PHP,
             'web(remove:)' => ['$middleware->web(remove: $extra);'],
             'appendToGroup()' => ["\$middleware->appendToGroup('web', \$extra);"],
             'removeFromGroup()' => ["\$middleware->removeFromGroup('web', \$extra);"],
+            'web(replace:)' => ['$middleware->web(replace: $map);'],
+            'a replace key' => ['$middleware->web(replace: [$search => \\App\\Http\\Middleware\\VerifyCsrfToken::class]);'],
+            'replaceInGroup()' => ["\$middleware->replaceInGroup('web', \$search, \\App\\Http\\Middleware\\VerifyCsrfToken::class);"],
         ];
+    }
+
+    public function test_web_group_configured_outside_a_closure_falls_back_to_the_assumed_csrf_class(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use App\Http\ConfigureMiddleware;
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(new ConfigureMiddleware)
+    ->create();
+PHP,
+            'routes/web.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->withoutMiddleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
     }
 
     public function test_csrf_middleware_appended_to_the_web_group_counts(): void
@@ -3626,6 +3650,79 @@ Route::withoutMiddleware('auth', VerifyCsrfToken::class)->post('/refunds', Refun
 PHP]);
 
         $this->assertPassed($result);
+    }
+
+    public function test_reads_bootstrap_registrations_when_the_project_path_contains_a_routes_directory(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/shop/bootstrap/app.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            Route::middleware('web')->withoutMiddleware('web')->group(base_path('routes/partner.php'));
+        },
+    )
+    ->create();
+PHP,
+            'routes/shop/routes/partner.php' => "<?php\n\nRoute::post('/orders', [OrderController::class, 'store']);\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir.'/routes/shop');
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_file_api_php_requires_inside_a_web_group_is_covered_not_skipped(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => <<<'PHP'
+<?php
+
+Route::middleware('web')->group(function () {
+    require __DIR__.'/portal.php';
+});
+PHP,
+            'routes/portal.php' => <<<'PHP'
+<?php
+
+Route::post('/portal/messages', [MessageController::class, 'store']);
+Route::post('/portal/hooks', HookController::class)->withoutMiddleware('web');
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
+    }
+
+    public function test_route_file_group_on_the_container_router_reads_its_registrar_middleware(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/admin.php' => <<<'PHP'
+<?php
+
+app()->make('router')->middleware('web')->middleware('auth')->group(function () {
+    require __DIR__.'/admin-users.php';
+});
+PHP,
+            'routes/admin-users.php' => "<?php\n\nRoute::post('/users', [UserController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('admin-users.php', (string) $result->getIssues()[0]->location?->file);
     }
 
     // ==================== Router Roots Other Than Route:: ====================

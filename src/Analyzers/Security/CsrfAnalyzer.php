@@ -655,10 +655,22 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function checkBootstrapApp(string $file, array &$issues): void
     {
-        $calls = $this->configuratorCalls($this->parser, $this->resolveNamesForMatching($this->parser->parseFile($file)));
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($file));
+        $calls = $this->configuratorCalls($this->parser, $ast);
+
+        // withMiddleware() given anything but a closure configures the group out of sight
+        $opaque = false;
+        foreach ($this->parser->findNodes($ast, Expr\MethodCall::class) as $call) {
+            if ($call instanceof Expr\MethodCall && $call->name instanceof Identifier
+                && $call->name->toLowerString() === 'withmiddleware'
+                && ($argument = $this->callArgument($call, 0, 'callback')) !== null
+                && ! $argument instanceof Expr\Closure && ! $argument instanceof Expr\ArrowFunction) {
+                $opaque = true;
+            }
+        }
 
         $this->checkBootstrapCsrfExceptions($calls, $file, $issues);
-        $this->checkWebGroupInBootstrap($calls, $file, $issues);
+        $this->checkWebGroupInBootstrap($calls, $file, $issues, $opaque);
     }
 
     /**
@@ -743,8 +755,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * @param  list<Expr\MethodCall>  $calls
      * @param  array<int, Issue>  &$issues
+     * @param  bool  $opaque  Whether withMiddleware() is given something other than a closure
      */
-    private function checkWebGroupInBootstrap(array $calls, string $file, array &$issues): void
+    private function checkWebGroupInBootstrap(array $calls, string $file, array &$issues, bool $opaque): void
     {
         /** @var array{entries: list<string|null>, line: int}|null $group */
         $group = null;
@@ -754,8 +767,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $removals = [];
         /** @var list<string|null> $additions */
         $additions = [];
-        // An append, prepend or removal list that cannot be read leaves the group unknown
-        $unreadable = false;
+        // An append, prepend, removal or replacement that cannot be read leaves the group unknown,
+        // and so does a withMiddleware() not given a closure, whose calls are not read at all
+        $unreadable = $opaque;
 
         foreach ($calls as $call) {
             if (! $call->name instanceof Identifier) {
@@ -777,11 +791,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $additions = array_merge($additions, $lists[1] ?? [], $lists[2] ?? []);
 
                 $replace = $this->callArgument($call, 3, 'replace');
+                $unreadable = $unreadable || ($replace !== null && ! $replace instanceof Expr\Array_);
                 foreach ($replace instanceof Expr\Array_ ? $replace->items : [] as $item) {
                     $search = $item instanceof ArrayItem && $item->key !== null ? $this->middlewareName($item->key) : null;
 
                     if ($item instanceof ArrayItem && $search !== null) {
                         $replacements[$search] = [$this->middlewareName($item->value), $line];
+                    } else {
+                        $unreadable = true;
                     }
                 }
             } elseif ($this->isWebGroupName($this->callArgument($call, 0, 'group'))) {
@@ -809,6 +826,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                         if ($search !== null) {
                             $replacements[$search] = [$this->middlewareName($this->callArgument($call, 2, 'replace')), $line];
+                        } else {
+                            $unreadable = true;
                         }
                         break;
                 }
@@ -1089,12 +1108,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // either, however else it loads. A group in a route file loads it like a require there
         $stripped = [];
         $loaded = $covered + $api;
+        $realBase = realpath($this->getBasePath());
+        $routesDir = str_replace('\\', '/', $realBase !== false ? $realBase : $this->getBasePath()).'/routes/';
         foreach ($routeParser->getGroupRegisteredRouteFiles() as $registration) {
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
             $real = realpath($registration['source']);
             $source = str_replace('\\', '/', $real !== false ? $real : $registration['source']);
 
-            if (str_contains($source, '/routes/')) {
+            if (str_starts_with($source, $routesDir)) {
                 if (isset($walks[$source])) {
                     $loads[$source][] = ['file' => $registration['file'], 'web' => $state['web'], 'strips' => $state['strips']];
                 }
@@ -1143,7 +1164,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         } while ($changed);
 
         foreach ($walks as $path => $entry) {
-            if (isset($api[$path])) {
+            // A file the api routes load is skipped unless something also loads it under 'web'
+            if (isset($api[$path]) && ! isset($covered[$path])) {
                 continue;
             }
 
@@ -1406,10 +1428,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return $this->namesRouter($expr);
         }
 
-        return $expr instanceof Expr\MethodCall
-            && $expr->name instanceof Identifier && $expr->name->toLowerString() === 'make'
-            && $expr->var instanceof Expr\FuncCall && $this->isFunctionNamed($expr->var, ['app']) && $expr->var->args === []
-            && $this->namesRouter($expr);
+        return $expr instanceof Expr\MethodCall && $this->isContainerMake($expr);
+    }
+
+    /**
+     * Whether a call is app()->make() given 'router', Router or Registrar.
+     */
+    private function isContainerMake(Expr\MethodCall $call): bool
+    {
+        return $call->name instanceof Identifier && $call->name->toLowerString() === 'make'
+            && $call->var instanceof Expr\FuncCall && $this->isFunctionNamed($call->var, ['app']) && $call->var->args === []
+            && $this->namesRouter($call);
     }
 
     /**
@@ -1451,7 +1480,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         [$chain, $base] = $this->unwindChain($call);
 
         // app()->make('router') unwinds with make() as the chain's first call
-        $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isRouterExpr($chain[0], $scope, $walk) ? 1 : 0;
+        $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isContainerMake($chain[0]) ? 1 : 0;
         if ($start === 1 || $this->isRouterChainRoot($base, $scope, $walk)) {
             $this->readRouteChain(array_slice($chain, $start), $closures, $walk, $routeParser);
         }
@@ -1636,7 +1665,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $web = false;
         $strips = false;
         foreach ($groups as $group) {
-            $state = $this->chainCsrfState($this->unwindChain($group)[0], $routeParser);
+            $chain = $this->unwindChain($group)[0];
+            // app()->make('router') unwinds with make() as the chain's first call
+            $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isContainerMake($chain[0]) ? 1 : 0;
+            $state = $this->chainCsrfState(array_slice($chain, $start), $routeParser);
             $web = $web || $state['web'];
             $strips = $strips || $state['strips'];
         }

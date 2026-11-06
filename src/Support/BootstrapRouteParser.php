@@ -174,16 +174,17 @@ class BootstrapRouteParser
 
     /**
      * Route files a group registers, each with the group calls it inherits its
-     * middleware from, as {@see self::groupRegistrations()} reads them. Read from the
-     * route files, bootstrap/app.php and app/Providers/*.php, so the caller can resolve
-     * the groups' middleware against the imports of the file that declares them.
+     * middleware from, as {@see self::groupRegistrations()} reads them. Read from
+     * bootstrap/app.php, app/Providers/*.php and, unless $routeFiles is false, the route
+     * files, so the caller can resolve the groups' middleware against the imports of the
+     * file that declares them.
      *
      * @return array<int, array{file: string, source: string, calls: non-empty-list<MethodCall|StaticCall>}>
      */
-    public function getGroupRegisteredRouteFiles(): array
+    public function getGroupRegisteredRouteFiles(bool $routeFiles = true): array
     {
         $sources = [$this->basePath.'/bootstrap/app.php'];
-        foreach (['routes', 'app/Providers'] as $dir) {
+        foreach ($routeFiles ? ['routes', 'app/Providers'] : ['app/Providers'] as $dir) {
             if (is_dir($this->basePath.'/'.$dir)) {
                 $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->basePath.'/'.$dir, \FilesystemIterator::SKIP_DOTS));
                 foreach ($files as $file) {
@@ -545,7 +546,8 @@ class BootstrapRouteParser
 
     /**
      * Finds route files registered on a group carrying middlewareName in the given PHP file,
-     * read as {@see self::filesGroupsApply()} reads them.
+     * read as {@see self::filesGroupsApply()} reads them. Excluding the name, which Laravel
+     * matches exactly, at any level wins.
      *
      * @return array<string>
      */
@@ -554,26 +556,27 @@ class BootstrapRouteParser
         return $this->filesGroupsApply(
             $filePath,
             fn (Node\Expr $entry): bool => $entry instanceof String_ && $entry->value === $middlewareName,
+            true,
         );
     }
 
     /**
      * The route files groups in $filePath load that $judge says their groups apply to them:
      * a group enclosing the load names a matching middleware on its chain,
-     * ->middleware(...), or in its 'middleware' attribute, and none excludes one through
-     * ->withoutMiddleware(...) or its 'excluded_middleware' attribute. Laravel merges both
-     * lists down nested groups, and excluding wins.
+     * ->middleware(...), or in its 'middleware' attribute. Laravel merges the middleware
+     * down nested groups. With $exclusionWins, a group that excludes a matching middleware
+     * through ->withoutMiddleware(...) or its 'excluded_middleware' attribute drops the file.
      *
      * @param  Closure(Node\Expr): bool  $judge
      * @return array<string>
      */
-    private function filesGroupsApply(string $filePath, Closure $judge): array
+    private function filesGroupsApply(string $filePath, Closure $judge, bool $exclusionWins): array
     {
         $found = [];
         foreach ($this->groupRegistrations($filePath) as $registration) {
             $applied = false;
             foreach ($registration['calls'] as $call) {
-                if ($this->anyEntry($this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'), $judge)) {
+                if ($exclusionWins && $this->anyEntry($this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'), $judge)) {
                     continue 2;
                 }
                 $applied = $applied || $this->anyEntry($this->groupEntries($call, 'middleware', 'middleware'), $judge);
@@ -737,13 +740,15 @@ class BootstrapRouteParser
 
     /**
      * Finds route files registered with a throttle middleware on their group in the
-     * given PHP file, read as {@see self::filesGroupsApply()} reads them.
+     * given PHP file, read as {@see self::filesGroupsApply()} reads them. Exclusion is
+     * not read: Laravel excludes only the exact name, so excluding throttle:api leaves
+     * throttle:login in place, and the throttle variants are not told apart here.
      *
      * @return array<string>
      */
     private function getFilesRegisteredWithThrottleMiddlewareInFile(string $filePath): array
     {
-        return $this->filesGroupsApply($filePath, $this->throttles->expressionIsThrottle(...));
+        return $this->filesGroupsApply($filePath, $this->throttles->expressionIsThrottle(...), false);
     }
 
     /**

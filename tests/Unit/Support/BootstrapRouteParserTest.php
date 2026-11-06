@@ -1465,6 +1465,7 @@ PHP;
             $this->assertStringEndsWith('/routes/admin.php', $registrations[1]['file']);
             $this->assertCount(1, $registrations[1]['calls']);
             $this->assertInstanceOf(StaticCall::class, $registrations[1]['calls'][0]);
+            $this->assertSame([], $parser->getGroupRegisteredRouteFiles(routeFiles: false));
         } finally {
             $this->removeDir($tempDir);
         }
@@ -1566,6 +1567,8 @@ PHP;
             'file required inside the closure' => ['', "Route::middleware('throttle:5,1')->group(function () { require __DIR__.'/../routes/partner.php'; });"],
             'throttle from an enclosing group' => ['', "Route::middleware('throttle:5,1')->group(function () { Route::prefix('partner')->group({$file}); });"],
             'group method in another case' => ['', "Route::GROUP(['middleware' => 'throttle:5,1'], {$file});"],
+            // Laravel excludes only an exact name, so throttle:login survives
+            'another throttle excluded' => ['', "Route::middleware('throttle:login')->withoutMiddleware('throttle:api')->group({$file});"],
         ];
     }
 

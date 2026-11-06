@@ -1013,11 +1013,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // only trusts what a file that is itself loaded registers
         $covered = array_fill_keys($webProtectedFiles, true);
         $stripped = [];
-        $routesDir = rtrim(str_replace('\\', '/', $this->getBasePath()), '/').'/routes/';
-        foreach ($routeParser->getGroupRegisteredRouteFiles() as $registration) {
-            if (str_starts_with(str_replace('\\', '/', $registration['source']), $routesDir)) {
-                continue;
-            }
+        foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
             $state = $this->groupsCsrfState($registration['calls'], $routeParser);
             if ($state['strips']) {
                 $stripped[$registration['file']] = true;

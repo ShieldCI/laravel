@@ -3382,6 +3382,46 @@ PHP,
         ));
     }
 
+    public function test_excluding_a_csrf_class_the_route_applies_itself_removes_it(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(function ($middleware) {
+    })
+    ->create();
+PHP,
+            'app/Http/Middleware/VerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n",
+            'routes/web.php' => '<?php',
+            'routes/partner.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+
+Route::middleware(['throttle:60,1', ValidateCsrfToken::class])->group(function () {
+    Route::post('/hooks', HookController::class)->withoutMiddleware(ValidateCsrfToken::class);
+});
+
+Route::post('/orders', OrderController::class)->middleware(VerifyCsrfToken::class)->withoutMiddleware(VerifyCsrfToken::class);
+
+Route::middleware(['web', VerifyCsrfToken::class])->group(function () {
+    Route::post('/refunds', RefundController::class)->withoutMiddleware(VerifyCsrfToken::class);
+});
+PHP,
+        ]);
+
+        // The web group's own CSRF middleware still checks /refunds
+        $this->assertFailed($result);
+        $this->assertSame([7, 10], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_exclusion_from_a_web_group_without_csrf_middleware_removes_nothing(): void
     {
         // The redefined group is reported in bootstrap/app.php; the route has nothing left to lose
@@ -4123,10 +4163,11 @@ Route::apiResource('refunds', RefundController::class)->middlewareFor('store', '
 Route::apiResource('payments', PaymentController::class)->middleware('web')->middlewareFor('destroy', 'auth');
 Route::apiResource('credits', CreditController::class)->middlewareFor('destroy', 'auth')->middleware('web');
 Route::apiResource('vouchers', VoucherController::class)->middlewareFor('destroy', 'web');
+Route::apiResource('coupons', CouponController::class)->middlewareFor(['update', 'destroy'], \App\Http\Middleware\VerifyCsrfToken::class);
 PHP);
 
         $this->assertFailed($result);
-        $this->assertSame([4, 7], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertSame([4, 7, 8], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
     public function test_resource_without_middleware_for_strips_csrf_from_a_write(): void

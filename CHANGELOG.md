@@ -2,26 +2,42 @@
 
 ## v1.22.0
 
+### Added
+- `BootstrapRouteParser::groupRoutes()` reads every route file or closure passed to `group()`, including a list (#555)
+- `BootstrapRouteParser::getRouteFileLoads()` lists every file a route file loads through `require` or `group()` (#560)
+- `MiddlewareThrottleDetector::throttlesAfterExclusion()` drops a throttle only when an excluded middleware resolves to the same name and parameters (#560)
+
 ### Changed
-- `login-throttling` grades more api route files by the API rules, such as one listed in `group([...])`, which can fail a default `fail_on: high` build (#549, #555, #560)
-- `login-throttling` reports a login route whose throttle is removed through `withoutMiddleware()` or `excluded_middleware`, which can fail a default `fail_on: high` build (#560)
+- `csrf-protection` reports `preventRequestForgery(except: ['*'])` and `web(remove: [PreventRequestForgery::class])` on Laravel 13 at Critical instead of passing them, which can fail a default `fail_on: high` build (#539)
 - `csrf-protection` reports a `group('web', ...)`, `replace` or `removeFromGroup()` call that drops the CSRF middleware from the web group, which can fail a default `fail_on: high` build (#539)
 - `csrf-protection` reads `except:` lists and the `$except` property through the AST, so a `'*'` entry in any position is reported at Critical and can fail a default `fail_on: high` build (#544)
+- `csrf-protection` keeps judging the web group after a `group('web', ...)` call it cannot read, so a later CSRF removal is reported, which can fail a default `fail_on: high` build (#544)
+- `csrf-protection` no longer lets a route borrow `->middleware('web')` from the next statement, or a one-line web group cover the rest of the file, which can fail a default `fail_on: high` build (#547)
 - `csrf-protection` checks write routes registered through `Route::any()`, `Route::match()`, `Route::resource()` or `$router->post()`, which can fail a default `fail_on: high` build (#547)
 - `csrf-protection` reports a route in a custom route file whose CSRF middleware is removed through `withoutMiddleware()` or `excluded_middleware`, which can fail a default `fail_on: high` build (#547)
 - `csrf-protection` reports a route that strips CSRF through `withoutMiddleware()` or `excluded_middleware` in `routes/web.php` or a file `web` covers, which can fail a default `fail_on: high` build (#556)
 - `csrf-protection` checks `apiResource()`, `singleton()` and the other resource forms like `resource()`, which can fail a default `fail_on: high` build (#556)
+- `csrf-protection` checks routes registered on `$this->router`, `app('router')`, a parameter typed `Router` or a group callback's parameter, which can fail a default `fail_on: high` build (#556)
+- `csrf-protection` reports `Route::middleware('web')->middleware('auth')->post(...)`, since the later `middleware()` call replaces `web` as it does in Laravel, which can fail a default `fail_on: high` build (#556)
 - `csrf-protection` moves some routes between its `no "web" middleware detected` and CSRF-excluded messages, so their baseline entries stop matching (#556)
+- `login-throttling` grades more api route files by the API rules, such as one listed in `group([...])`, which can fail a default `fail_on: high` build (#549, #555, #560)
+- `login-throttling` reports a login route whose throttle is removed through `withoutMiddleware()` or `excluded_middleware`, which can fail a default `fail_on: high` build (#560)
+- `login-throttling` covers a login route only when every prefix and domain its route file is registered under is throttled, which can fail a default `fail_on: high` build (#560)
+- `login-throttling` no longer counts a computed middleware name such as `'throttle'.config(...)` on a route file registration, which can fail a default `fail_on: high` build (#560)
+- `login-throttling` counts a `group()` call as a route group only when it is made on the router, which can fail a default `fail_on: high` build (#560)
 - `csrf-protection` reports a Kernel that names CSRF only in `$middlewarePriority` or a `use` import as not registering it, which can fail a default `fail_on: high` build (#568)
 - `authentication-authorization` uses the prefix a `withRouting(then:)` callback gives `routes/api.php`, so a `public_routes` pattern written for `/api/...` may stop matching (#571)
-- `BootstrapRouteParser::getGroupRegisteredRouteFiles()` returns each file's enclosing group calls under `calls` instead of a single `call`, takes an optional `$routeFiles` flag and is now `@internal` (#549, #560, #575)
-- `BootstrapRouteParser::getThrottledGroupLineRanges()` leaves out a nested group whose throttle is removed through `withoutMiddleware()` or `excluded_middleware` (#560)
 
 ### Fixed
 - `csrf-protection` accepts Laravel 13's `PreventRequestForgery` and `preventRequestForgery()`, instead of reporting a Kernel that registers it as missing CSRF (#539)
 - `csrf-protection` no longer reports `use()` or `remove()`, which edit the global stack rather than the web group (#539)
 - `csrf-protection` reports a web-group replacement for the CSRF middleware that it cannot read at Medium, instead of passing it, since the replacement may not extend the CSRF middleware (#544)
+- `csrf-protection` no longer reports removing or replacing the other Laravel version's CSRF class name, which leaves the web group unchanged (#544)
+- `csrf-protection` reads a Kernel comment as commented-out CSRF middleware only when the comment is itself a middleware entry (#544)
+- `csrf-protection` ignores commented-out entries in the CSRF middleware's `$except` property, instead of reading them as live exclusions (#544)
 - `csrf-protection` reads custom route files through the AST, so `web` counts at any position in a route's or group's middleware (#547)
+- `csrf-protection` recognises `Route::middleware('web')->group(...)` in a custom route file, instead of reporting its routes (#547)
+- `csrf-protection` keeps a web group open past the closing `});` of a nested non-web group, instead of reporting the routes after it (#547)
 - `csrf-protection` counts the CSRF middleware applied directly to a route or group, such as `->middleware(VerifyCsrfToken::class)`, as protection (#547)
 - `csrf-protection` covers files a custom route file requires inside a web group, at any depth, instead of reporting their routes (#547)
 - `csrf-protection` and `login-throttling` recognise a route file registered through `->Middleware(...)` in any letter case, such as `Route::Middleware('web')->group(...)` (#547)
@@ -33,6 +49,7 @@
 - `csrf-protection` no longer reports routes in files that `routes/api.php` loads, such as a versioned API layout (#556)
 - `csrf-protection` and `login-throttling` resolve `require base_path(...)` inside a route group, so the required file inherits its registration (#560)
 - `authentication-authorization` applies a group's prefix to every file in a `->group([...])` list (#571)
+- `authentication-authorization` applies the prefix a `withRouting(then:)` callback registers a route file under, so a `public_routes` pattern written for that prefix matches (#571)
 
 ## v1.21.0
 

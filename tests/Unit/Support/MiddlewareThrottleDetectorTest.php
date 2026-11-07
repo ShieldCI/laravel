@@ -352,7 +352,11 @@ PHP;
         $detector = $this->bootstrapDetector("\$middleware->{\$method}('throttle:5,1');\n\$middleware->alias(['auth.cap' => 'App\\\\Http\\\\Middleware\\\\Cap']);\n\$middleware->throttleApi();");
 
         $this->assertSame(['global' => false, 'names' => ['throttle:api']], $detector->groupThrottleNames(['api']));
-        $this->assertSame('Illuminate\\Routing\\Middleware\\ThrottleRequests', $detector->throttleAliasClass());
+        $parser = new AstParser;
+        $this->assertFalse($detector->throttlesAfterExclusion(
+            [$this->expression($parser, "'throttle:5,1'")],
+            [$this->expression($parser, "\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':5,1'")],
+        ));
     }
 
     public function test_group_throttle_names_list_each_group_throttle_with_its_parameters(): void

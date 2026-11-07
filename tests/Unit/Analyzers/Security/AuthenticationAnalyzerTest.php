@@ -5172,6 +5172,179 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_custom_route_file_prefix_discovered_from_a_group_list(): void
+    {
+        $result = $this->analyzeProviderGroup(
+            "Route::prefix('vendors')->middleware('web')->group([base_path('routes/vendors.php')]);",
+            ['routes/vendors.php'],
+            ['/vendors/invites/*/accept'],
+        );
+
+        // Router::group() wraps its routes argument in an array, so a one-item
+        // list of route files takes the chain's prefix just as a single file does.
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_route_file_prefix_discovered_from_a_named_callback_list(): void
+    {
+        $result = $this->analyzeProviderGroup(
+            "Route::prefix('vendors')->middleware('web')->group(callback: [base_path('routes/vendors.php')]);",
+            ['routes/vendors.php'],
+            ['/vendors/invites/*/accept'],
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_route_file_prefix_applies_to_every_file_in_a_group_list(): void
+    {
+        $result = $this->analyzeProviderGroup(
+            "Route::prefix('vendors')->middleware('web')->group([base_path('routes/catalog.php'), base_path('routes/vendors.php')]);",
+            ['routes/vendors.php'],
+            ['/vendors/invites/*/accept'],
+        );
+
+        // The route sits in the second listed file; the prefix covers every file in the list.
+        $this->assertPassed($result);
+    }
+
+    public function test_group_list_prefix_still_reports_routes_outside_public_routes(): void
+    {
+        $result = $this->analyzeProviderGroup(
+            "Route::prefix('vendors')->middleware('web')->group([base_path('routes/vendors.php')]);",
+            ['routes/vendors.php'],
+            ['/suppliers/invites/*/accept'],
+        );
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_custom_route_file_prefix_discovered_from_bootstrap_then_callback(): void
+    {
+        $result = $this->analyzeBootstrapThenGroup(
+            "Route::prefix('vendors')->middleware('web')->group(base_path('routes/vendors.php'));",
+            ['/vendors/invites/*/accept'],
+        );
+
+        // Laravel 11+ registers extra route files in withRouting's then: callback,
+        // with the same registrar chains a RouteServiceProvider uses.
+        $this->assertPassed($result);
+    }
+
+    public function test_custom_route_file_prefix_discovered_from_a_bootstrap_then_group_list(): void
+    {
+        $result = $this->analyzeBootstrapThenGroup(
+            "Route::prefix('vendors')->middleware('web')->group([base_path('routes/catalog.php'), base_path('routes/vendors.php')]);",
+            ['/vendors/invites/*/accept'],
+        );
+
+        $this->assertPassed($result);
+    }
+
+    public function test_bootstrap_then_prefix_still_reports_routes_outside_public_routes(): void
+    {
+        $result = $this->analyzeBootstrapThenGroup(
+            "Route::prefix('vendors')->middleware('web')->group(base_path('routes/vendors.php'));",
+            ['/suppliers/invites/*/accept'],
+        );
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    /**
+     * Analyze an unauthenticated POST /invites/{token}/accept route placed in each of
+     * $routeFiles, registered by a RouteServiceProvider running $registration.
+     *
+     * @param  list<string>  $routeFiles
+     * @param  list<string>  $publicRoutes
+     */
+    private function analyzeProviderGroup(string $registration, array $routeFiles, array $publicRoutes): ResultInterface
+    {
+        $provider = <<<PHP
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        \$this->routes(function () {
+            {$registration}
+        });
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/invites/{token}/accept', [AcceptInviteController::class, 'store']);
+PHP;
+
+        $files = ['app/Providers/RouteServiceProvider.php' => $provider];
+        foreach ($routeFiles as $routeFile) {
+            $files[$routeFile] = $routes;
+        }
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory($files));
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * Analyze an unauthenticated POST /invites/{token}/accept route in routes/vendors.php,
+     * registered by $registration inside bootstrap/app.php's withRouting(then: ...) callback.
+     *
+     * @param  list<string>  $publicRoutes
+     */
+    private function analyzeBootstrapThenGroup(string $registration, array $publicRoutes): ResultInterface
+    {
+        $bootstrap = <<<PHP
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+Route::post('/invites/{token}/accept', [AcceptInviteController::class, 'store']);
+PHP;
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/vendors.php' => $routes,
+        ]));
+
+        return $analyzer->analyze();
+    }
+
     // ==========================================
     // Imports PHP would reject (#445)
     // ==========================================

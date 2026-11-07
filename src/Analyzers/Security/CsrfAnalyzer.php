@@ -83,8 +83,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => []];
 
     /**
-     * The most registrations of one route a walk follows: one per group() call that runs each
-     * reused group callback around it.
+     * The most registrations of one route statesReaching() follows, one per group() call that
+     * runs each reused group callback around it; the walk stops once it has this many.
      */
     private const MAX_REGISTRATIONS = 64;
 
@@ -1448,14 +1448,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
+            // The walk stops once it has the cap's worth of paths, so a file that nests reused
+            // callbacks deeply stays cheap; the paths after it are not followed
             $states = [];
             foreach ($groups[$closure] as $registration) {
                 $reached = $this->statesReaching($registration['closures'], $groups, $this->mergeCsrfState($state, $registration['state']), $seen + [$closure => true]);
                 $states = [...$states, ...$reached];
+                if (count($states) >= self::MAX_REGISTRATIONS) {
+                    return array_slice($states, 0, self::MAX_REGISTRATIONS);
+                }
             }
 
-            // A file can only nest so many reused callbacks; the cap keeps a pathological one bounded
-            return array_slice($states, 0, self::MAX_REGISTRATIONS);
+            return $states;
         }
 
         return [$state];

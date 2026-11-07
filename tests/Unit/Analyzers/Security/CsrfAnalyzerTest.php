@@ -5043,6 +5043,60 @@ PHP,
         $this->assertSame(['admin.php' => 'missing', 'hooks.php' => 'stripped'], $messages);
     }
 
+    /**
+     * @dataProvider reusedCallbackLoadOrderProvider
+     */
+    #[DataProvider('reusedCallbackLoadOrderProvider')]
+    public function test_file_a_reused_callback_loads_is_judged_per_registration(string $load, bool $strippedFirst): void
+    {
+        $plain = "Route::middleware('web')->prefix('a')->group(\$partner);";
+        $stripping = "Route::middleware('web')->withoutMiddleware('web')->prefix('b')->group(\$partner);";
+        [$first, $second] = $strippedFirst ? [$stripping, $plain] : [$plain, $stripping];
+
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => "<?php\n\n\$partner = function (\$router) {\n    {$load}\n};\n{$first}\n{$second}\n",
+            'routes/partner.php' => "<?php\n\nRoute::post('/partner', PartnerController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('partner.php', (string) $result->getIssues()[0]->location?->file);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function reusedCallbackLoadOrderProvider(): array
+    {
+        $path = "\$router->group([], base_path('routes/partner.php'));";
+        $require = "require __DIR__.'/partner.php';";
+
+        return [
+            'group() path, stripping registration last' => [$path, false],
+            'group() path, stripping registration first' => [$path, true],
+            'require, stripping registration last' => [$require, false],
+            'require, stripping registration first' => [$require, true],
+        ];
+    }
+
+    public function test_callback_that_registers_itself_as_a_group_is_walked_once(): void
+    {
+        // Broken at runtime, but the walk must still end and report the route
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$admin = function ($routes) {
+    $routes->post('/admin/orders', [OrderController::class, 'store']);
+    $routes->prefix('nested')->group($admin);
+};
+Route::group([], $admin);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
     public function test_each_registration_of_a_reused_callback_may_protect_it_its_own_way(): void
     {
         $result = $this->analyzeRouteFiles([

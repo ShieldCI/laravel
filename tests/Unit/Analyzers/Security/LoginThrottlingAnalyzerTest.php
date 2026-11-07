@@ -2560,7 +2560,8 @@ PHP;
 
     /**
      * 'throttle' re-registered to a class that does not throttle, though it is the
-     * framework's or reaches framework code the analyzer does not read.
+     * framework's, reaches framework code the analyzer does not read, or its file
+     * declares it in another case, as PHP allows.
      *
      * @return array<string, array{array<string, string>}>
      */
@@ -2584,6 +2585,10 @@ PHP;
             'app class extending a framework class' => [[
                 'app/Http/Kernel.php' => $kernel('\\App\\Http\\Middleware\\PassThrough'),
                 'app/Http/Middleware/PassThrough.php' => $middleware("use Illuminate\\Http\\Middleware\\TrustHosts;\n\n".str_replace('class PassThrough', 'class PassThrough extends TrustHosts', $passThrough)),
+            ]],
+            'app class declared in another case' => [[
+                'app/Http/Kernel.php' => $kernel('\\App\\Http\\Middleware\\PassThrough'),
+                'app/Http/Middleware/PassThrough.php' => $middleware(str_replace('class PassThrough', 'class passthrough', $passThrough)),
             ]],
         ];
     }

@@ -4396,6 +4396,36 @@ PHP,
         $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
     }
 
+    public function test_route_in_an_api_file_that_applies_web_and_excludes_csrf_is_reported(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => <<<'PHP'
+<?php
+
+Route::prefix('v1')->group(base_path('routes/api/v1.php'));
+
+Route::post('/orders', [OrderController::class, 'store']);
+Route::middleware('web')->post('/spa/session', SpaSessionController::class)->withoutMiddleware('web');
+PHP,
+            'routes/api/v1.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::apiResource('orders', OrderController::class);
+Route::middleware('web')->post('/spa/login', SpaLoginController::class)->middleware(VerifyCsrfToken::class)->withoutMiddleware(VerifyCsrfToken::class)->withoutMiddleware('web');
+Route::middleware('web')->post('/spa/profile', SpaProfileController::class);
+PHP,
+        ]);
+
+        // Plain api routes stay skipped; routes that bring 'web' and then exclude it are not
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        sort($lines);
+        $this->assertSame(['api.php:6', 'v1.php:6'], $lines);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_file_the_api_routes_load_through_a_stripping_web_group_is_reported(): void
     {
         $result = $this->analyzeRouteFiles([
@@ -5127,6 +5157,19 @@ PHP,
         $routes .= "Route::middleware('web')->group(\$level22);\n";
 
         $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    public function test_reused_callback_follows_its_full_cap_of_registrations(): void
+    {
+        // Only the 64th registration leaves the route without 'web'
+        $routes = "<?php\n\n\$orders = function () {\n    Route::post('/orders', OrderController::class);\n};\n"
+            .str_repeat("Route::middleware('web')->group(\$orders);\n", 63)
+            ."Route::prefix('legacy')->group(\$orders);\n";
+
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
     }
 
     public function test_callback_that_registers_itself_as_a_group_is_walked_once(): void

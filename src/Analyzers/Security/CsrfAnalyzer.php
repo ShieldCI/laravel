@@ -1169,8 +1169,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
      * routes/api.php, files registered under 'api', and any file they load where neither 'web'
-     * nor a CSRF class reaches the load are skipped, unless something also loads them under
-     * 'web', stripped or not. A route file loads a file by requiring it or through a group() path
+     * nor a CSRF class reaches the load are api files, unless something also loads them under
+     * 'web', stripped or not. In an api file only a route that applies 'web' or a CSRF class
+     * itself and then excludes it is reported. A route file loads a file by requiring it or through a group() path
      * argument, which then counts as a require at that place. routes/web.php is covered,
      * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
      * CSRF middleware reaches, and any file a covered file requires outside a group that removes
@@ -1281,11 +1282,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         } while ($changed);
 
         foreach ($walks as $path => $entry) {
-            // A file the api routes load is skipped unless something also loads it under 'web',
-            // or through a web load that strips CSRF from it
-            if (isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path])) {
-                continue;
-            }
+            // A file only the api routes load runs without CSRF cookies, so only a route that applies
+            // 'web' or a CSRF class itself is judged there, by its own exclusions
+            $apiOnly = isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
 
             // A strip on a web load strips every route. A strip only an api load applies removes
             // nothing, and one on a plain load removes only what a route applies itself
@@ -1300,6 +1299,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $reasons = [];
                 foreach ($route['states'] as ['group' => $group, 'applied' => $applied, 'excluded' => $excluded]) {
                     $reasons[] = match (true) {
+                        $apiOnly => ($group || $applied !== []) && ! $this->csrfRuns($group, $applied, $excluded) ? 'stripped' : null,
                         $fileStripped => 'stripped',
                         // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
                         $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',

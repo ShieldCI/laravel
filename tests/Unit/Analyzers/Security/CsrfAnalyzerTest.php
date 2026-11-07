@@ -4678,6 +4678,16 @@ PHP,
         ));
     }
 
+    public function test_application_parent_is_read_from_the_class_the_file_names(): void
+    {
+        // The file declares a helper class first; only the class named after the file is read
+        $this->assertFalse($this->webPhpExclusionReported(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
+            '\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken',
+            files: ['app/Http/Middleware/VerifyCsrfToken.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass CsrfHelper extends \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken\n{\n}\n\nclass VerifyCsrfToken extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"],
+        ));
+    }
+
     public function test_exclusion_must_remove_every_csrf_middleware_in_the_web_group(): void
     {
         // The default CSRF middleware stays when only the appended application class is excluded
@@ -5299,6 +5309,19 @@ PHP);
 
         $this->assertFailed($result);
         $this->assertSame([4, 6], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_only_make_on_the_container_reads_as_the_router(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+app()->bind('router')->post('/orders', [OrderController::class, 'store']);
+app()->make('router')->post('/refunds', [RefundController::class, 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
     public function test_reads_aliased_route_facade(): void

@@ -2098,9 +2098,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * What a resource or singleton registration applies, as Laravel's pending registrations and
-     * ResourceRegistrar read it: whether it keeps any write method, and the CSRF state of its
-     * kept writes, holding 'web' and the CSRF classes when every kept write applies them, and
-     * what any of them excludes.
+     * ResourceRegistrar read it: whether it keeps any write method, and one CSRF state per kept
+     * write, each judged on its own.
      *
      * A resource writes through store, update and destroy, and a singleton through update, plus
      * store and destroy when creatable or destroy when destroyable. apiResource() and

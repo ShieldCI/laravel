@@ -88,6 +88,8 @@ class MiddlewareThrottleDetector
      *
      * @param  array<int, string>  $groups
      * @return array{global: bool, names: list<string>}
+     *
+     * @internal An implementation detail of login-throttling, outside this package's backward-compatibility promise.
      */
     public function groupThrottleNames(array $groups): array
     {
@@ -138,6 +140,8 @@ class MiddlewareThrottleDetector
      *
      * @param  array<Expr>  $applied
      * @param  array<Expr>  $excluded
+     *
+     * @internal An implementation detail of BootstrapRouteParser::getThrottleProtectedRouteFiles() and getThrottledGroupLineRanges(), outside this package's backward-compatibility promise.
      */
     public function throttlesAfterExclusion(array $applied, array $excluded): bool
     {
@@ -162,7 +166,7 @@ class MiddlewareThrottleDetector
      * that is not a literal reads as a parameter that equals no other, so it never matches
      * an exclusion. Null for a value that names no middleware.
      */
-    public function middlewareNameWithParameters(Expr $expr): ?string
+    private function middlewareNameWithParameters(Expr $expr): ?string
     {
         if ($expr instanceof Expr\BinaryOp\Concat) {
             $left = $this->middlewareNameWithParameters($expr->left);
@@ -361,7 +365,7 @@ class MiddlewareThrottleDetector
      * in bootstrap/app.php, which Laravel merges over its own; otherwise
      * {@see self::frameworkThrottleClass()}.
      */
-    public function throttleAliasClass(): string
+    private function throttleAliasClass(): string
     {
         if ($this->throttleAliasClass === null) {
             $registered = null;
@@ -392,6 +396,8 @@ class MiddlewareThrottleDetector
      * The class Laravel itself registers the 'throttle' alias as: ThrottleRequestsWithRedis
      * once bootstrap/app.php calls throttleWithRedis() or throttleApi() with redis true,
      * otherwise ThrottleRequests.
+     *
+     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
      */
     public function frameworkThrottleClass(): string
     {

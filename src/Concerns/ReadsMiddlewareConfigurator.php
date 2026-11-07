@@ -12,6 +12,8 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 /**
  * Reads the calls bootstrap/app.php makes on the withMiddleware() configurator
  * (Illuminate\Foundation\Configuration\Middleware) in Laravel 11+.
+ *
+ * @internal An implementation detail of csrf-protection and login-throttling, outside this package's backward-compatibility promise.
  */
 trait ReadsMiddlewareConfigurator
 {

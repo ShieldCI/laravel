@@ -46,6 +46,7 @@ use ShieldCI\Support\BootstrapRouteParser;
  *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
  *     groups: array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>,
  *     variables: array<string, int>,
+ *     resolved: array<int, list<Expr>>,
  *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
  *     paths: list<array{path: Expr, state: CsrfState, closures: list<int>}>,
  *     routers: array<int, array<string, true>>,
@@ -1567,13 +1568,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // so an aliased CSRF import reads as its class
         $ast = $this->resolveNamesForMatching($this->parser->parseFile($file));
 
+        // The routes each router group() call loads, with a variable holding route paths read
+        // as those paths
+        $resolved = $routeParser->routerGroupRoutes($ast);
+
         // A closure handed to a group through a variable is walked before the group call that
         // makes its first parameter the router, so the walk runs again knowing every such
         // callback until it finds no new one
         $callbacks = [];
         do {
             /** @var RouteWalk $walk */
-            $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'includes' => [], 'paths' => [], 'routers' => [], 'callbacks' => $callbacks, 'late' => false];
+            $walk = ['routes' => [], 'groups' => [], 'variables' => [], 'resolved' => $resolved, 'includes' => [], 'paths' => [], 'routers' => [], 'callbacks' => $callbacks, 'late' => false];
             foreach ($ast as $node) {
                 $this->walkRouteNode($node, [], 0, $walk, $routeParser);
             }
@@ -1986,8 +1991,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             // Each callback the group loads, including each item of a list, opens its closure; a
             // variable callback opens the closure assigned to it last before this call, as PHP reads
-            // it. Any other entry is a route file path Router::loadRoutes() requires inside the group
-            foreach ($routeParser->groupRoutes($args) as $callback) {
+            // it. Any other entry is a route file path Router::loadRoutes() requires inside the
+            // group, read from a variable holding it as the route parser reads it
+            foreach ($walk['resolved'][spl_object_id($calls['group'][0])] ?? $routeParser->groupRoutes($args) as $callback) {
                 $direct = $callback instanceof Expr\Closure || $callback instanceof Expr\ArrowFunction;
                 $closureId = match (true) {
                     $direct => spl_object_id($callback),

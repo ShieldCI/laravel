@@ -6817,6 +6817,319 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider groupRouteVariableProvider
+     */
+    #[DataProvider('groupRouteVariableProvider')]
+    public function test_route_file_held_in_a_variable_on_a_group_in_bootstrap(string $registration, bool $covered): void
+    {
+        $bootstrapApp = <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+use Illuminate\\Support\\Facades\\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/admin.php' => "<?php\n\nRoute::post('/settings', [SettingsController::class, 'update']);\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        if ($covered) {
+            $this->assertPassed($result);
+        } else {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('no "web" middleware detected', $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function groupRouteVariableProvider(): array
+    {
+        return [
+            'list variable' => ["\$files = [base_path('routes/admin.php')]; Route::middleware('web')->group(\$files);", true],
+            'scalar variable' => ["\$file = base_path('routes/admin.php'); Route::middleware('web')->group(\$file);", true],
+            'variable reassigned to an unresolvable value' => ["\$file = base_path('routes/admin.php'); \$file = config('routes.admin'); Route::middleware('web')->group(\$file);", false],
+            'variable assigned in another closure' => ["\$load = function () { \$file = base_path('routes/admin.php'); }; Route::middleware('web')->group(\$file);", false],
+        ];
+    }
+
+    /**
+     * @dataProvider providerRouteVariableProvider
+     */
+    #[DataProvider('providerRouteVariableProvider')]
+    public function test_route_file_held_in_a_variable_on_a_group_in_a_provider(string $value): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/RouteServiceProvider.php' => <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Support\\Facades\\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        \$this->routes(function () {
+            \$admin = {$value};
+            Route::middleware('web')->group(\$admin);
+        });
+    }
+}
+PHP,
+            'routes/admin.php' => "<?php\n\nRoute::post('/settings', [SettingsController::class, 'update']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function providerRouteVariableProvider(): array
+    {
+        return [
+            'scalar' => ["base_path('routes/admin.php')"],
+            'list' => ["[base_path('routes/admin.php')]"],
+        ];
+    }
+
+    public function test_route_file_variable_overwritten_by_a_foreach_is_not_read_as_its_earlier_value(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/RouteServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            $file = base_path('routes/admin.php');
+            Route::middleware('auth')->prefix('admin')->group($file);
+            foreach (glob(base_path('routes/web/*.php')) as $file) {
+                Route::middleware('web')->group($file);
+            }
+        });
+    }
+}
+PHP,
+            'routes/admin.php' => "<?php\n\nRoute::post('/settings', [SettingsController::class, 'update']);\n",
+            'routes/web/shop.php' => '<?php',
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_route_file_variable_written_in_one_branch_is_not_read_in_another(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            $routes = base_path('routes/public.php');
+            if (config('app.admin')) {
+                $routes = base_path('routes/admin.php');
+                Route::middleware('auth')->group($routes);
+            } else {
+                Route::middleware('web')->group($routes);
+            }
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/public.php' => '<?php',
+            'routes/admin.php' => "<?php\n\nRoute::post('/settings', [SettingsController::class, 'update']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * @dataProvider rewrittenRouteVariableProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('rewrittenRouteVariableProvider')]
+    public function test_route_file_variable_rewritten_after_a_group_reads_it_is_not_credited_web(array $files): void
+    {
+        $result = $this->analyzeRouteFiles($files + [
+            'routes/admin.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/settings', [SettingsController::class, 'update']);\n",
+            'routes/mobile.php' => "<?php\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function rewrittenRouteVariableProvider(): array
+    {
+        $provider = fn (string $boot): string => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass RouteServiceProvider\n{\n    public function boot(): void\n    {\n{$boot}\n    }\n}\n";
+
+        return [
+            'provider: imported path overwritten by a foreach' => [[
+                'app/Providers/RouteServiceProvider.php' => $provider(<<<'PHP'
+        $admin = base_path('routes/admin.php');
+        $this->routes(function () use ($admin) {
+            Route::prefix('admin')->group($admin);
+            foreach ([base_path('routes/mobile.php')] as $admin) {
+                Route::middleware('web')->group($admin);
+            }
+        });
+PHP),
+            ]],
+            'provider: list rewritten through a by-reference foreach' => [[
+                'app/Providers/RouteServiceProvider.php' => $provider(<<<'PHP'
+        $this->routes(function () {
+            $files = [base_path('routes/admin.php')];
+            Route::prefix('admin')->group($files);
+            foreach ($files as &$file) {
+                $file = base_path('routes/mobile.php');
+            }
+            unset($file);
+            Route::middleware('web')->group($files);
+        });
+PHP),
+            ]],
+            'route file: path passed by reference to another class\'s group()' => [[
+                'app/Support/RouteFiles.php' => "<?php\n\nnamespace App\\Support;\n\nclass RouteFiles\n{\n    public function group(&\$file): void\n    {\n        \$file = base_path('routes/mobile.php');\n    }\n}\n",
+                'routes/portal.php' => "<?php\n\nuse App\\Support\\RouteFiles;\nuse Illuminate\\Support\\Facades\\Route;\n\n\$file = base_path('routes/admin.php');\n(new RouteFiles)->group(\$file);\nRoute::middleware('web')->group(\$file);\n",
+            ]],
+            'bootstrap: global path rewritten by a declared function' => [[
+                'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+$admin = base_path('routes/admin.php');
+function useMobileRoutes(): void { $GLOBALS['admin'] = base_path('routes/mobile.php'); }
+useMobileRoutes();
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(then: function () use ($admin) { Route::middleware('web')->group($admin); })
+    ->create();
+PHP,
+            ]],
+            'route file: path held in a reference the closure imports' => [[
+                'routes/portal.php' => <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+$load = function () use (&$file) {
+    $file = base_path('routes/admin.php');
+    swapRoutes();
+    Route::middleware('web')->group($file);
+};
+$load();
+PHP,
+            ]],
+            'route file: list rewritten through a by-reference foreach' => [[
+                'routes/portal.php' => <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+$files = [base_path('routes/admin.php')];
+Route::prefix('admin')->group($files);
+foreach ($files as &$file) {
+    $file = base_path('routes/mobile.php');
+}
+unset($file);
+Route::middleware('web')->group($files);
+PHP,
+            ]],
+        ];
+    }
+
+    public function test_variable_callback_inside_a_closure_reads_the_closure_it_captured(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/custom.php' => <<<'PHP'
+<?php
+
+$cb = function () { Route::post('/pay', [PayController::class, 'store']); };
+$wrap = function () use ($cb) { Route::middleware('web')->group($cb); };
+$cb = function () { Route::post('/refund', [RefundController::class, 'store']); };
+Route::prefix('r')->group($cb);
+Route::prefix('w')->group($wrap);
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([5], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    /**
+     * @dataProvider routeFileRouteVariableProvider
+     */
+    #[DataProvider('routeFileRouteVariableProvider')]
+    public function test_file_web_php_loads_through_a_group_path_held_in_a_variable(string $value): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => "<?php\n\n\$f = {$value};\nRoute::prefix('billing')->group(\$f);\n",
+            'routes/billing.php' => "<?php\n\nRoute::post('/invoices', [InvoiceController::class, 'store']);\n",
+            'routes/unused.php' => "<?php\n\nRoute::post('/receipts', [ReceiptController::class, 'store']);\n",
+        ]);
+
+        // routes/unused.php is loaded by nothing, so its route still has no 'web'
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('unused.php', basename((string) $result->getIssues()[0]->location?->file));
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function routeFileRouteVariableProvider(): array
+    {
+        return [
+            'scalar' => ["base_path('routes/billing.php')"],
+            'list' => ["[__DIR__.'/billing.php']"],
+        ];
+    }
+
     public function test_in_file_group_given_a_list_covers_each_callback(): void
     {
         $result = $this->analyzeRouteFile(<<<'PHP'

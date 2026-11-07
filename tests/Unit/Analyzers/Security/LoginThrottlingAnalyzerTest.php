@@ -2452,6 +2452,128 @@ PHP;
         $this->assertSame(['Login route "/kiosk/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    /**
+     * @dataProvider throttledGroupRouteVariableProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('throttledGroupRouteVariableProvider')]
+    public function test_throttle_on_a_group_given_its_routes_in_a_variable_covers_login(array $files): void
+    {
+        $result = $this->analyzeApp($files);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function throttledGroupRouteVariableProvider(): array
+    {
+        $bootstrap = fn (string $registration): string => <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+use Illuminate\\Support\\Facades\\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP;
+        $adminRoutes = "<?php\n\nRoute::post('/admin/login', [AdminSessionController::class, 'store']);\n";
+
+        return [
+            'bootstrap list variable' => [[
+                'bootstrap/app.php' => $bootstrap("\$files = [base_path('routes/admin.php')]; Route::middleware(['web', 'throttle:5,1'])->group(\$files);"),
+                'routes/web.php' => '<?php',
+                'routes/admin.php' => $adminRoutes,
+            ]],
+            'bootstrap scalar variable' => [[
+                'bootstrap/app.php' => $bootstrap("\$file = base_path('routes/admin.php'); Route::middleware(['web', 'throttle:5,1'])->group(\$file);"),
+                'routes/web.php' => '<?php',
+                'routes/admin.php' => $adminRoutes,
+            ]],
+            'route file path variable' => [[
+                'routes/web.php' => "<?php\n\n\$f = base_path('routes/admin.php');\nRoute::middleware('throttle:5,1')->group(\$f);\n",
+                'routes/admin.php' => $adminRoutes,
+            ]],
+        ];
+    }
+
+    public function test_route_file_held_in_a_variable_on_an_api_group_is_graded_as_api_routes(): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->bootstrapThen("\$file = base_path('routes/mobile.php'); Route::middleware('api')->prefix('api')->group(\$file);"),
+            'routes/web.php' => '<?php',
+            'routes/mobile.php' => "<?php\n\nRoute::post('/mobile/login', [MobileSessionController::class, 'store']);\nRoute::post('/mobile/token', [MobileTokenController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([
+            'API authentication route "/mobile/login" lacks rate limiting protection',
+            'API authentication route "/mobile/token" lacks rate limiting protection',
+        ], $this->sortedIssueMessages($result));
+    }
+
+    public function test_throttle_group_given_a_closure_held_in_a_variable_does_not_cover_login(): void
+    {
+        // Only route paths held in a variable are read, so this is judged as before
+        $routes = <<<'PHP'
+<?php
+
+$auth = function () {
+    Route::post('/login', [LoginController::class, 'store']);
+};
+Route::middleware('throttle:5,1')->group($auth);
+PHP;
+
+        $result = $this->analyzeApp(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_file_a_branch_may_reassign_is_not_covered_by_the_throttle_group_given_its_variable(): void
+    {
+        $result = $this->analyzeApp([
+            'routes/web.php' => "<?php\n\n\$f = base_path('routes/admin.php');\nif (app()->isLocal()) {\n    \$f = base_path('routes/mobile.php');\n}\nRoute::middleware('throttle:5,1')->group(\$f);\n",
+            'routes/admin.php' => '<?php',
+            'routes/mobile.php' => "<?php\n\nRoute::post('/mobile/login', [MobileSessionController::class, 'store']);\n",
+        ]);
+
+        // The group loads admin.php or mobile.php, so neither is known to be throttled
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/mobile/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    public function test_route_file_variable_written_in_one_branch_is_not_read_in_another(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+$f = base_path('routes/auth.php');
+if (config('app.admin')) {
+    $f = base_path('routes/admin.php');
+    Route::middleware('web')->group($f);
+} else {
+    Route::middleware(['web', 'throttle:5,1'])->group($f);
+}
+PHP;
+
+        $result = $this->analyzeApp([
+            'routes/web.php' => $routes,
+            'routes/auth.php' => '<?php',
+            'routes/admin.php' => "<?php\n\nRoute::post('/admin/login', [AdminSessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/admin/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
     public function test_app_alias_for_throttle_on_the_route_group_covers_the_login_controller(): void
     {
         $result = $this->analyzeApp([

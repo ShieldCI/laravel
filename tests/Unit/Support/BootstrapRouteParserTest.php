@@ -2248,6 +2248,285 @@ PHP;
         }
     }
 
+    // ==================== A group's routes held in a variable ====================
+
+    /**
+     * @dataProvider groupRouteVariableProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('groupRouteVariableProvider')]
+    public function test_group_reads_route_files_held_in_a_variable(string $registration, string $reader, array $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/admin.php' => '<?php',
+            'routes/mobile.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = match ($reader) {
+                'web' => $parser->getWebProtectedRouteFiles(),
+                'api' => $parser->getApiRegisteredRouteFiles(),
+                'registered' => array_column($parser->getGroupRegisteredRouteFiles(routeFiles: false), 'file'),
+                default => $parser->getThrottleProtectedRouteFiles(),
+            };
+            $names = array_map('basename', $result);
+            sort($names);
+
+            $this->assertSame($expected, $names);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function groupRouteVariableProvider(): array
+    {
+        return [
+            'list variable on a web group' => ["\$files = [base_path('routes/admin.php')]; Route::middleware('web')->group(\$files);", 'web', ['admin.php']],
+            'list variable registers the file' => ["\$files = [base_path('routes/admin.php')]; Route::middleware('web')->group(\$files);", 'registered', ['admin.php']],
+            'scalar variable on a web group' => ["\$file = base_path('routes/admin.php'); Route::middleware('web')->group(\$file);", 'web', ['admin.php']],
+            'scalar variable on an api group' => ["\$file = base_path('routes/mobile.php'); Route::middleware('api')->prefix('api')->group(\$file);", 'api', ['mobile.php']],
+            'scalar variable on a throttle group' => ["\$file = base_path('routes/admin.php'); Route::middleware(['web', 'throttle:5,1'])->group(\$file);", 'throttle', ['admin.php']],
+            '__DIR__ variable in an attribute-array group' => ["\$file = __DIR__.'/../routes/admin.php'; Route::group(['middleware' => 'web'], \$file);", 'web', ['admin.php']],
+            'variables listed in a literal list' => ["\$a = base_path('routes/admin.php'); \$m = base_path('routes/mobile.php'); Route::middleware('web')->group([\$a, \$m]);", 'web', ['admin.php', 'mobile.php']],
+            'list variable naming path variables' => ["\$a = base_path('routes/admin.php'); \$files = [\$a, base_path('routes/mobile.php')]; Route::middleware('web')->group(\$files);", 'web', ['admin.php', 'mobile.php']],
+            'list unpacking a path list' => ["\$files = [base_path('routes/admin.php')]; \$f = [...\$files]; Route::middleware('web')->group(\$f);", 'web', []],
+            'variable closure requiring a file' => ["\$routes = function () { require base_path('routes/admin.php'); }; Route::middleware('web')->group(\$routes);", 'web', []],
+            'last assignment before the call wins' => ["\$file = base_path('routes/mobile.php'); \$file = base_path('routes/admin.php'); Route::middleware('web')->group(\$file);", 'web', ['admin.php']],
+            'reassigned to an unresolvable value' => ["\$file = base_path('routes/admin.php'); \$file = config('routes.admin'); Route::middleware('web')->group(\$file);", 'web', []],
+            'assigned after the call' => ["Route::middleware('web')->group(\$file); \$file = base_path('routes/admin.php');", 'web', []],
+            'assigned in another closure' => ["\$load = function () { \$file = base_path('routes/admin.php'); }; Route::middleware('web')->group(\$file);", 'web', []],
+            'outer variable not captured by the closure' => ["\$file = base_path('routes/admin.php'); \$load = function () { Route::middleware('web')->group(\$file); }; \$load();", 'web', []],
+            'outer variable captured through use()' => ["\$file = base_path('routes/admin.php'); \$load = function () use (\$file) { Route::middleware('web')->group(\$file); }; \$load();", 'web', ['admin.php']],
+            'variable on a group under another middleware' => ["\$file = base_path('routes/admin.php'); Route::middleware('auth')->group(\$file);", 'web', []],
+            'overwritten by a foreach value' => ["\$file = base_path('routes/admin.php'); foreach (glob(base_path('routes/web/*.php')) as \$file) { Route::middleware('web')->group(\$file); }", 'web', []],
+            'overwritten by a foreach key' => ["\$file = base_path('routes/admin.php'); foreach (\$map as \$file => \$x) { Route::middleware('web')->group(\$file); }", 'web', []],
+            'overwritten by a foreach list target' => ["\$file = base_path('routes/admin.php'); foreach (\$pairs as [\$file, \$x]) { Route::middleware('web')->group(\$file); }", 'web', []],
+            'overwritten by destructuring' => ["\$file = base_path('routes/admin.php'); [\$file] = \$paths; Route::middleware('web')->group(\$file);", 'web', []],
+            'overwritten by list()' => ["\$file = base_path('routes/admin.php'); list(\$file) = \$paths; Route::middleware('web')->group(\$file);", 'web', []],
+            'made a reference' => ["\$file = base_path('routes/admin.php'); \$file = &\$other; Route::middleware('web')->group(\$file);", 'web', []],
+            'referenced by another variable' => ["\$file = base_path('routes/admin.php'); \$alias = &\$file; \$alias = \$other; Route::middleware('web')->group(\$file);", 'web', []],
+            'appended to with .=' => ["\$file = base_path('routes/admin.php'); \$file .= \$suffix; Route::middleware('web')->group(\$file);", 'web', []],
+            'incremented' => ["\$file = base_path('routes/admin.php'); \$file++; Route::middleware('web')->group(\$file);", 'web', []],
+            'appended to with []' => ["\$files = [base_path('routes/admin.php')]; \$files[] = \$other; Route::middleware('web')->group(\$files);", 'web', []],
+            'declared static' => ["\$file = base_path('routes/admin.php'); static \$file; Route::middleware('web')->group(\$file);", 'web', []],
+            'declared global' => ["\$file = base_path('routes/admin.php'); global \$file; Route::middleware('web')->group(\$file);", 'web', []],
+            'overwritten by a catch variable' => ["\$file = base_path('routes/admin.php'); try { load(); } catch (Exception \$file) { } Route::middleware('web')->group(\$file);", 'web', []],
+            'passed to a call that may write it' => ["\$files = [base_path('routes/admin.php'), base_path('routes/mobile.php')]; array_shift(\$files); Route::middleware('web')->group(\$files);", 'web', []],
+            'unset' => ["\$file = base_path('routes/admin.php'); unset(\$file); Route::middleware('web')->group(\$file);", 'web', []],
+            'closure reads what it captured where it is defined' => ["\$f = base_path('routes/mobile.php'); \$cb = function () use (\$f) { Route::middleware('web')->group(\$f); }; \$f = base_path('routes/admin.php'); Route::prefix('admin')->group(\$f); \$cb();", 'web', ['mobile.php']],
+            'arrow function reads its parent scope where it is defined' => ["\$f = base_path('routes/mobile.php'); \$cb = fn () => Route::middleware('web')->group(\$f); \$f = base_path('routes/admin.php'); Route::prefix('admin')->group(\$f); \$cb();", 'web', ['mobile.php']],
+            'variable captured by reference is not read' => ["\$f = base_path('routes/admin.php'); \$reg = function () use (&\$f) { Route::middleware('web')->group(\$f); }; Route::prefix('admin')->group(\$f); \$f = base_path('routes/mobile.php'); \$reg();", 'web', []],
+            'reassigned in an if' => ["\$f = base_path('routes/admin.php'); if (app()->isLocal()) { \$f = base_path('routes/mobile.php'); } Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned in an else' => ["\$f = base_path('routes/admin.php'); if (app()->isLocal()) { } else { \$f = base_path('routes/mobile.php'); } Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned in a switch' => ["\$f = base_path('routes/admin.php'); switch (\$env) { case 'local': \$f = base_path('routes/mobile.php'); } Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned in a ternary' => ["\$f = base_path('routes/admin.php'); \$local ? \$f = base_path('routes/mobile.php') : null; Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned behind &&' => ["\$f = base_path('routes/admin.php'); \$local && \$f = base_path('routes/mobile.php'); Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned in a try' => ["\$f = base_path('routes/admin.php'); try { \$f = base_path('routes/mobile.php'); load(); } catch (Exception \$e) { } Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned in a loop' => ["\$f = base_path('routes/admin.php'); while (\$more) { \$f = base_path('routes/mobile.php'); \$more = false; } Route::middleware('web')->group(\$f);", 'web', []],
+            'reassigned later in a loop body' => ["\$f = base_path('routes/admin.php'); for (\$i = 0; \$i < 2; \$i++) { Route::middleware('web')->group(\$f); \$f = base_path('routes/mobile.php'); }", 'web', []],
+            'written in a branch, read in the same branch' => ["if (app()->isLocal()) { \$f = base_path('routes/mobile.php'); Route::middleware('web')->group(\$f); }", 'web', []],
+            'written in a branch, read outside any branch' => ["\$f = base_path('routes/admin.php'); if (app()->isLocal()) { \$f = base_path('routes/mobile.php'); } else { \$other = 1; } Route::middleware('web')->group(\$f);", 'web', []],
+            'read in the else of an if that writes it' => ["\$f = base_path('routes/mobile.php'); if (app()->isLocal()) { \$f = base_path('routes/admin.php'); Route::middleware('auth')->group(\$f); } else { Route::middleware('web')->group(\$f); }", 'web', []],
+            'read in an elseif after an if that writes it' => ["\$f = base_path('routes/mobile.php'); if (\$a) { \$f = base_path('routes/admin.php'); } elseif (\$b) { Route::middleware('web')->group(\$f); }", 'web', []],
+            'read in the other arm of a ternary' => ["\$f = base_path('routes/mobile.php'); \$c ? (\$f = base_path('routes/admin.php')) : Route::middleware('web')->group(\$f);", 'web', []],
+            'read in a later switch case' => ["\$f = base_path('routes/mobile.php'); switch (\$env) { case 'a': \$f = base_path('routes/admin.php'); break; case 'b': Route::middleware('web')->group(\$f); }", 'web', []],
+            'read in another match arm' => ["\$f = base_path('routes/mobile.php'); match (\$env) { 'a' => \$f = base_path('routes/admin.php'), default => Route::middleware('web')->group(\$f) };", 'web', []],
+            'read in the else of an alternative-syntax if' => ["\$f = base_path('routes/mobile.php'); if (\$a): \$f = base_path('routes/admin.php'); else: Route::middleware('web')->group(\$f); endif;", 'web', []],
+            'scope calls extract()' => ["\$f = base_path('routes/admin.php'); extract(\$vars); Route::middleware('web')->group(\$f);", 'web', []],
+            'scope writes a variable variable' => ["\$f = base_path('routes/admin.php'); \$n = 'f'; \$\$n = \$other; Route::middleware('web')->group(\$f);", 'web', []],
+            'scope writes a braced variable variable' => ["\$f = base_path('routes/admin.php'); \${'f'} = \$other; Route::middleware('web')->group(\$f);", 'web', []],
+            'written through an earlier reference' => ["\$g = &\$f; \$f = base_path('routes/admin.php'); \$g = \$other; Route::middleware('web')->group(\$f);", 'web', []],
+            'by-reference closure called later' => ["\$f = base_path('routes/admin.php'); \$set = function () use (&\$f) { \$f = \$GLOBALS['x']; }; Route::middleware('web')->group(\$f); \$set();", 'web', []],
+            'scope uses goto' => ["\$f = base_path('routes/admin.php'); goto done; done: Route::middleware('web')->group(\$f);", 'web', []],
+            'scope requires a file' => ["\$f = base_path('routes/admin.php'); require base_path('routes/mobile.php'); Route::middleware('web')->group(\$f);", 'web', []],
+            'by-reference import forgets the outer variable' => ["\$f = base_path('routes/admin.php'); \$set = function () use (&\$f) { \$f = base_path('routes/mobile.php'); }; \$set(); Route::middleware('web')->group(\$f);", 'web', []],
+            'F1 import then a foreach over it' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { foreach ([base_path('routes/mobile.php')] as \$f) { Route::middleware('web')->group(\$f); } }; \$cb();", 'web', []],
+            'F1 import then destructuring' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { [\$f] = [base_path('routes/mobile.php')]; Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then unset' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { unset(\$f); Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then a nested by-reference closure' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { \$s = function () use (&\$f) { \$f = base_path('routes/mobile.php'); }; \$s(); Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then extract()' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { extract(['f' => base_path('routes/mobile.php')]); Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then require' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { require base_path('routes/mobile.php'); Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then goto' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { goto x; x: Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import then a direct and another write' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { \$f = base_path('routes/mobile.php'); \$f .= ''; Route::middleware('web')->group(\$f); }; \$cb();", 'web', []],
+            'F1 import read by an arrow function after a foreach' => ["\$f = base_path('routes/admin.php'); \$cb = function () use (\$f) { foreach ([base_path('routes/mobile.php')] as \$f) { } (fn () => Route::middleware('web')->group(\$f))(); }; \$cb();", 'web', []],
+            'list rewritten through a by-reference foreach' => ["\$f = [base_path('routes/admin.php')]; foreach (\$f as &\$x) { \$x = base_path('routes/mobile.php'); } unset(\$x); Route::middleware('web')->group(\$f);", 'web', []],
+            'list holding a reference' => ["\$x = base_path('routes/admin.php'); \$f = [&\$x]; \$x = base_path('routes/mobile.php'); Route::middleware('web')->group(\$f);", 'web', []],
+            'list destructured by reference' => ["\$f = [base_path('routes/admin.php')]; [&\$a] = \$f; \$a = base_path('routes/mobile.php'); Route::middleware('web')->group(\$f);", 'web', []],
+            'scope calls eval()' => ["\$f = base_path('routes/admin.php'); eval('\$f = 1;'); Route::middleware('web')->group(\$f);", 'web', []],
+            'scope writes GLOBALS' => ["\$f = base_path('routes/admin.php'); \$GLOBALS['f'] = base_path('routes/mobile.php'); Route::middleware('web')->group(\$f);", 'web', []],
+            'scope declares a function with global' => ["\$f = base_path('routes/admin.php'); function swap() { global \$f; \$f = 1; } swap(); Route::middleware('web')->group(\$f);", 'web', []],
+            'importing closure rebinds the variable directly' => ["\$f = base_path('routes/mobile.php'); \$cb = function () use (\$f) { \$f = base_path('routes/admin.php'); Route::middleware('web')->group(\$f); }; \$cb();", 'web', ['admin.php']],
+            'callback variable reassigned to a path' => ["\$f = function () { }; \$f = base_path('routes/admin.php'); Route::middleware('web')->group(\$f);", 'web', ['admin.php']],
+            'passed to a group() on another class' => ["\$file = base_path('routes/admin.php'); (new RouteFiles)->group(\$file); Route::middleware('web')->group(\$file);", 'web', []],
+            'passed to a static group() on another class' => ["\$file = base_path('routes/admin.php'); RouteFiles::group(\$file); Route::middleware('web')->group(\$file);", 'web', []],
+            'a reference the closure imports' => ["\$cb = function () use (&\$file) { \$file = base_path('routes/admin.php'); swapRoutes(); Route::middleware('web')->group(\$file); }; \$cb();", 'web', []],
+            'a reference parameter' => ["\$cb = function (&\$file) { \$file = base_path('routes/admin.php'); swapRoutes(); Route::middleware('web')->group(\$file); }; \$cb(\$x);", 'web', []],
+            'a list doubled many times stays bounded' => ["\$f = [base_path('routes/admin.php')];".str_repeat(' $f = [$f, $f];', 30)." Route::middleware('web')->group(\$f);", 'web', ['admin.php']],
+        ];
+    }
+
+    public function test_provider_group_reads_route_files_held_in_a_variable(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        $this->routes(function () {
+            $file = base_path('routes/admin.php');
+            Route::middleware('web')->group($file);
+
+            $files = [base_path('routes/billing.php')];
+            Route::middleware('web')->group($files);
+        });
+    }
+
+    public function map(): void
+    {
+        Route::middleware('web')->group($file);
+    }
+}
+PHP;
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/admin.php' => '<?php',
+            'routes/billing.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $names = array_map('basename', $parser->getWebProtectedRouteFiles());
+            sort($names);
+
+            $this->assertSame(['admin.php', 'billing.php'], $names);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_route_file_loads_read_a_group_path_held_in_a_variable(): void
+    {
+        $web = <<<'PHP'
+<?php
+
+$f = base_path('routes/billing.php');
+Route::prefix('billing')->group($f);
+
+$files = [__DIR__.'/admin.php'];
+Route::prefix('admin')->group($files);
+PHP;
+        $tempDir = $this->createTempDir([
+            'routes/web.php' => $web,
+            'routes/billing.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $loads = $parser->getRouteFileLoads()[(string) realpath($tempDir.'/routes/web.php')] ?? [];
+
+            $this->assertSame(
+                [[(string) realpath($tempDir.'/routes/billing.php'), 1], [(string) realpath($tempDir.'/routes/admin.php'), 1]],
+                array_map(fn (array $load): array => [$load['file'], count($load['calls'])], $loads),
+            );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_do_not_read_a_closure_held_in_a_variable(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+$routes = function () {
+    Route::post('/login', [LoginController::class, 'store']);
+};
+Route::middleware('throttle:5,1')->group($routes);
+
+$other = fn () => Route::post('/signin', [LoginController::class, 'store']);
+$other = 'not a callback';
+Route::middleware('throttle:5,1')->group($other);
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            // A callback held in a variable is read only by csrf-protection's own walk
+            $this->assertSame([], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_global_scope_variable_a_function_may_rewrite_is_not_read(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+$admin = base_path('routes/admin.php');
+function useMobileRoutes(): void { $GLOBALS['admin'] = base_path('routes/mobile.php'); }
+useMobileRoutes();
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(then: function () use ($admin) { Route::middleware('web')->group($admin); })
+    ->create();
+PHP;
+        $tempDir = $this->createTempDir(['bootstrap/app.php' => $bootstrap, 'routes/admin.php' => '<?php', 'routes/mobile.php' => '<?php']);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getWebProtectedRouteFiles());
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_route_file_loads_stay_linear_in_deeply_nested_branches(): void
+    {
+        $routes = "<?php\n\$f = base_path('routes/admin.php');\n"
+            .str_repeat('if ($a) { ', 500).'$f = base_path(\'routes/admin.php\');'.str_repeat(' }', 500)."\n"
+            .'$ok = $a'.str_repeat(' && $a', 1999).";\n"
+            ."Route::middleware('web')->group(\$f);\n";
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes, 'routes/admin.php' => '<?php']);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $before = $this->cpuSeconds();
+            $parser->getRouteFileLoads();
+            $seconds = $this->cpuSeconds() - $before;
+
+            $this->assertLessThan(1.0, $seconds);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    private function cpuSeconds(): float
+    {
+        $usage = getrusage();
+        $this->assertIsArray($usage);
+
+        return $usage['ru_utime.tv_sec'] + $usage['ru_utime.tv_usec'] / 1e6;
+    }
+
     private function bootstrapRegistering(string $imports, string $registration): string
     {
         return <<<PHP

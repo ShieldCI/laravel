@@ -38,7 +38,7 @@ use ShieldCI\Concerns\ResolvesClassNames;
  * A group counts as throttled by the middleware MiddlewareThrottleDetector recognises,
  * with class names resolved against the imports of the file that declares the group.
  *
- * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, true>}
+ * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>, bindings: array<int, string>}
  */
 class BootstrapRouteParser
 {
@@ -819,10 +819,28 @@ class BootstrapRouteParser
      */
     public function routerGroupCalls(array $ast): array
     {
-        $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => []];
+        return array_fill_keys(array_keys($this->routerGroupRoutes($ast)), true);
+    }
+
+    /**
+     * The routes each group(...) call {@see self::routerGroupCalls()} finds loads, keyed by
+     * spl_object_id(), as {@see self::groupRoutes()} reads them, with a variable holding route
+     * paths read as those paths (see {@see self::assignedPaths()}).
+     *
+     * @param  array<Node>  $ast
+     * @return array<int, list<Node\Expr>>
+     *
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
+     */
+    public function routerGroupRoutes(array $ast): array
+    {
+        $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => [], 'bindings' => []];
         $routers = [];
-        foreach ($this->resolveNamesForMatching($ast) as $node) {
-            $this->walkRouteNode($node, [], $routers, null, $walk);
+        $paths = [];
+        $ast = $this->resolveNamesForMatching($ast);
+        $walk['bindings'] = $this->touchesGlobals($ast) ? [] : $this->pathBindings($this->scopeStatements($ast))['bindings'];
+        foreach ($ast as $node) {
+            $this->walkRouteNode($node, [], $routers, $paths, null, $walk);
         }
 
         return $walk['groups'];
@@ -836,11 +854,14 @@ class BootstrapRouteParser
     private function walkFile(string $path): array
     {
         if (! isset($this->walks[$path])) {
-            $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => []];
+            $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => [], 'bindings' => []];
             $routers = [];
+            $paths = [];
             if (file_exists($path)) {
-                foreach ($this->resolveNamesForMatching($this->parser->parseFile($path)) as $node) {
-                    $this->walkRouteNode($node, [], $routers, dirname($path), $walk);
+                $ast = $this->resolveNamesForMatching($this->parser->parseFile($path));
+                $walk['bindings'] = $this->touchesGlobals($ast) ? [] : $this->pathBindings($this->scopeStatements($ast))['bindings'];
+                foreach ($ast as $node) {
+                    $this->walkRouteNode($node, [], $routers, $paths, dirname($path), $walk);
                 }
             }
             $this->walks[$path] = $walk;
@@ -857,20 +878,31 @@ class BootstrapRouteParser
      *
      * Variables that hold the router are tracked per function scope, in the order the code
      * runs: see {@see self::functionRouters()}, and a variable assigned the router, or a
-     * call chain on it, holds it until it is assigned something else.
+     * call chain on it, holds it until it is assigned something else. Variables that hold
+     * route paths are tracked per function scope too (see {@see self::functionPaths()}), but
+     * only through the assignments {@see self::pathBindings()} finds: a group given one
+     * loads the paths last assigned to it before the call.
      *
      * @param  list<MethodCall|StaticCall>  $groups  The group calls enclosing $node, outermost first
      * @param  array<string, true>  $routers  Variables that hold the router in this function scope
+     * @param  array<string, non-empty-list<Node\Expr>>  $paths  Variables that hold route paths in this function scope
      * @param  ?string  $dir  The directory of the file being walked; null records no loads
      * @param  bool  $callback  Whether $node is a group call's callback, which Laravel calls with the router
      * @param  RouteFileWalk  $walk
      */
-    private function walkRouteNode(Node $node, array $groups, array &$routers, ?string $dir, array &$walk, bool $callback = false): void
+    private function walkRouteNode(Node $node, array $groups, array &$routers, array &$paths, ?string $dir, array &$walk, bool $callback = false): void
     {
         if ($node instanceof Node\FunctionLike) {
             $scope = $this->functionRouters($node, $routers, $callback);
+            $scopePaths = $this->functionPaths($node, $paths);
+            if (! $node instanceof Node\Expr\ArrowFunction) {
+                // An imported variable the function writes any other way is not read either
+                $writes = $this->pathBindings($node->getStmts() ?? [], $this->references($node));
+                $walk['bindings'] += $writes['bindings'];
+                $scopePaths = $writes['disabled'] ? [] : array_diff_key($scopePaths, $writes['untracked']);
+            }
             foreach ($this->childNodes($node) as $child) {
-                $this->walkRouteNode($child, $groups, $scope, $dir, $walk);
+                $this->walkRouteNode($child, $groups, $scope, $scopePaths, $dir, $walk);
             }
 
             return;
@@ -882,6 +914,12 @@ class BootstrapRouteParser
             } else {
                 unset($routers[$node->var->name]);
             }
+        }
+
+        // The value is read before the variable is written
+        $bound = null;
+        if ($node instanceof Node\Stmt\Expression && $node->expr instanceof Node\Expr\Assign && isset($walk['bindings'][spl_object_id($node)])) {
+            $bound = [$walk['bindings'][spl_object_id($node)], $this->assignedPaths($node->expr->expr, $paths)];
         }
 
         if ($node instanceof Include_ && $dir !== null) {
@@ -902,18 +940,19 @@ class BootstrapRouteParser
         }
 
         if ($this->isGroupCall($node, $routers)) {
-            $walk['groups'][spl_object_id($node)] = true;
+            $routes = $this->resolvedRoutes($node->args, $paths);
+            $walk['groups'][spl_object_id($node)] = $routes;
             $inner = [...$groups, $node];
             foreach ($this->closureArguments($node->args) as $closure) {
                 $walk['closures'][] = ['closure' => $closure, 'calls' => $inner];
             }
-            foreach ($this->groupRoutes($node->args) as $entry) {
+            foreach ($routes as $entry) {
                 $path = $dir !== null ? $this->groupRouteFile($entry, $dir) : null;
                 if ($path !== null) {
                     $walk['loads'][] = ['file' => $path, 'calls' => $inner];
                 } else {
                     $isCallback = $entry instanceof Node\Expr\Closure || $entry instanceof Node\Expr\ArrowFunction;
-                    $this->walkRouteNode($entry, $inner, $routers, $dir, $walk, $isCallback);
+                    $this->walkRouteNode($entry, $inner, $routers, $paths, $dir, $walk, $isCallback);
                 }
             }
             $children = [$node instanceof MethodCall ? $node->var : $node->class];
@@ -922,8 +961,315 @@ class BootstrapRouteParser
         }
 
         foreach ($children as $child) {
-            $this->walkRouteNode($child, $groups, $routers, $dir, $walk);
+            $this->walkRouteNode($child, $groups, $routers, $paths, $dir, $walk);
         }
+
+        if ($bound !== null) {
+            [$name, $assigned] = $bound;
+            if ($assigned !== null) {
+                $paths[$name] = $assigned;
+            } else {
+                unset($paths[$name]);
+            }
+        }
+    }
+
+    /**
+     * The routes a group() call loads, as {@see self::groupRoutes()} reads them, with each
+     * variable that holds route paths in this scope read as those paths.
+     *
+     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
+     * @param  array<string, non-empty-list<Node\Expr>>  $paths
+     * @return list<Node\Expr>
+     */
+    private function resolvedRoutes(array $args, array $paths): array
+    {
+        $routes = [];
+        foreach ($this->groupRoutes($args) as $entry) {
+            if ($entry instanceof Node\Expr\Variable && is_string($entry->name) && isset($paths[$entry->name])) {
+                array_push($routes, ...$paths[$entry->name]);
+            } else {
+                $routes[] = $entry;
+            }
+        }
+
+        return $routes;
+    }
+
+    /**
+     * The route paths a variable assigned $expr holds: a path {@see self::groupRouteFile()}
+     * reads, a variable holding paths, or a non-empty list of them, each kept once. Null for
+     * anything else, which leaves the variable unread.
+     *
+     * @param  array<string, non-empty-list<Node\Expr>>  $paths
+     * @return non-empty-list<Node\Expr>|null
+     */
+    private function assignedPaths(Node\Expr $expr, array $paths): ?array
+    {
+        $entries = [$expr];
+        if ($expr instanceof Node\Expr\Array_) {
+            $entries = [];
+            foreach ($expr->items as $item) {
+                if (! $item instanceof Node\Expr\ArrayItem || $item->unpack || $item->byRef) {
+                    return null;
+                }
+                $entries[] = $item->value;
+            }
+        }
+
+        $found = [];
+        foreach ($entries as $entry) {
+            if ($entry instanceof Node\Expr\Variable && is_string($entry->name) && isset($paths[$entry->name])) {
+                foreach ($paths[$entry->name] as $path) {
+                    $found[spl_object_id($path)] = $path;
+                }
+            } elseif (! $entry instanceof String_ && $this->resolveWithRoutingPath($entry, '') !== null) {
+                // The directory only completes a path, so any reads its form
+                $found[spl_object_id($entry)] = $entry;
+            } else {
+                return null;
+            }
+        }
+
+        return $found === [] ? null : array_values($found);
+    }
+
+    /**
+     * The variables that hold route paths inside a function: those a closure imports by
+     * value through use(), or, in an arrow function, its parent's, as PHP binds them by
+     * value, less any parameter of the same name. A variable imported by reference may be
+     * written whenever the closure runs, so it is not read.
+     *
+     * @param  array<string, non-empty-list<Node\Expr>>  $outer  The variables of the enclosing scope
+     * @return array<string, non-empty-list<Node\Expr>>
+     */
+    private function functionPaths(Node\FunctionLike $function, array $outer): array
+    {
+        $paths = $function instanceof Node\Expr\ArrowFunction ? $outer : [];
+        if ($function instanceof Node\Expr\Closure) {
+            foreach ($function->uses as $use) {
+                if (! $use->byRef && is_string($use->var->name) && isset($outer[$use->var->name])) {
+                    $paths[$use->var->name] = $outer[$use->var->name];
+                }
+            }
+        }
+
+        foreach ($function->getParams() as $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                unset($paths[$param->var->name]);
+            }
+        }
+
+        return $paths;
+    }
+
+    /**
+     * The statements a function scope runs in order: the file's, including those of a
+     * namespace block, or a function's body.
+     *
+     * @param  array<Node>  $ast
+     * @return array<Node>
+     */
+    private function scopeStatements(array $ast): array
+    {
+        $statements = [];
+        foreach ($ast as $node) {
+            array_push($statements, ...$node instanceof Node\Stmt\Namespace_ ? $node->stmts : [$node]);
+        }
+
+        return $statements;
+    }
+
+    /**
+     * The assignments in one function scope that set a variable the walk reads as route
+     * paths, keyed by spl_object_id() of their statement: a `$var = ...;` statement among
+     * the scope's own statements, outside any branch or loop, for a variable the scope writes
+     * no other way. Any other write, anywhere in the scope, including inside an expression,
+     * an arrow function or a branch, or the reference a nested closure imports, leaves the
+     * variable unread. So does the whole scope when it can write variables it does not name:
+     * through extract(), parse_str() with one argument, eval(), a variable variable,
+     * \$GLOBALS, goto, a file it requires or includes, any reference (a by-reference foreach
+     * value, array item or destructuring, `=&`, or a closure importing by reference), or a
+     * function declared in it that reads a global. Each node is read once by its own scope,
+     * and a declared function's body once more for its global statements.
+     *
+     * @param  array<Node>  $statements
+     * @param  array<string, true>  $references  Variables that are references on entry, which a callee may write
+     * @return array{bindings: array<int, string>, untracked: array<string, true>, disabled: bool}
+     */
+    private function pathBindings(array $statements, array $references = []): array
+    {
+        $candidates = [];
+        $direct = [];
+        foreach ($statements as $statement) {
+            if ($statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
+                && $statement->expr->var instanceof Node\Expr\Variable && is_string($statement->expr->var->name)) {
+                $candidates[spl_object_id($statement)] = $statement->expr->var->name;
+                $direct[spl_object_id($statement->expr)] = true;
+            }
+        }
+
+        $disabled = ['bindings' => [], 'untracked' => [], 'disabled' => true];
+        $untracked = $references;
+        $pending = $statements;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Stmt\Goto_ || $node instanceof Node\Stmt\Label || $node instanceof Include_
+                || $node instanceof Node\Expr\Eval_ || $node instanceof Node\Expr\AssignRef
+                || ($node instanceof Node\Stmt\Foreach_ && $node->byRef)
+                || ($node instanceof Node\Expr\ArrayItem && $node->byRef)
+                || ($node instanceof Node\Expr\Closure && array_filter($node->uses, fn (Node\ClosureUse $use): bool => $use->byRef) !== [])
+                || ($node instanceof Node\Stmt\Function_ && $this->readsGlobals($node))
+                || ($node instanceof FuncCall && ($this->isFunction($node, ['extract']) || ($this->isFunction($node, ['parse_str']) && count($node->args) === 1)))) {
+                return $disabled;
+            }
+
+            $written = $this->writtenVariables($node);
+            if ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable && ! isset($direct[spl_object_id($node)])) {
+                $written[] = $node->var;
+            }
+            foreach ($written as $variable) {
+                if (! is_string($variable->name) || $variable->name === 'GLOBALS') {
+                    return $disabled;
+                }
+                $untracked[$variable->name] = true;
+            }
+
+            if (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
+                array_push($pending, ...$this->childNodes($node));
+            }
+        }
+
+        return ['bindings' => array_diff($candidates, array_keys($untracked)), 'untracked' => $untracked, 'disabled' => false];
+    }
+
+    /**
+     * The variables a function receives as references: those a closure imports by reference
+     * and its by-reference parameters.
+     *
+     * @return array<string, true>
+     */
+    private function references(Node\FunctionLike $function): array
+    {
+        $references = [];
+        foreach ($function instanceof Node\Expr\Closure ? $function->uses : [] as $use) {
+            if ($use->byRef && is_string($use->var->name)) {
+                $references[$use->var->name] = true;
+            }
+        }
+        foreach ($function->getParams() as $param) {
+            if ($param->byRef && $param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                $references[$param->var->name] = true;
+            }
+        }
+
+        return $references;
+    }
+
+    /**
+     * Whether anything in a file, at any depth, declares a global or writes \$GLOBALS, so a
+     * variable of the file's own scope may change without being named there.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function touchesGlobals(array $ast): bool
+    {
+        $pending = $ast;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Stmt\Global_) {
+                return true;
+            }
+            $written = $this->writtenVariables($node);
+            if ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable) {
+                $written[] = $node->var;
+            }
+            foreach ($written as $variable) {
+                if ($variable->name === 'GLOBALS') {
+                    return true;
+                }
+            }
+            array_push($pending, ...$this->childNodes($node));
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a function body, outside the functions declared in it, holds a global statement.
+     */
+    private function readsGlobals(Node\Stmt\Function_ $function): bool
+    {
+        $pending = $function->stmts;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Stmt\Global_) {
+                return true;
+            }
+            if (! $node instanceof Node\FunctionLike) {
+                array_push($pending, ...$this->childNodes($node));
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The variables a node writes other than by a plain assignment to a variable: the
+     * targets of a foreach, of destructuring, of a reference assignment on either side, of a
+     * compound assignment, an increment or an array write, a static, global or catch
+     * variable, an unset() variable, a variable a closure imports by reference, and a
+     * variable passed to a call, which may take it by reference. The routes argument of a
+     * group() call on the Route facade or another receiver {@see self::isRouteRoot()} knows
+     * without tracked variables is only read.
+     *
+     * @return list<Node\Expr\Variable>
+     */
+    private function writtenVariables(Node $node): array
+    {
+        $targets = match (true) {
+            $node instanceof Node\Expr\Assign => $node->var instanceof Node\Expr\Variable ? [] : [$node->var],
+            $node instanceof Node\Expr\AssignRef => [$node->var, $node->expr],
+            $node instanceof Node\Expr\AssignOp, $node instanceof Node\Expr\PreInc, $node instanceof Node\Expr\PostInc,
+            $node instanceof Node\Expr\PreDec, $node instanceof Node\Expr\PostDec => [$node->var],
+            $node instanceof Node\Stmt\Foreach_ => [$node->keyVar, $node->valueVar],
+            $node instanceof Node\Stmt\Static_ => array_map(fn (Node\StaticVar $static): Node => $static->var, $node->vars),
+            $node instanceof Node\Stmt\Global_, $node instanceof Node\Stmt\Unset_ => $node->vars,
+            $node instanceof Node\Stmt\Catch_ => [$node->var],
+            $node instanceof Node\Expr\Closure => array_map(
+                fn (Node\ClosureUse $use): Node => $use->var,
+                array_values(array_filter($node->uses, fn (Node\ClosureUse $use): bool => $use->byRef)),
+            ),
+            default => [],
+        };
+
+        if ($node instanceof Node\Expr\CallLike && ! $node->isFirstClassCallable()) {
+            // Only a group on what is known to be the router reads its routes and nothing more
+            $routes = $this->isGroupCall($node, []) ? $this->routesArgument($node->args) : null;
+            foreach ($node->getArgs() as $arg) {
+                if ($arg !== $routes) {
+                    $targets[] = $arg->value;
+                }
+            }
+        }
+
+        $variables = [];
+        while ($targets !== []) {
+            $target = array_pop($targets);
+            if ($target instanceof Node\Expr\Variable) {
+                $variables[] = $target;
+            } elseif ($target instanceof Node\Expr\List_ || $target instanceof Node\Expr\Array_) {
+                foreach ($target->items as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem) {
+                        $targets[] = $item->value;
+                    }
+                }
+            } elseif ($target instanceof Node\Expr\ArrayDimFetch) {
+                $targets[] = $target->var;
+            }
+        }
+
+        return $variables;
     }
 
     /**

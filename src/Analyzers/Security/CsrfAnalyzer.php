@@ -1225,7 +1225,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // either. Groups in route files are read by the walk
         $stripped = [];
         // Files stripped by a load 'web' or a CSRF class reaches: they run as web routes. A strip
-        // on an api load removes nothing, as the api group never ran CSRF
+        // on an api load leaves the file an api file, removing only what a route applies itself
         $webStripped = [];
         $loaded = $covered + $api;
         foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
@@ -1287,7 +1287,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         foreach ($walks as $path => $entry) {
             // A file only the api routes load runs without CSRF cookies, so only a route that applies
-            // 'web' or a CSRF class itself is judged there, by its own exclusions
+            // 'web' or a CSRF class itself is judged there: by its own exclusions, and by a strip on
+            // the load, which Laravel merges into it
             $apiOnly = isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
 
             // A strip on a web load strips every route. A strip only an api load applies removes
@@ -1303,7 +1304,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $reasons = [];
                 foreach ($route['states'] as ['group' => $group, 'applied' => $applied, 'excluded' => $excluded]) {
                     $reasons[] = match (true) {
-                        $apiOnly => ($group || $applied !== []) && ! $this->csrfRuns($group, $applied, $excluded) ? 'stripped' : null,
+                        $apiOnly => ($group || $applied !== []) && (isset($stripped[$path]) || ! $this->csrfRuns($group, $applied, $excluded)) ? 'stripped' : null,
                         $fileStripped => 'stripped',
                         // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
                         $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',

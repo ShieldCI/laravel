@@ -4087,6 +4087,27 @@ PHP,
         $this->assertPassed($result);
     }
 
+    public function test_strip_on_an_api_load_removes_web_a_route_applies_itself(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group(base_path('routes/hooks.php'));
+PHP,
+            'routes/hooks.php' => <<<'PHP'
+<?php
+
+Route::post('/plain', PlainHookController::class);
+Route::middleware('web')->post('/own-web', OwnWebHookController::class);
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_csrf_exclusion_on_an_api_load_removes_nothing(): void
     {
         // The api group never ran CSRF, so excluding it out of habit leaves the file an api file

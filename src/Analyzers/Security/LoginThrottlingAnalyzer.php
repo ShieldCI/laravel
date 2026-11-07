@@ -385,7 +385,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 // Middleware classes each route statement and each route group names,
                 // so a throttling middleware covers the routes it is applied to.
-                [$statementMiddleware, $groupMiddleware, $routeActions, $chainedRoutes] = $this->routeMiddleware($ast);
+                [$statementMiddleware, $groupMiddleware, $routeActions, $chainedRoutes] = $this->routeMiddleware($ast, $bootstrapParser);
                 array_push($groupMiddleware, ...$fileGroups[$normalizedPath] ?? []);
 
                 // AST-derived line ranges of throttled route groups (fluent and
@@ -542,7 +542,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * @param  array<Node>  $ast
      * @return array{0: array<int, array<int, string>>, 1: array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>, 2: array<int, array{class: ?string, method: ?string}>, 3: array<int, array{verb: string, uri: string}>}
      */
-    private function routeMiddleware(array $ast): array
+    private function routeMiddleware(array $ast, BootstrapRouteParser $bootstrapParser): array
     {
         $statements = [];
         $groups = [];
@@ -565,7 +565,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
             if ($method === 'group') {
                 [$classes, $controller] = $this->chainClasses($call->var);
-                $this->collectGroupMiddleware($call->args, $classes, $controller, $groups);
+                $this->collectGroupMiddleware($call->args, $classes, $controller, $groups, $bootstrapParser);
             }
 
             // Route::middleware(...)->post(...): a verb chained after another Route:: call
@@ -589,7 +589,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
             $method = $call->name->toLowerString();
             if ($method === 'group') {
-                $this->collectGroupMiddleware($call->args, [], null, $groups);
+                $this->collectGroupMiddleware($call->args, [], null, $groups, $bootstrapParser);
             }
 
             if (in_array($method, self::ROUTE_VERBS, true)) {
@@ -742,25 +742,23 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Records a group's closure range with the middleware its chain and its
-     * ['middleware' => ...] attribute array name, when there is a closure and any.
+     * Records the range of each closure a group loads, including each closure in a
+     * list, with the middleware its chain and its ['middleware' => ...] attribute
+     * array name, when there is a closure and any.
      *
      * @param  array<Node>  $args
      * @param  array<int, string>  $classes  Middleware the group's method chain applies (see chainClasses())
      * @param  ?string  $controller  The controller the group's method chain names
      * @param  array<int, array{start: int, end: int, classes: array<int, string>, controller: ?string}>  $groups
      */
-    private function collectGroupMiddleware(array $args, array $classes, ?string $controller, array &$groups): void
+    private function collectGroupMiddleware(array $args, array $classes, ?string $controller, array &$groups, BootstrapRouteParser $bootstrapParser): void
     {
-        $closure = null;
-        foreach ($args as $arg) {
-            if ($arg instanceof Node\Arg && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
-                $closure ??= $arg->value;
-            }
-        }
         array_push($classes, ...$this->groupAttributeMiddleware($args));
+        if ($classes === [] && $controller === null) {
+            return;
+        }
 
-        if ($closure !== null && ($classes !== [] || $controller !== null)) {
+        foreach ($bootstrapParser->closureArguments($args) as $closure) {
             $groups[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine(), 'classes' => $classes, 'controller' => $controller];
         }
     }

@@ -1716,6 +1716,136 @@ PHP;
         ];
     }
 
+    // ==================== A list of route files passed to group() ====================
+
+    /**
+     * @dataProvider groupRouteListProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('groupRouteListProvider')]
+    public function test_group_reads_every_route_file_in_a_list(string $registration, string $reader, array $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/orders.php' => '<?php',
+            'routes/reports.php' => '<?php',
+            'routes/admin.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = match ($reader) {
+                'web' => $parser->getWebProtectedRouteFiles(),
+                'api' => $parser->getApiRegisteredRouteFiles(),
+                default => $parser->getThrottleProtectedRouteFiles(),
+            };
+            $names = array_map('basename', $result);
+            sort($names);
+
+            $this->assertSame($expected, $names);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function groupRouteListProvider(): array
+    {
+        $list = "[base_path('routes/orders.php'), base_path('routes/reports.php')]";
+        $both = ['orders.php', 'reports.php'];
+
+        return [
+            'fluent web list' => ["Route::middleware('web')->group({$list});", 'web', $both],
+            'fluent api list' => ["Route::middleware('api')->group({$list});", 'api', $both],
+            'fluent throttle list' => ["Route::middleware('throttle:5,1')->group({$list});", 'throttle', $both],
+            'attribute array with a web list' => ["Route::group(['middleware' => 'web'], {$list});", 'web', $both],
+            'attribute array with an api list' => ["Route::group(['middleware' => 'api'], {$list});", 'api', $both],
+            'attribute array with a throttle list' => ["Route::group(['middleware' => ['api', 'throttle:api']], {$list});", 'throttle', $both],
+            'router variable with a list' => ["\$router->group(['middleware' => 'web'], {$list});", 'web', $both],
+            'named routes argument' => ["Route::group(routes: {$list}, attributes: ['middleware' => 'api']);", 'api', $both],
+            'named callback argument' => ["Route::middleware('web')->group(callback: {$list});", 'web', $both],
+            '__DIR__ entries' => ["Route::middleware('web')->group([__DIR__.'/../routes/orders.php', __DIR__.'/../routes/reports.php']);", 'web', $both],
+            'list inside an enclosing group' => ["Route::middleware('api')->group(function () { Route::prefix('v1')->group({$list}); });", 'api', $both],
+            'closure entry beside a file' => ["Route::middleware('web')->group([function () { require __DIR__.'/../routes/admin.php'; }, base_path('routes/orders.php')]);", 'web', ['admin.php', 'orders.php']],
+            'bare string entry is not read' => ["Route::middleware('web')->group(['routes/orders.php', base_path('routes/reports.php')]);", 'web', ['reports.php']],
+            'missing file entry is skipped' => ["Route::middleware('web')->group([base_path('routes/missing.php'), base_path('routes/reports.php')]);", 'web', ['reports.php']],
+            'list under another middleware' => ["Route::middleware('auth')->group({$list});", 'web', []],
+            'list excluding the middleware' => ["Route::middleware('web')->withoutMiddleware('web')->group({$list});", 'web', []],
+            'unpacked arguments are not expanded' => ["Route::middleware('web')->group(...[base_path('routes/orders.php'), base_path('routes/reports.php')]);", 'web', []],
+            'named argument in another case' => ["Route::group(ROUTES: {$list}, attributes: ['middleware' => 'web']);", 'web', []],
+            'a file in the attribute array is not loaded' => ["Route::group(['middleware' => 'web', 'prefix' => base_path('routes/admin.php')], {$list});", 'web', $both],
+        ];
+    }
+
+    public function test_group_registered_route_files_record_each_listed_file(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('signin')->group([base_path('routes/orders.php'), base_path('routes/reports.php')]);
+    }
+}
+PHP;
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/orders.php' => '<?php',
+            'routes/reports.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $registrations = $parser->getGroupRegisteredRouteFiles(routeFiles: false);
+
+            $this->assertCount(2, $registrations);
+            $this->assertStringEndsWith('/routes/orders.php', $registrations[0]['file']);
+            $this->assertStringEndsWith('/routes/reports.php', $registrations[1]['file']);
+            $this->assertSame($registrations[0]['calls'], $registrations[1]['calls']);
+            $this->assertCount(1, $registrations[0]['calls']);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_cover_each_closure_in_a_list(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group([function () {
+    Route::post('/login', [LoginController::class, 'store']);
+}, base_path('routes/orders.php'), fn () => Route::post('/two-factor', [TwoFactorController::class, 'store'])]);
+Route::group(['middleware' => 'throttle:api'], [function () {
+    Route::post('/token', [TokenController::class, 'store']);
+}]);
+Route::middleware('auth')->group([function () {
+    Route::post('/logout', [LoginController::class, 'destroy']);
+}]);
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes, 'routes/orders.php' => '<?php']);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame(
+                [['start' => 3, 'end' => 5], ['start' => 5, 'end' => 5], ['start' => 6, 'end' => 8]],
+                $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
+            );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     private function bootstrapRegistering(string $imports, string $registration): string
     {
         return <<<PHP

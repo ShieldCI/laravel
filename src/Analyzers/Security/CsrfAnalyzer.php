@@ -599,7 +599,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $commentedEntry = '/^\s*\/\/\s*[\'"]?\\\\?(?:\w+\\\\)*('.implode('|', self::CSRF_MIDDLEWARE).')(?:::class|[\'"])/';
         $commentedOut = [];
 
-        foreach (FileParser::getLines($kernelFile) as $lineNumber => $line) {
+        // A commented-out entry is a leftover, not a gap, while an active entry runs CSRF on web routes
+        $lines = $this->kernelRunsCsrfOnWebRoutes($kernelFile) ? [] : FileParser::getLines($kernelFile);
+
+        foreach ($lines as $lineNumber => $line) {
             if (! is_string($line) || preg_match($commentedEntry, $line, $matches) !== 1) {
                 continue;
             }
@@ -638,6 +641,102 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         array_push($issues, ...$commentedOut);
+    }
+
+    /**
+     * Whether the Kernel's global $middleware or its web group lists CSRF middleware on an active
+     * entry. A web group entry naming an alias or another group is followed, as Laravel resolves
+     * it. $middlewarePriority only orders middleware and an alias applies only where a route or
+     * group names it, so neither counts on its own. A list that cannot be read counts only for
+     * what it shows.
+     */
+    private function kernelRunsCsrfOnWebRoutes(string $kernelFile): bool
+    {
+        $global = null;
+        $groups = [];
+        $aliases = [];
+        $routeMiddleware = [];
+
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
+
+        foreach ($this->parser->findNodes($ast, Stmt\Class_::class) as $class) {
+            // Only the Kernel class counts, not an anonymous or helper class elsewhere in the file
+            if (! $class instanceof Stmt\Class_ || $class->name?->toString() !== 'Kernel') {
+                continue;
+            }
+
+            foreach ($class->getProperties() as $property) {
+                foreach ($property->props as $prop) {
+                    match ($prop->name->toString()) {
+                        'middleware' => $global = $prop->default,
+                        'middlewareGroups' => $groups = $this->keyedEntries($prop->default),
+                        'middlewareAliases' => $aliases = $this->keyedEntries($prop->default),
+                        'routeMiddleware' => $routeMiddleware = $this->keyedEntries($prop->default),
+                        default => null,
+                    };
+                }
+            }
+        }
+
+        // Laravel 10 registers both alias properties, $middlewareAliases winning a shared key
+        $aliases = array_merge($routeMiddleware, $aliases);
+
+        return $this->kernelListRunsCsrf($global, [], [], [])
+            || $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, ['web' => true]);
+    }
+
+    /**
+     * The string-keyed entries of an array property's default value.
+     *
+     * @return array<string, Expr>
+     */
+    private function keyedEntries(?Expr $default): array
+    {
+        $entries = [];
+
+        foreach ($default instanceof Expr\Array_ ? $default->items : [] as $item) {
+            if ($item instanceof ArrayItem && $item->key instanceof String_) {
+                $entries[$item->key->value] = $item->value;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
+     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. As Laravel
+     * resolves an entry, a group name comes first, then an alias, and only then a class name;
+     * a group is never followed back into itself.
+     *
+     * @param  array<string, Expr>  $groups
+     * @param  array<string, Expr>  $aliases
+     * @param  array<string, true>  $seen
+     */
+    private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, array $seen): bool
+    {
+        foreach ($this->middlewareList($list) ?? [] as $entry) {
+            if ($entry === null) {
+                continue;
+            }
+
+            $name = explode(':', $entry, 2)[0];
+
+            if (isset($groups[$entry])) {
+                $runsCsrf = ! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true]);
+            } elseif (isset($aliases[$name])) {
+                $runsCsrf = $this->kernelListRunsCsrf($aliases[$name], [], [], $seen);
+            } else {
+                // Case-sensitive, as the registration check's text match is
+                $runsCsrf = in_array(substr((string) strrchr('\\'.$name, '\\'), 1), self::CSRF_MIDDLEWARE, true);
+            }
+
+            if ($runsCsrf) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1159,9 +1258,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                         $changed = $changed || ! isset($stripped[$file]);
                         $stripped[$file] = true;
 
-                        // A covered file's own stripping group strips a web load; a strip it
-                        // only inherits from an api load does not pass on
-                        if (! isset($webStripped[$file]) && (isset($webStripped[$path]) || ($include['strips'] && ($include['reached'] || isset($covered[$path]))))) {
+                        // A strip meets a web load when the load itself applies 'web' or a CSRF class
+                        // (Laravel merges an outer exclusion into it), or the stripping group sits in
+                        // a covered file; a strip inherited only from an api load does not pass on
+                        $meetsWeb = $include['reached'] || ($include['strips'] && isset($covered[$path]));
+                        if (! isset($webStripped[$file]) && (isset($webStripped[$path]) || $meetsWeb)) {
                             $changed = true;
                             $webStripped[$file] = true;
                         }
@@ -1180,9 +1281,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // A strip only an api load applies removes nothing from the file's web load
-            $fileStripped = isset($webStripped[$path]) || (isset($stripped[$path]) && ! isset($api[$path]));
+            // A strip on a web load strips every route. A strip only an api load applies removes
+            // nothing, and one on a plain load removes only what a route applies itself
+            $fileStripped = isset($webStripped[$path]);
             $fileCovered = isset($covered[$path]) && ! $fileStripped;
+            $plainStripped = ! $fileStripped && ! $fileCovered && isset($stripped[$path]) && ! isset($api[$path]);
 
             $unprotected = [];
             foreach ($entry['walk']['routes'] as $route) {
@@ -1192,6 +1295,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
                     $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',
                     ! $group && $applied === [] => 'missing',
+                    $plainStripped => 'stripped',
                     default => $this->csrfRuns($group, $applied, $excluded) ? null : 'stripped',
                 };
                 if ($reason !== null) {
@@ -1359,12 +1463,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $names = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($excluded, is_string(...)));
         if (in_array('web', $names, true)) {
-            // With the group not modelled, any CSRF class is assumed to be in it before Laravel 13,
-            // as namesStripCsrf() assumes
-            if ($this->webGroupCsrf === null && ! $this->isLaravel13OrNewer()) {
+            // With the group not modelled, any CSRF class is assumed to be in it, as namesStripCsrf()
+            // assumes before Laravel 13; on 13 every CSRF class extends PreventRequestForgery anyway
+            if ($this->webGroupCsrf === null) {
                 return false;
             }
-            $names = [...$names, ...($this->webGroupCsrf ?? [$this->defaultWebCsrfMiddleware()])];
+            $names = [...$names, ...$this->webGroupCsrf];
         }
         foreach ($applied as $class) {
             if (array_intersect($this->csrfAncestors($class), $names) === []) {
@@ -1639,29 +1743,31 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         if (isset($calls['group'])) {
             $args = $calls['group'][0]->args;
 
-            // A variable callback opens the closure assigned to it last before this call, as PHP reads it
-            $closure = $routeParser->closureArgument($args);
-            $variable = $this->variableArgument($args);
-            $closureId = match (true) {
-                $closure !== null => spl_object_id($closure),
-                $variable !== null => $walk['variables'][$variable] ?? null,
-                default => null,
-            };
-            if ($closureId !== null) {
+            // Each callback the group loads, including each item of a list, opens its closure; a
+            // variable callback opens the closure assigned to it last before this call, as PHP reads
+            // it. Any other entry is a route file path Router::loadRoutes() requires inside the group
+            foreach ($routeParser->groupRoutes($args) as $callback) {
+                $direct = $callback instanceof Expr\Closure || $callback instanceof Expr\ArrowFunction;
+                $closureId = match (true) {
+                    $direct => spl_object_id($callback),
+                    $callback instanceof Expr\Variable && is_string($callback->name) => $walk['variables'][$callback->name] ?? null,
+                    default => null,
+                };
+                if ($closureId === null) {
+                    if (! $direct) {
+                        $walk['paths'][] = ['path' => $callback, 'state' => $state, 'closures' => $closures];
+                    }
+
+                    continue;
+                }
+
                 // The variable's closure was walked before its first parameter was known as the router
-                $walk['late'] = $walk['late'] || ($closure === null && ! isset($walk['callbacks'][$closureId]));
+                $walk['late'] = $walk['late'] || (! $direct && ! isset($walk['callbacks'][$closureId]));
                 // The closures around this call reach the callback too, wherever it was written
                 $walk['groups'][$closureId] = [
                     'state' => $this->mergeCsrfState($walk['groups'][$closureId]['state'] ?? self::NO_CSRF, $state),
                     'closures' => [...($walk['groups'][$closureId]['closures'] ?? []), ...$closures],
                 ];
-            }
-
-            // A path argument is a route file Router::loadRoutes() requires inside this group
-            foreach ($args as $arg) {
-                if ($arg instanceof Node\Arg && $arg->value !== $closure) {
-                    $walk['paths'][] = ['path' => $arg->value, 'state' => $state, 'closures' => $closures];
-                }
             }
 
             return;
@@ -2151,22 +2257,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 $resolved = $node->extends->getAttribute('resolvedName');
 
                 return ($resolved instanceof Name ? $resolved : $node->extends)->toString();
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * The name of the first variable a group is given as its callback, or null.
-     *
-     * @param  array<Node>  $args
-     */
-    private function variableArgument(array $args): ?string
-    {
-        foreach ($args as $arg) {
-            if ($arg instanceof Node\Arg && $arg->value instanceof Expr\Variable && is_string($arg->value->name)) {
-                return $arg->value->name;
             }
         }
 

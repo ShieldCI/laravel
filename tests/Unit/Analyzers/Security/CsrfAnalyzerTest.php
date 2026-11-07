@@ -3850,6 +3850,39 @@ PHP;
         $this->assertPassed($analyzer->analyze());
     }
 
+    public function test_skips_route_file_required_through_base_path_inside_a_provider_api_group(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class PartnerRouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->group(function () {
+            require base_path('routes/partner.php');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/PartnerRouteServiceProvider.php' => $provider,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
     public function test_fails_route_file_registered_in_a_group_attribute_array_without_web(): void
     {
         $bootstrapApp = <<<'PHP'

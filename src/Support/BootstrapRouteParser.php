@@ -14,7 +14,6 @@ use PhpParser\Node\Expr\StaticCall;
 use PhpParser\Node\Identifier;
 use PhpParser\Node\Scalar\MagicConst\Dir;
 use PhpParser\Node\Scalar\String_;
-use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\Concerns\ResolvesClassNames;
 
@@ -38,6 +37,8 @@ use ShieldCI\Concerns\ResolvesClassNames;
  *
  * A group counts as throttled by the middleware MiddlewareThrottleDetector recognises,
  * with class names resolved against the imports of the file that declares the group.
+ *
+ * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, true>}
  */
 class BootstrapRouteParser
 {
@@ -45,8 +46,13 @@ class BootstrapRouteParser
 
     private readonly MiddlewareThrottleDetector $throttles;
 
-    /** @var array<string, list<array{file: string, calls: non-empty-list<MethodCall|StaticCall>}>> */
-    private array $registrations = [];
+    /**
+     * The classes the container resolves the router as, besides its 'router' binding.
+     */
+    private const ROUTER_CLASSES = ['Illuminate\\Routing\\Router', 'Illuminate\\Contracts\\Routing\\Registrar'];
+
+    /** @var array<string, RouteFileWalk> */
+    private array $walks = [];
 
     /**
      * The judge, $nameThrottles, says whether one middleware name throttles, as
@@ -184,17 +190,11 @@ class BootstrapRouteParser
      */
     public function getGroupRegisteredRouteFiles(bool $routeFiles = true): array
     {
-        $sources = [$this->basePath.'/bootstrap/app.php'];
-        foreach ($routeFiles ? ['routes', 'app/Providers'] : ['app/Providers'] as $dir) {
-            if (is_dir($this->basePath.'/'.$dir)) {
-                $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->basePath.'/'.$dir, \FilesystemIterator::SKIP_DOTS));
-                foreach ($files as $file) {
-                    if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
-                        $sources[] = $file->getPathname();
-                    }
-                }
-            }
-        }
+        $sources = [
+            $this->basePath.'/bootstrap/app.php',
+            ...($routeFiles ? $this->phpFilesUnder('routes') : []),
+            ...$this->phpFilesUnder('app/Providers'),
+        ];
 
         $found = [];
         foreach ($sources as $source) {
@@ -207,15 +207,65 @@ class BootstrapRouteParser
     }
 
     /**
+     * The route files each PHP file under routes/ loads, keyed by the loading file's
+     * normalized path: a file it require's/include's, at any depth of nested groups or
+     * outside any group, or a group path argument, each with the group calls enclosing
+     * the load in that file, outermost first, which may be none. A loaded file inherits
+     * what the loading file was registered with, as Laravel loads it in that context.
+     * A require_once is read as a require.
+     *
+     * @return array<string, list<array{file: string, calls: list<MethodCall|StaticCall>}>>
+     */
+    public function getRouteFileLoads(): array
+    {
+        $found = [];
+        foreach ($this->phpFilesUnder('routes') as $source) {
+            $loads = $this->routeFileLoads($source);
+            $normalized = $this->normalizePath($source);
+            if ($loads !== [] && $normalized !== null) {
+                $found[$normalized] = $loads;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * The PHP files under a directory of the base path, at any depth.
+     *
+     * @return list<string>
+     */
+    private function phpFilesUnder(string $relativeDir): array
+    {
+        if (! is_dir($this->basePath.'/'.$relativeDir)) {
+            return [];
+        }
+
+        $paths = [];
+        $files = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($this->basePath.'/'.$relativeDir, \FilesystemIterator::SKIP_DOTS));
+        foreach ($files as $file) {
+            if ($file instanceof \SplFileInfo && $file->isFile() && $file->getExtension() === 'php') {
+                $paths[] = $file->getPathname();
+            }
+        }
+
+        return $paths;
+    }
+
+    /**
      * Returns the line ranges of throttled Route::...->group(Closure) blocks
      * declared inside the given route file. Covers both the fluent form
      * (Route::middleware([...'throttle'...])->group(fn)) and the array form
      * (Route::group(['middleware' => 'throttle...'], fn)), one range for each closure a
      * list passes, with the throttle variants
-     * {@see self::getThrottleProtectedRouteFiles()} matches, and is nesting-safe:
-     * overlapping ranges are returned as-is, so a route line inside any range
-     * is treated as covered. Path-argument groups (->group(base_path(...))) open
-     * no closure and are intentionally ignored here.
+     * {@see self::getThrottleProtectedRouteFiles()} matches. A group is
+     * throttled when its own or an enclosing group's throttle is not excluded by
+     * ->withoutMiddleware(...) or 'excluded_middleware' at any level, by the exact name
+     * {@see MiddlewareThrottleDetector::throttlesAfterExclusion()} matches. A throttled
+     * group's range leaves out the lines strictly inside the nested groups that are not:
+     * the lines such a group opens and closes on can hold routes outside it. Overlapping ranges
+     * are returned as-is, so a route line inside any range is covered. Path-argument
+     * groups (->group(base_path(...))) open no closure and are intentionally ignored here.
      *
      * @return array<int, array{start: int, end: int}>
      */
@@ -225,46 +275,69 @@ class BootstrapRouteParser
             return [];
         }
 
-        $ast = $this->parser->parseFile($filePath);
-        if (empty($ast)) {
-            return [];
+        $scopes = $this->walkFile($filePath)['closures'];
+
+        $throttled = [];
+        foreach ($scopes as $index => $scope) {
+            $throttled[$index] = $this->groupsThrottle($scope['calls']);
         }
-        $ast = $this->resolveNamesForMatching($ast);
 
         $ranges = [];
+        foreach ($scopes as $index => $scope) {
+            if (! $throttled[$index]) {
+                continue;
+            }
 
-        // Fluent form: Route::middleware([...'throttle'...])->group(function () {...}),
-        // throttled on the chain; array form: Route::group(['middleware' =>
-        // 'throttle...'], function () {...}), throttled in its attribute array.
-        /** @var list<MethodCall|StaticCall> $calls */
-        $calls = (new NodeFinder)->find($ast, $this->isGroupCall(...));
-        foreach ($calls as $call) {
-            $this->collectThrottledGroupRange(
-                $call->args,
-                $call instanceof MethodCall && $this->anyEntry($this->chainEntries($call->var, 'middleware'), $this->throttles->expressionIsThrottle(...)),
-                $ranges,
-            );
+            $segments = [['start' => $scope['closure']->getStartLine(), 'end' => $scope['closure']->getEndLine()]];
+            $group = $scope['calls'][count($scope['calls']) - 1];
+            foreach ($scopes as $other => $nested) {
+                if ($other !== $index && ! $throttled[$other] && in_array($group, $nested['calls'], true)) {
+                    $segments = $this->withoutLines($segments, $nested['closure']->getStartLine() + 1, $nested['closure']->getEndLine() - 1);
+                }
+            }
+            array_push($ranges, ...$segments);
         }
 
         return $ranges;
     }
 
     /**
-     * Records the line range of each closure the group loads, as closureArguments() reads
-     * them, when the group is throttled: through its method chain ($chainThrottled) or a
-     * config-array argument.
+     * Whether a throttle one of these nested group calls applies survives the middleware
+     * any of them excludes, as Laravel merges both down nested groups.
      *
-     * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
-     * @param  array<int, array{start: int, end: int}>  $ranges
+     * @param  list<MethodCall|StaticCall>  $calls
      */
-    private function collectThrottledGroupRange(array $args, bool $chainThrottled, array &$ranges): void
+    private function groupsThrottle(array $calls): bool
     {
-        $closures = $this->closureArguments($args);
-        if ($closures !== [] && ($chainThrottled || $this->anyEntry($this->groupAttributeEntries($args, 'middleware'), $this->throttles->expressionIsThrottle(...)))) {
-            foreach ($closures as $closure) {
-                $ranges[] = ['start' => $closure->getStartLine(), 'end' => $closure->getEndLine()];
+        $applied = [];
+        $excluded = [];
+        foreach ($calls as $call) {
+            array_push($applied, ...$this->groupEntries($call, 'middleware', 'middleware'));
+            array_push($excluded, ...$this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'));
+        }
+
+        return $this->throttles->throttlesAfterExclusion($applied, $excluded);
+    }
+
+    /**
+     * Line ranges with the lines $start to $end taken out.
+     *
+     * @param  list<array{start: int, end: int}>  $segments
+     * @return list<array{start: int, end: int}>
+     */
+    private function withoutLines(array $segments, int $start, int $end): array
+    {
+        $kept = [];
+        foreach ($segments as $segment) {
+            if ($segment['start'] < $start) {
+                $kept[] = ['start' => $segment['start'], 'end' => min($segment['end'], $start - 1)];
+            }
+            if ($segment['end'] > $end) {
+                $kept[] = ['start' => max($segment['start'], $end + 1), 'end' => $segment['end']];
             }
         }
+
+        return $kept;
     }
 
     /**
@@ -621,7 +694,6 @@ class BootstrapRouteParser
         return $this->filesGroupsApply(
             $filePath,
             fn (Node\Expr $entry): bool => $entry instanceof String_ && $entry->value === $middlewareName,
-            true,
         );
     }
 
@@ -629,19 +701,19 @@ class BootstrapRouteParser
      * The route files groups in $filePath load that $judge says their groups apply to them:
      * a group enclosing the load names a matching middleware on its chain,
      * ->middleware(...), or in its 'middleware' attribute. Laravel merges the middleware
-     * down nested groups. With $exclusionWins, a group that excludes a matching middleware
-     * through ->withoutMiddleware(...) or its 'excluded_middleware' attribute drops the file.
+     * down nested groups. A group that excludes a matching middleware through
+     * ->withoutMiddleware(...) or its 'excluded_middleware' attribute drops the file.
      *
      * @param  Closure(Node\Expr): bool  $judge
      * @return array<string>
      */
-    private function filesGroupsApply(string $filePath, Closure $judge, bool $exclusionWins): array
+    private function filesGroupsApply(string $filePath, Closure $judge): array
     {
         $found = [];
         foreach ($this->groupRegistrations($filePath) as $registration) {
             $applied = false;
             foreach ($registration['calls'] as $call) {
-                if ($exclusionWins && $this->anyEntry($this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'), $judge)) {
+                if ($this->anyEntry($this->groupEntries($call, 'withoutmiddleware', 'excluded_middleware'), $judge)) {
                     continue 2;
                 }
                 $applied = $applied || $this->anyEntry($this->groupEntries($call, 'middleware', 'middleware'), $judge);
@@ -680,57 +752,207 @@ class BootstrapRouteParser
      */
     private function groupRegistrations(string $source): array
     {
-        if (! isset($this->registrations[$source])) {
-            $found = [];
-            if (file_exists($source)) {
-                foreach ($this->resolveNamesForMatching($this->parser->parseFile($source)) as $node) {
-                    $this->collectGroupRegistrations($node, [], dirname($source), $found);
-                }
+        $registrations = [];
+        foreach ($this->routeFileLoads($source) as $load) {
+            if ($load['calls'] !== []) {
+                $registrations[] = ['file' => $load['file'], 'calls' => $load['calls']];
             }
-            $this->registrations[$source] = $found;
         }
 
-        return $this->registrations[$source];
+        return $registrations;
     }
 
     /**
-     * @param  list<MethodCall|StaticCall>  $groups  The group calls enclosing $node, outermost first
-     * @param  list<array{file: string, calls: non-empty-list<MethodCall|StaticCall>}>  $found
+     * The route files $source loads: those {@see self::groupRegistrations()} reads, and
+     * the files it require's/include's outside any group, with no group calls.
+     *
+     * @return list<array{file: string, calls: list<MethodCall|StaticCall>}>
      */
-    private function collectGroupRegistrations(Node $node, array $groups, string $dir, array &$found): void
+    private function routeFileLoads(string $source): array
     {
-        if ($node instanceof Include_ && $groups !== []) {
-            $path = $this->includedFile($node, $dir);
-            if ($path !== null) {
-                $found[] = ['file' => $path, 'calls' => $groups];
+        return $this->walkFile($source)['loads'];
+    }
+
+    /**
+     * The group(...) calls in a tree that are made on the router (see
+     * {@see self::isGroupCall()}), keyed by spl_object_id(), so a caller reading the same
+     * tree can tell a route group from a group() on another object.
+     *
+     * @param  array<Node>  $ast
+     * @return array<int, true>
+     */
+    public function routerGroupCalls(array $ast): array
+    {
+        $walk = ['loads' => [], 'closures' => [], 'groups' => []];
+        $routers = [];
+        foreach ($this->resolveNamesForMatching($ast) as $node) {
+            $this->walkRouteNode($node, [], $routers, null, $walk);
+        }
+
+        return $walk['groups'];
+    }
+
+    /**
+     * One walk of a file, with class names resolved for matching, read once per file.
+     *
+     * @return RouteFileWalk
+     */
+    private function walkFile(string $path): array
+    {
+        if (! isset($this->walks[$path])) {
+            $walk = ['loads' => [], 'closures' => [], 'groups' => []];
+            $routers = [];
+            if (file_exists($path)) {
+                foreach ($this->resolveNamesForMatching($this->parser->parseFile($path)) as $node) {
+                    $this->walkRouteNode($node, [], $routers, dirname($path), $walk);
+                }
+            }
+            $this->walks[$path] = $walk;
+        }
+
+        return $this->walks[$path];
+    }
+
+    /**
+     * Walk one node, recording into $walk the route files it loads (a require/include, or
+     * a group path argument), each with the group calls enclosing the load, which may be
+     * none; each group closure with the group calls enclosing it, ending with its own; and
+     * each group call made on the router.
+     *
+     * Variables that hold the router are tracked per function scope, in the order the code
+     * runs: see {@see self::functionRouters()}, and a variable assigned the router, or a
+     * call chain on it, holds it until it is assigned something else.
+     *
+     * @param  list<MethodCall|StaticCall>  $groups  The group calls enclosing $node, outermost first
+     * @param  array<string, true>  $routers  Variables that hold the router in this function scope
+     * @param  ?string  $dir  The directory of the file being walked; null records no loads
+     * @param  bool  $callback  Whether $node is a group call's callback, which Laravel calls with the router
+     * @param  RouteFileWalk  $walk
+     */
+    private function walkRouteNode(Node $node, array $groups, array &$routers, ?string $dir, array &$walk, bool $callback = false): void
+    {
+        if ($node instanceof Node\FunctionLike) {
+            $scope = $this->functionRouters($node, $routers, $callback);
+            foreach ($this->childNodes($node) as $child) {
+                $this->walkRouteNode($child, $groups, $scope, $dir, $walk);
+            }
+
+            return;
+        }
+
+        if ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+            if ($this->chainOnRouter($node->expr, $routers)) {
+                $routers[$node->var->name] = true;
+            } else {
+                unset($routers[$node->var->name]);
             }
         }
 
-        if ($this->isGroupCall($node)) {
+        if ($node instanceof Include_ && $dir !== null) {
+            $path = $this->includedFile($node, $dir);
+            if ($path !== null) {
+                $walk['loads'][] = ['file' => $path, 'calls' => $groups];
+            }
+        }
+
+        if ($this->isGroupCall($node, $routers)) {
+            $walk['groups'][spl_object_id($node)] = true;
             $inner = [...$groups, $node];
+            foreach ($this->closureArguments($node->args) as $closure) {
+                $walk['closures'][] = ['closure' => $closure, 'calls' => $inner];
+            }
             foreach ($this->groupRoutes($node->args) as $entry) {
-                $path = $this->groupRouteFile($entry, $dir);
+                $path = $dir !== null ? $this->groupRouteFile($entry, $dir) : null;
                 if ($path !== null) {
-                    $found[] = ['file' => $path, 'calls' => $inner];
+                    $walk['loads'][] = ['file' => $path, 'calls' => $inner];
                 } else {
-                    $this->collectGroupRegistrations($entry, $inner, $dir, $found);
+                    $isCallback = $entry instanceof Node\Expr\Closure || $entry instanceof Node\Expr\ArrowFunction;
+                    $this->walkRouteNode($entry, $inner, $routers, $dir, $walk, $isCallback);
                 }
             }
             $children = [$node instanceof MethodCall ? $node->var : $node->class];
         } else {
-            $children = [];
-            foreach ($node->getSubNodeNames() as $name) {
-                foreach (is_array($node->$name) ? $node->$name : [$node->$name] as $child) {
-                    if ($child instanceof Node) {
-                        $children[] = $child;
-                    }
+            $children = $this->childNodes($node);
+        }
+
+        foreach ($children as $child) {
+            $this->walkRouteNode($child, $groups, $routers, $dir, $walk);
+        }
+    }
+
+    /**
+     * @return list<Node>
+     */
+    private function childNodes(Node $node): array
+    {
+        $children = [];
+        foreach ($node->getSubNodeNames() as $name) {
+            foreach (is_array($node->$name) ? $node->$name : [$node->$name] as $child) {
+                if ($child instanceof Node) {
+                    $children[] = $child;
                 }
             }
         }
 
-        foreach ($children as $child) {
-            $this->collectGroupRegistrations($child, $groups, $dir, $found);
+        return $children;
+    }
+
+    /**
+     * The variables that hold the router inside a function: parameters typed Router or
+     * Registrar, the first parameter of a group callback, which Laravel calls with the
+     * router, and router variables a closure captures through use(). An arrow function
+     * sees its parent's variables by value.
+     *
+     * @param  array<string, true>  $outer  The router variables of the enclosing scope
+     * @return array<string, true>
+     */
+    private function functionRouters(Node\FunctionLike $function, array $outer, bool $callback): array
+    {
+        $routers = $function instanceof Node\Expr\ArrowFunction ? $outer : [];
+        if ($function instanceof Node\Expr\Closure) {
+            foreach ($function->uses as $use) {
+                if (is_string($use->var->name) && isset($outer[$use->var->name])) {
+                    $routers[$use->var->name] = true;
+                }
+            }
         }
+
+        foreach ($function->getParams() as $index => $param) {
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)
+                && (($index === 0 && $callback) || $this->namesRouterClass($param->type))) {
+                $routers[$param->var->name] = true;
+            }
+        }
+
+        return $routers;
+    }
+
+    /**
+     * Whether a type or class name is one the container resolves the router as, or a
+     * nullable, union or intersection type naming one.
+     */
+    private function namesRouterClass(?Node $name): bool
+    {
+        if ($name instanceof Node\NullableType) {
+            return $this->namesRouterClass($name->type);
+        }
+
+        if ($name instanceof Node\UnionType || $name instanceof Node\IntersectionType) {
+            foreach ($name->types as $type) {
+                if ($this->namesRouterClass($type)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if (! $name instanceof Node\Name) {
+            return false;
+        }
+        $resolved = $name->getAttribute('resolvedName');
+
+        return in_array(($resolved instanceof Node\Name ? $resolved : $name)->toString(), self::ROUTER_CLASSES, true);
     }
 
     /**
@@ -747,16 +969,152 @@ class BootstrapRouteParser
     }
 
     /**
-     * Whether a node is a ->group(...) or Route::group(...) call, matched
-     * case-insensitively, as PHP calls methods.
+     * Whether a node is a group(...) call on the router: Route::group(...), or ->group(...)
+     * at the end of a chain the router starts (see {@see self::chainOnRouter()}). The name
+     * is matched case-insensitively, as PHP calls methods.
+     *
+     * @param  array<string, true>  $routers  Variables that hold the router in this scope
      *
      * @phpstan-assert-if-true MethodCall|StaticCall $node
      */
-    private function isGroupCall(Node $node): bool
+    private function isGroupCall(Node $node, array $routers): bool
     {
         return ($node instanceof MethodCall || $node instanceof StaticCall)
             && $node->name instanceof Identifier
-            && $node->name->toLowerString() === 'group';
+            && $node->name->toLowerString() === 'group'
+            && $this->chainOnRouter($node instanceof MethodCall ? $node->var : $node, $routers);
+    }
+
+    /**
+     * Whether a call chain is made on the router: one of its links, or the class of a
+     * static call it starts at, is the router (see {@see self::isRouteRoot()}). A chain
+     * on Route::middleware(...) holds the router's registrar, whose calls register routes.
+     *
+     * @param  array<string, true>  $routers
+     */
+    private function chainOnRouter(Node $node, array $routers): bool
+    {
+        while (true) {
+            if ($this->isRouteRoot($node, $routers)) {
+                return true;
+            }
+            if ($node instanceof MethodCall) {
+                $node = $node->var;
+
+                continue;
+            }
+
+            return $node instanceof StaticCall && $this->isRouteRoot($node->class, $routers);
+        }
+    }
+
+    /**
+     * Whether a node is the router: the Route facade, by the name as written or the name
+     * an import resolves it to, so an aliased import counts; a $router variable or one of
+     * $routers; $this->router; or the container's router, reached as app('router'),
+     * resolve(Router::class), App::make('router'), or on the container ($this->app, $app,
+     * app() or Container::getInstance()) through ['router'], ->router, ->make(...),
+     * ->get(...) or ->makeWith(...), given 'router', Router::class or Registrar::class.
+     *
+     * @param  array<string, true>  $routers
+     */
+    private function isRouteRoot(Node $root, array $routers): bool
+    {
+        if ($root instanceof Node\Name) {
+            $resolved = $root->getAttribute('resolvedName');
+
+            return strcasecmp($root->getLast(), 'Route') === 0
+                || ($resolved instanceof Node\Name && strcasecmp($resolved->getLast(), 'Route') === 0);
+        }
+
+        if ($root instanceof Node\Expr\Variable) {
+            return is_string($root->name) && ($root->name === 'router' || isset($routers[$root->name]));
+        }
+
+        if ($root instanceof Node\Expr\PropertyFetch) {
+            return $root->name instanceof Identifier && $root->name->toLowerString() === 'router'
+                && (($root->var instanceof Node\Expr\Variable && $root->var->name === 'this') || $this->isContainer($root->var));
+        }
+
+        if ($root instanceof Node\Expr\ArrayDimFetch) {
+            return $this->isContainer($root->var) && $this->namesRouter($root->dim);
+        }
+
+        if ($root instanceof FuncCall) {
+            return $this->isFunction($root, ['app', 'resolve']) && $this->namesRouter($this->firstArgument($root));
+        }
+
+        $resolves = ($root instanceof MethodCall || $root instanceof StaticCall)
+            && $root->name instanceof Identifier
+            && in_array($root->name->toLowerString(), ['make', 'get', 'makewith'], true)
+            && $this->namesRouter($this->firstArgument($root));
+
+        return $resolves && (($root instanceof MethodCall && $this->isContainer($root->var))
+            || ($root instanceof StaticCall && $root->class instanceof Node\Name && strcasecmp($this->resolvedLast($root->class), 'App') === 0));
+    }
+
+    /**
+     * Whether an expression is the application container: $this->app, $this->container,
+     * $app, $container, app() or Container::getInstance().
+     */
+    private function isContainer(Node $expr): bool
+    {
+        if ($expr instanceof Node\Expr\Variable) {
+            return in_array($expr->name, ['app', 'container'], true);
+        }
+
+        if ($expr instanceof Node\Expr\PropertyFetch) {
+            return $expr->var instanceof Node\Expr\Variable && $expr->var->name === 'this'
+                && $expr->name instanceof Identifier && in_array($expr->name->toLowerString(), ['app', 'container'], true);
+        }
+
+        if ($expr instanceof FuncCall) {
+            return $this->isFunction($expr, ['app']) && $expr->args === [];
+        }
+
+        return $expr instanceof StaticCall && $expr->class instanceof Node\Name
+            && strcasecmp($this->resolvedLast($expr->class), 'Container') === 0
+            && $expr->name instanceof Identifier && $expr->name->toLowerString() === 'getinstance';
+    }
+
+    /**
+     * The last segment of a class name as an import resolves it, or as written.
+     */
+    private function resolvedLast(Node\Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        return ($resolved instanceof Node\Name ? $resolved : $name)->getLast();
+    }
+
+    /**
+     * @param  list<string>  $names  Lowercase function names
+     */
+    private function isFunction(FuncCall $call, array $names): bool
+    {
+        return $call->name instanceof Node\Name && in_array(ltrim($call->name->toLowerString(), '\\'), $names, true);
+    }
+
+    private function firstArgument(FuncCall|MethodCall|StaticCall $call): ?Node\Expr
+    {
+        $first = $call->args[0] ?? null;
+
+        return $first instanceof Node\Arg ? $first->value : null;
+    }
+
+    /**
+     * Whether a value is the router's container binding: 'router', Router::class or
+     * Registrar::class.
+     */
+    private function namesRouter(?Node\Expr $value): bool
+    {
+        if ($value instanceof String_) {
+            return $value->value === 'router' || in_array(ltrim($value->value, '\\'), self::ROUTER_CLASSES, true);
+        }
+
+        return $value instanceof Node\Expr\ClassConstFetch
+            && $value->name instanceof Identifier && $value->name->toLowerString() === 'class'
+            && $this->namesRouterClass($value->class);
     }
 
     /**
@@ -806,21 +1164,27 @@ class BootstrapRouteParser
 
     /**
      * Finds route files registered with a throttle middleware on their group in the
-     * given PHP file, read as {@see self::filesGroupsApply()} reads them. Exclusion is
-     * not read: Laravel excludes only the exact name, so excluding throttle:api leaves
-     * throttle:login in place, and the throttle variants are not told apart here.
+     * given PHP file, as {@see self::groupRegistrations()} reads them, unless the groups
+     * exclude it by its exact name (see {@see self::groupsThrottle()}).
      *
      * @return array<string>
      */
     private function getFilesRegisteredWithThrottleMiddlewareInFile(string $filePath): array
     {
-        return $this->filesGroupsApply($filePath, $this->throttles->expressionIsThrottle(...), false);
+        $found = [];
+        foreach ($this->groupRegistrations($filePath) as $registration) {
+            if ($this->groupsThrottle($registration['calls'])) {
+                $found[] = $registration['file'];
+            }
+        }
+
+        return $found;
     }
 
     /**
      * The middleware every ->$method(...) call (lowercase) in a method-call chain lists,
      * such as ->middleware('web'), ->middleware('auth', 'web') or
-     * ->withoutMiddleware(['web']).
+     * ->withoutMiddleware(['web']), which reads only its first argument.
      *
      * @return array<Node\Expr>
      */
@@ -829,12 +1193,40 @@ class BootstrapRouteParser
         $entries = [];
         while ($node instanceof MethodCall || $node instanceof StaticCall) {
             if ($node->name instanceof Identifier && $node->name->toLowerString() === $method) {
-                array_push($entries, ...$this->middlewareEntries($node));
+                array_push($entries, ...($method === 'withoutmiddleware' ? $this->excludedEntries($node) : $this->middlewareEntries($node)));
             }
             if (! $node instanceof MethodCall) {
                 break;
             }
             $node = $node->var;
+        }
+
+        return $entries;
+    }
+
+    /**
+     * The middleware a ->withoutMiddleware(...) call excludes: its first argument, a list or
+     * one middleware, as Route::withoutMiddleware() wraps it and RouteRegistrar passes it on.
+     * Later arguments are dropped.
+     *
+     * @return array<Node\Expr>
+     */
+    private function excludedEntries(StaticCall|MethodCall $call): array
+    {
+        $first = $call->args[0] ?? null;
+        if (! $first instanceof Node\Arg) {
+            return [];
+        }
+
+        if (! $first->value instanceof Node\Expr\Array_) {
+            return [$first->value];
+        }
+
+        $entries = [];
+        foreach ($first->value->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem) {
+                $entries[] = $item->value;
+            }
         }
 
         return $entries;
@@ -900,13 +1292,19 @@ class BootstrapRouteParser
 
     /**
      * Resolves a require/include expression to an absolute path.
-     * Handles __DIR__ . '/file.php' and bare 'file.php' patterns.
+     * Handles __DIR__ . '/file.php', base_path('routes/file.php') and bare 'file.php' patterns.
      */
     private function resolveIncludePath(Node $expr, string $dir): ?string
     {
         // __DIR__ . '/auth.php'
         if ($expr instanceof Concat && $expr->left instanceof Dir && $expr->right instanceof String_) {
             return $dir.$expr->right->value;
+        }
+
+        // base_path('routes/auth.php')
+        $basePath = $this->extractBasePathArgument($expr);
+        if ($basePath !== null) {
+            return $basePath;
         }
 
         // 'auth.php' (bare relative string)

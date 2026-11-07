@@ -205,8 +205,8 @@ class MiddlewareThrottleDetectorTest extends TestCase
 
         $this->assertFalse($detector->throttlesGroups(['web']));
         $this->assertSame([
-            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests',
-            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests',
+            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1',
+            '\\Illuminate\\Routing\\Middleware\\ThrottleRequests:login',
             'login.cap',
         ], $names);
     }
@@ -225,6 +225,169 @@ class MiddlewareThrottleDetectorTest extends TestCase
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, '$throttle::class')));
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, "\$throttle::using('login')")));
         $this->assertFalse($detector->expressionIsThrottle($this->expression($parser, "\$middleware ?? 'throttle'")));
+    }
+
+    /**
+     * @dataProvider exclusionProvider
+     */
+    #[DataProvider('exclusionProvider')]
+    public function test_throttle_survives_only_an_exclusion_of_another_name(string $applied, string $excluded, bool $throttles): void
+    {
+        $detector = $this->detector([]);
+        $parser = new AstParser;
+
+        $this->assertSame($throttles, $detector->throttlesAfterExclusion(
+            [$this->expression($parser, $applied)],
+            [$this->expression($parser, $excluded)],
+        ));
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function exclusionProvider(): array
+    {
+        $class = '\\Illuminate\\Routing\\Middleware\\ThrottleRequests';
+
+        return [
+            'same alias and parameters' => ["'throttle:5,1'", "'throttle:5,1'", false],
+            'alias against its class with the same parameters' => ["'throttle:5,1'", "{$class}::class.':5,1'", false],
+            'class against the alias' => ["{$class}::with(5, 1)", "'throttle:5,1'", false],
+            'using against the alias' => ["{$class}::using('login')", "'throttle:login'", false],
+            'excluded within a list' => ["['auth', 'throttle:5,1']", "['throttle:5,1']", false],
+            'other parameters' => ["'throttle:5,1'", "'throttle:api'", true],
+            'bare class against a parameterised throttle' => ["'throttle:5,1'", "{$class}::class", true],
+            'parameterised against the bare alias' => ["'throttle:5,1'", "'throttle'", true],
+            'computed parameters never match' => ["'throttle:'.\$limit", "'throttle:'.\$limit", true],
+            'computed with() arguments never match' => ["{$class}::with(\$max, 1)", "{$class}::with(\$max, 1)", true],
+            'another middleware' => ["'throttle:5,1'", "'auth'", true],
+            'nothing throttles' => ["'auth'", "'throttle:5,1'", false],
+            'a concatenation naming nothing' => ["\$name.':5,1'", "'throttle:5,1'", false],
+        ];
+    }
+
+    /**
+     * @dataProvider redisThrottleProvider
+     */
+    #[DataProvider('redisThrottleProvider')]
+    public function test_the_throttle_alias_resolves_to_the_redis_class_when_the_app_throttles_with_redis(string $body): void
+    {
+        $detector = $this->bootstrapDetector($body);
+        $parser = new AstParser;
+        $applied = [$this->expression($parser, "'throttle:api'")];
+
+        $this->assertTrue($detector->throttlesAfterExclusion($applied, [$this->expression($parser, "\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':api'")]));
+        $this->assertFalse($detector->throttlesAfterExclusion($applied, [$this->expression($parser, "\\Illuminate\\Routing\\Middleware\\ThrottleRequestsWithRedis::class.':api'")]));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function redisThrottleProvider(): array
+    {
+        return [
+            'throttleWithRedis()' => ['$middleware->throttleWithRedis();'],
+            'throttleApi() with redis' => ["\$middleware->throttleApi('api', true);"],
+            'throttleApi() with a named redis' => ['$middleware->throttleApi(redis: true);'],
+        ];
+    }
+
+    /**
+     * @dataProvider appThrottleAliasProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('appThrottleAliasProvider')]
+    public function test_the_throttle_alias_resolves_to_the_class_the_app_registers_for_it(array $files): void
+    {
+        $detector = $this->detector($files);
+        $parser = new AstParser;
+        $applied = [$this->expression($parser, "'throttle:5,1'")];
+
+        $this->assertTrue($detector->throttlesAfterExclusion($applied, [$this->expression($parser, "\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':5,1'")]));
+        $this->assertFalse($detector->throttlesAfterExclusion($applied, [$this->expression($parser, "\\App\\Http\\Middleware\\CapLogins::class.':5,1'")]));
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function appThrottleAliasProvider(): array
+    {
+        $kernel = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use App\Http\Middleware\CapLogins;
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+    protected $middlewareAliases = ['throttle' => CapLogins::class];
+}
+PHP;
+        $bootstrap = <<<'PHP'
+<?php
+
+use App\Http\Middleware\CapLogins;
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->throttleWithRedis();
+        $middleware->alias(['throttle' => CapLogins::class]);
+    })
+    ->create();
+PHP;
+
+        return [
+            'Kernel alias' => [['app/Http/Kernel.php' => $kernel]],
+            'bootstrap alias over the redis default' => [['bootstrap/app.php' => $bootstrap]],
+        ];
+    }
+
+    public function test_group_throttle_names_skip_a_dynamic_configurator_call_and_an_alias_list_without_throttle(): void
+    {
+        $detector = $this->bootstrapDetector("\$middleware->{\$method}('throttle:5,1');\n\$middleware->alias(['auth.cap' => 'App\\\\Http\\\\Middleware\\\\Cap']);\n\$middleware->throttleApi();");
+
+        $this->assertSame(['global' => false, 'names' => ['throttle:api']], $detector->groupThrottleNames(['api']));
+        $this->assertSame('Illuminate\\Routing\\Middleware\\ThrottleRequests', $detector->throttleAliasClass());
+    }
+
+    public function test_group_throttle_names_list_each_group_throttle_with_its_parameters(): void
+    {
+        $detector = $this->bootstrapDetector(
+            "\$middleware->throttleApi('partners');\n"
+            ."\$middleware->web(append: ['auth', Throttle::class.':5,1']);\n"
+            ."\$middleware->appendToGroup('web', 'throttle:login');",
+            'use Illuminate\\Routing\\Middleware\\ThrottleRequests as Throttle;',
+        );
+
+        $this->assertSame(['global' => false, 'names' => ['throttle:partners']], $detector->groupThrottleNames(['api']));
+        $this->assertSame(
+            ['global' => false, 'names' => ['\\Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1', 'throttle:login']],
+            $detector->groupThrottleNames(['web']),
+        );
+    }
+
+    public function test_group_throttle_names_default_the_api_limiter_and_flag_a_global_throttle(): void
+    {
+        $detector = $this->bootstrapDetector("\$middleware->throttleApi();\n\$middleware->append('throttle:600,1');");
+
+        $this->assertSame(['global' => true, 'names' => ['throttle:api']], $detector->groupThrottleNames(['api']));
+        $this->assertSame(['global' => true, 'names' => []], $detector->groupThrottleNames(['web']));
+    }
+
+    public function test_group_throttle_names_read_the_kernel(): void
+    {
+        $detector = $this->detector(['app/Http/Kernel.php' => $this->kernel(
+            "protected \$middlewareGroups = ['web' => ['auth'], 'api' => [ThrottleRequests::class.':api', 'bindings']];",
+            'use Illuminate\\Routing\\Middleware\\ThrottleRequests;',
+        )]);
+
+        $this->assertSame(['global' => false, 'names' => ['\\Illuminate\\Routing\\Middleware\\ThrottleRequests:api']], $detector->groupThrottleNames(['api']));
+        $this->assertSame(['global' => false, 'names' => []], $detector->groupThrottleNames(['web']));
     }
 
     private function expression(AstParser $parser, string $code): Expr

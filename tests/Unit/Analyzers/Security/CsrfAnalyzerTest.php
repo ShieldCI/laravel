@@ -2352,6 +2352,489 @@ PHP);
         $this->assertSame('VerifyCsrfToken middleware is commented out', $result->getIssues()[0]->message);
     }
 
+    /**
+     * @dataProvider kernelsNamingCsrfOutsideWebRoutesProvider
+     */
+    #[DataProvider('kernelsNamingCsrfOutsideWebRoutesProvider')]
+    public function test_fails_not_registered_when_kernel_names_csrf_only_outside_web_routes(string $properties, string $import): void
+    {
+        $result = $this->analyzeKernel($properties, $import);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('CSRF middleware is not registered in HTTP Kernel', $result->getIssues()[0]->message);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function kernelsNamingCsrfOutsideWebRoutesProvider(): array
+    {
+        $web = <<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+PHP;
+
+        return [
+            'priority only' => [$web.<<<'PHP'
+
+    protected $middlewarePriority = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP, ''],
+            'import only' => [$web, 'use App\Http\Middleware\VerifyCsrfToken;'],
+            'no web group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'api' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+
+    protected $middlewarePriority = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP, ''],
+            'unreadable web group naming no csrf' => [<<<'PHP'
+    private const SHARED = [
+        \Illuminate\Session\Middleware\StartSession::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => self::SHARED,
+    ];
+PHP, ''],
+        ];
+    }
+
+    /**
+     * @dataProvider kernelsDefiningCsrfOutsideTheWebGroupProvider
+     */
+    #[DataProvider('kernelsDefiningCsrfOutsideTheWebGroupProvider')]
+    public function test_passes_when_kernel_defines_csrf_middleware_outside_the_web_group(string $properties): void
+    {
+        $this->assertPassed($this->analyzeKernel($properties));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function kernelsDefiningCsrfOutsideTheWebGroupProvider(): array
+    {
+        $web = <<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+PHP;
+
+        return [
+            'alias' => [$web.<<<'PHP'
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP],
+            'route middleware alias' => [$web.<<<'PHP'
+
+    protected $routeMiddleware = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP],
+            'api group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+        'api' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+            'group without a web group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'forms' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+        ];
+    }
+
+    /**
+     * @dataProvider kernelsRunningCsrfOnWebRoutesProvider
+     */
+    #[DataProvider('kernelsRunningCsrfOnWebRoutesProvider')]
+    public function test_passes_when_kernel_runs_csrf_on_web_routes(string $properties): void
+    {
+        $this->assertPassed($this->analyzeKernel($properties));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function kernelsRunningCsrfOnWebRoutesProvider(): array
+    {
+        return [
+            'web group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+            'nested group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            'session-stack',
+        ],
+        'session-stack' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+            'alias in web group' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            'csrf',
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP],
+            'global stack' => [<<<'PHP'
+    protected $middleware = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+PHP],
+            'web group from a constant' => [<<<'PHP'
+    private const WEB = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => self::WEB,
+    ];
+PHP],
+            'web group from a ternary on constants' => [<<<'PHP'
+    private const STRICT = true;
+
+    private const SHARED = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => self::STRICT ? self::SHARED : [],
+    ];
+PHP],
+            'groups from a constant' => [<<<'PHP'
+    private const GROUPS = [
+        'web' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareGroups = self::GROUPS;
+PHP],
+            'aliases from a constant' => [<<<'PHP'
+    private const ALIASES = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => [
+            'csrf',
+        ],
+    ];
+
+    protected $middlewareAliases = self::ALIASES;
+PHP],
+            'global stack from a constant' => [<<<'PHP'
+    private const GLOBAL = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $middleware = self::GLOBAL;
+
+    protected $middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+PHP],
+            'unparseable kernel' => [<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [
+            \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ]
+PHP],
+        ];
+    }
+
+    /**
+     * @dataProvider kernelsWithUnreadablePartsBesideCsrfOnWebRoutesProvider
+     */
+    #[DataProvider('kernelsWithUnreadablePartsBesideCsrfOnWebRoutesProvider')]
+    public function test_skips_commented_out_entry_when_web_runs_csrf_beside_an_unreadable_kernel_part(string $properties): void
+    {
+        $this->assertPassed($this->analyzeKernel($properties));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function kernelsWithUnreadablePartsBesideCsrfOnWebRoutesProvider(): array
+    {
+        return [
+            'constant group key' => [<<<'PHP'
+    const API = 'api';
+
+    protected $middlewareGroups = [
+        'web' => [\App\Http\Middleware\VerifyCsrfToken::class],
+        self::API => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+            'spread beside the web group' => [<<<'PHP'
+    private const EXTRA = [
+        'api' => [],
+    ];
+
+    protected $middlewareGroups = [
+        'web' => [\App\Http\Middleware\VerifyCsrfToken::class],
+        ...self::EXTRA,
+        'admin' => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+PHP],
+            'alias map with an unkeyed entry' => [<<<'PHP'
+    private const MORE = [
+        'auth' => \App\Http\Middleware\Authenticate::class,
+    ];
+
+    protected $middlewareGroups = [
+        'web' => ['csrf'],
+        'admin' => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+        ...self::MORE,
+    ];
+PHP],
+            'route middleware from a constant' => [<<<'PHP'
+    private const R = [];
+
+    protected $middlewareGroups = [
+        'web' => ['csrf'],
+        'admin' => [
+            // \App\Http\Middleware\VerifyCsrfToken::class,
+        ],
+    ];
+
+    protected $middlewareAliases = [
+        'csrf' => \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+
+    protected $routeMiddleware = self::R;
+PHP],
+        ];
+    }
+
+    /**
+     * @dataProvider csrfLookalikeWebGroupEntriesProvider
+     */
+    #[DataProvider('csrfLookalikeWebGroupEntriesProvider')]
+    public function test_passes_when_web_group_lists_a_class_named_like_csrf_middleware(string $entry, string $import): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<PHP
+    protected \$middlewareGroups = [
+        'web' => [
+            {$entry}
+        ],
+    ];
+PHP, $import));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function csrfLookalikeWebGroupEntriesProvider(): array
+    {
+        return [
+            'prefixed name' => ['\App\Http\Middleware\CustomVerifyCsrfToken::class,', ''],
+            'suffixed name' => ['\App\Http\Middleware\VerifyCsrfTokenCustom::class,', ''],
+        ];
+    }
+
+    public function test_passes_when_kernel_extends_a_custom_base_that_may_declare_the_web_group(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewarePriority = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP, '', ' extends BaseKernel');
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_not_registered_when_kernel_extends_the_framework_kernel_without_csrf_on_web_routes(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewarePriority = [
+        \App\Http\Middleware\VerifyCsrfToken::class,
+    ];
+PHP, 'use Illuminate\Foundation\Http\Kernel as HttpKernel;', ' extends HttpKernel');
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('CSRF middleware is not registered in HTTP Kernel', $result->getIssues()[0]->message);
+    }
+
+    /**
+     * @dataProvider kernelsChangingMiddlewareInAMethodProvider
+     */
+    #[DataProvider('kernelsChangingMiddlewareInAMethodProvider')]
+    public function test_passes_when_kernel_method_changes_its_middleware(string $statement): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<PHP
+    protected \$middlewareGroups = [
+        'web' => [
+            \Illuminate\Session\Middleware\StartSession::class,
+        ],
+    ];
+
+    public function __construct()
+    {
+        {$statement}
+    }
+PHP));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function kernelsChangingMiddlewareInAMethodProvider(): array
+    {
+        return [
+            'group property write' => ['$this->middlewareGroups[\'web\'][] = \App\Http\Middleware\VerifyCsrfToken::class;'],
+            'appendMiddlewareToGroup' => ['$this->appendMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'prependMiddlewareToGroup' => ['$this->prependMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'pushMiddleware' => ['$this->pushMiddleware(\App\Http\Middleware\VerifyCsrfToken::class);'],
+            'prependMiddleware' => ['$this->prependMiddleware(\App\Http\Middleware\VerifyCsrfToken::class);'],
+            'global property write' => ['$this->middleware = [\App\Http\Middleware\VerifyCsrfToken::class];'],
+            'array_push on a group' => ['array_push($this->middlewareGroups[\'web\'], \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'array_unshift on the global stack' => ['array_unshift($this->middleware, \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'array_splice on a group' => ['array_splice($this->middlewareGroups[\'web\'], 0, 0, [\App\Http\Middleware\VerifyCsrfToken::class]);'],
+            'router pushMiddlewareToGroup' => ['$this->router->pushMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'router prependMiddlewareToGroup' => ['$this->router->prependMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'router middlewareGroup' => ['$this->router->middlewareGroup(\'web\', [\App\Http\Middleware\VerifyCsrfToken::class]);'],
+            'router aliasMiddleware' => ['$this->router->aliasMiddleware(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'router from the container' => ['$this->app[\'router\']->pushMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'router in a local variable' => ['$router = $this->router; $router->pushMiddlewareToGroup(\'web\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'reference through a local' => ['$groups = &$this->middlewareGroups; $groups[\'web\'][] = \App\Http\Middleware\VerifyCsrfToken::class;'],
+            'Arr::set on a group' => ['\Illuminate\Support\Arr::set($this->middlewareGroups, \'web.1\', \App\Http\Middleware\VerifyCsrfToken::class);'],
+            'foreach by reference' => ['foreach ($this->middlewareGroups as &$group) { $group[] = \App\Http\Middleware\VerifyCsrfToken::class; }'],
+        ];
+    }
+
+    public function test_passes_when_kernel_pushes_csrf_through_the_router(): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = ['web' => [\Illuminate\Session\Middleware\StartSession::class]];
+
+    protected function syncMiddlewareToRouter()
+    {
+        parent::syncMiddlewareToRouter();
+        $this->router->pushMiddlewareToGroup('web', \App\Http\Middleware\VerifyCsrfToken::class);
+    }
+PHP, 'use Illuminate\Foundation\Http\Kernel as HttpKernel;', ' extends HttpKernel'));
+    }
+
+    public function test_first_class_callable_in_kernel_does_not_error(): void
+    {
+        $result = $this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [\Illuminate\Session\Middleware\StartSession::class],
+    ];
+
+    protected function trimmed(array $values): array
+    {
+        return array_map(trim(...), $values);
+    }
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('CSRF middleware is not registered in HTTP Kernel', $result);
+    }
+
+    public function test_passes_when_kernel_sets_its_middleware_groups_in_bootstrap(): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = ['web' => [\Illuminate\Session\Middleware\StartSession::class]];
+
+    public function bootstrap()
+    {
+        $this->setMiddlewareGroups([
+            'web' => [\App\Http\Middleware\VerifyCsrfToken::class],
+        ]);
+
+        parent::bootstrap();
+    }
+PHP, 'use Illuminate\Foundation\Http\Kernel as HttpKernel;', ' extends HttpKernel'));
+    }
+
+    public function test_passes_when_kernel_uses_a_trait_that_may_declare_its_middleware(): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<'PHP'
+    use KernelGroups;
+PHP, <<<'PHP'
+trait KernelGroups
+{
+    protected $middlewareGroups = [
+        'web' => [\App\Http\Middleware\VerifyCsrfToken::class],
+    ];
+}
+PHP));
+    }
+
+    public function test_passes_when_the_kernel_file_declares_more_than_one_kernel_class(): void
+    {
+        $this->assertPassed($this->analyzeKernel(<<<'PHP'
+    protected $middlewareGroups = [
+        'web' => [\Illuminate\Session\Middleware\StartSession::class],
+    ];
+PHP, <<<'PHP'
+if (getenv('LEGACY_KERNEL')) {
+    class Kernel
+    {
+        protected $middlewareGroups = [
+            'web' => [\App\Http\Middleware\VerifyCsrfToken::class],
+        ];
+    }
+
+    return;
+}
+PHP));
+    }
+
     public function test_passes_when_laravel_13_removes_validate_csrf_token_from_web_group(): void
     {
         $result = $this->analyzeBootstrapMiddleware(
@@ -2628,7 +3111,7 @@ PHP;
         return $analyzer->analyze();
     }
 
-    private function analyzeKernel(string $properties, string $import = ''): ResultInterface
+    private function analyzeKernel(string $properties, string $import = '', string $extends = ''): ResultInterface
     {
         $kernel = <<<PHP
 <?php
@@ -2637,7 +3120,7 @@ namespace App\\Http;
 
 {$import}
 
-class Kernel
+class Kernel{$extends}
 {
 {$properties}
 }
@@ -5689,6 +6172,39 @@ PHP;
         $analyzer->setPaths(['routes']);
 
         // Should pass: a file registered under 'api' uses token authentication, not CSRF
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_skips_route_file_required_through_base_path_inside_a_provider_api_group(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class PartnerRouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->group(function () {
+            require base_path('routes/partner.php');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Providers/PartnerRouteServiceProvider.php' => $provider,
+            'routes/partner.php' => "<?php\nRoute::post('/orders', [OrderController::class, 'store']);",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
         $this->assertPassed($analyzer->analyze());
     }
 

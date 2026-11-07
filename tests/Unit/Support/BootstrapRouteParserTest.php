@@ -1327,6 +1327,311 @@ PHP;
         }
     }
 
+    public function test_detects_files_required_through_base_path_inside_a_provider_group(): void
+    {
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class PartnerRouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->prefix('partner')->group(function () {
+            require base_path('routes/partner.php');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'app/Providers/PartnerRouteServiceProvider.php' => $provider,
+            'routes/partner.php' => '<?php // partner routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertTrue($this->endsWithMatch($parser->getApiRegisteredRouteFiles(), '/routes/partner.php'));
+            $registered = array_column($parser->getGroupRegisteredRouteFiles(), 'file');
+            $this->assertTrue($this->endsWithMatch($registered, '/routes/partner.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_detects_files_required_through_base_path_from_web_php(): void
+    {
+        $tempDir = $this->createTempDir([
+            'routes/web.php' => "<?php\n\nrequire base_path('routes/account.php');\n",
+            'routes/account.php' => '<?php // account routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertTrue($this->endsWithMatch($parser->getWebProtectedRouteFiles(), '/routes/account.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @dataProvider groupReceiverProvider
+     */
+    #[DataProvider('groupReceiverProvider')]
+    public function test_only_groups_on_the_router_register_route_files(string $imports, string $registration, bool $registers): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering($imports, $registration),
+            'routes/partner.php' => '<?php // partner routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame($registers, $this->endsWithMatch($parser->getWebProtectedRouteFiles(), '/routes/partner.php'));
+            $this->assertSame($registers, $this->endsWithMatch(array_column($parser->getGroupRegisteredRouteFiles(), 'file'), '/routes/partner.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function groupReceiverProvider(): array
+    {
+        $require = "function () { require base_path('routes/partner.php'); }";
+
+        return [
+            'Route facade' => ['', "Route::middleware('web')->group({$require});", true],
+            'Route facade static group' => ['', "Route::group(['middleware' => 'web'], {$require});", true],
+            'aliased Route facade' => ['use Illuminate\Support\Facades\Route as Routes;', "Routes::middleware('web')->group({$require});", true],
+            '$router variable' => ['', "\$router->middleware('web')->group({$require});", true],
+            '$this->router' => ['', "\$this->router->middleware('web')->group({$require});", true],
+            "container's router by array access" => ['', "\$this->app['router']->middleware('web')->group({$require});", true],
+            "app('router')" => ['', "app('router')->middleware('web')->group({$require});", true],
+            'resolve(Router::class)' => ['use Illuminate\Routing\Router;', "resolve(Router::class)->middleware('web')->group({$require});", true],
+            'app()->make(Registrar::class)' => ['use Illuminate\Contracts\Routing\Registrar;', "app()->make(Registrar::class)->middleware('web')->group({$require});", true],
+            'another container binding' => ['', "app('pipeline')->middleware('web')->group({$require});", false],
+            'parameter typed Router' => ['use Illuminate\Routing\Router;', "(function (Router \$routes) { \$routes->middleware('web')->group(function () { require base_path('routes/partner.php'); }); })(app('router'));", true],
+            "group callback's first parameter" => ['', "Route::prefix('v1')->group(function (\$r) { \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); }); });", true],
+            'router captured by use()' => ['', "Route::prefix('v1')->group(function (\$r) { collect([1])->each(function () use (\$r) { \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); }); }); });", true],
+            "container's make('router')" => ['', "\$this->app->make('router')->middleware('web')->group({$require});", true],
+            "container's router property" => ['', "\$this->app->router->middleware('web')->group({$require});", true],
+            "container's get(Router::class)" => ['use Illuminate\Routing\Router;', "\$this->app->get(Router::class)->middleware('web')->group({$require});", true],
+            'App facade make' => ['use Illuminate\Support\Facades\App;', "App::make('router')->middleware('web')->group({$require});", true],
+            'Container::getInstance()' => ['use Illuminate\Container\Container;', "Container::getInstance()['router']->middleware('web')->group({$require});", true],
+            'variable assigned the router' => ['', "\$r = \$this->app['router']; \$r->middleware('web')->group({$require});", true],
+            'variable assigned something else afterwards' => ['', "\$r = app('router'); \$r = collect(); \$r->middleware('web')->group({$require});", false],
+            "container's other binding" => ['', "\$this->app->make('pipeline')->middleware('web')->group({$require});", false],
+            'parameter typed ?Router' => ['use Illuminate\Routing\Router;', "(function (?Router \$routes) { \$routes->middleware('web')->group(function () { require base_path('routes/partner.php'); }); })(app('router'));", true],
+            'parameter typed Router|Registrar' => ['use Illuminate\Routing\Router; use Illuminate\Contracts\Routing\Registrar;', "(function (Router|Registrar \$routes) { \$routes->middleware('web')->group(function () { require base_path('routes/partner.php'); }); })(app('router'));", true],
+            'arrow function inheriting a router variable' => ['', "Route::prefix('v1')->group(function (\$r) { collect([1])->each(fn () => \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); })); });", true],
+            "container's makeWith" => ['', "\$this->app->makeWith('router', [])->middleware('web')->group({$require});", true],
+            'router class as a string' => ['', "app('Illuminate\\Routing\\Router')->middleware('web')->group({$require});", true],
+            '$container variable' => ['', "\$container['router']->middleware('web')->group({$require});", true],
+            'parameter of a union type naming no router' => ['', "(function (Foo|Bar \$routes) { \$routes->middleware('web')->group(function () { require base_path('routes/partner.php'); }); })(app('router'));", false],
+            'untyped parameter of another callback' => ['', "collect([1])->each(function (\$r) { \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); }); });", false],
+            'another variable' => ['', "\$pipeline->middleware('web')->group({$require});", false],
+            'another facade' => ['use Illuminate\Support\Facades\Http;', "Http::middleware('web')->group({$require});", false],
+            'another class static group' => ['', "Schedule::group(['middleware' => 'web'], {$require});", false],
+            "listed group callback's first parameter" => ['', "Route::prefix('v1')->group([base_path('routes/other.php'), function (\$r) { \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); }); }]);", true],
+            "list on a group callback's router" => ['', "Route::prefix('v1')->group(function (\$r) { \$r->middleware('web')->group([base_path('routes/partner.php')]); });", true],
+        ];
+    }
+
+    public function test_throttled_group_ranges_ignore_groups_off_the_router(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+$jobs->middleware('throttle:5,1')->group(function () {
+    Route::post('/login', [LoginController::class, 'store']);
+});
+
+Route::middleware('throttle:5,1')->group(function () {
+    Route::post('/signin', [LoginController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([['start' => 7, 'end' => 9]], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_leave_out_a_nested_group_excluding_the_throttle(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::middleware('throttle:5,1')->group(function () {
+    Route::post('/signin', [LoginController::class, 'store']);
+
+    Route::withoutMiddleware('throttle:5,1')->group(function () {
+        Route::post('/login', [LoginController::class, 'store']);
+
+        Route::middleware('throttle:10,1')->group(function () {
+            Route::post('/auth', [LoginController::class, 'store']);
+        });
+    });
+
+    Route::post('/authenticate', [LoginController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame(
+                [['start' => 3, 'end' => 6], ['start' => 12, 'end' => 15], ['start' => 9, 'end' => 11]],
+                $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
+            );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @dataProvider throttleExclusionProvider
+     */
+    #[DataProvider('throttleExclusionProvider')]
+    public function test_throttled_group_ranges_read_exclusion_by_exact_name(string $outer, string $inner, bool $throttled): void
+    {
+        $routes = <<<PHP
+<?php
+
+use Illuminate\\Routing\\Middleware\\ThrottleRequests;
+
+{$outer}->group(function () {
+    {$inner}->group(function () {
+        Route::post('/login', [LoginController::class, 'store']);
+    });
+});
+PHP;
+
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $covered = false;
+            foreach ($parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php') as $range) {
+                $covered = $covered || ($range['start'] <= 7 && $range['end'] >= 7);
+            }
+
+            $this->assertSame($throttled, $covered);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function throttleExclusionProvider(): array
+    {
+        return [
+            'same name' => ["Route::middleware('throttle:5,1')", "Route::withoutMiddleware('throttle:5,1')", false],
+            'class with the same parameters' => ["Route::middleware('throttle:5,1')", "Route::withoutMiddleware(ThrottleRequests::class.':5,1')", false],
+            'another limiter' => ["Route::middleware('throttle:5,1')", "Route::withoutMiddleware('throttle:api')", true],
+            'the bare class' => ["Route::middleware('throttle:5,1')", 'Route::withoutMiddleware(ThrottleRequests::class)', true],
+            'a later argument' => ["Route::middleware('throttle:5,1')", "Route::withoutMiddleware('auth', 'throttle:5,1')", true],
+            'a list' => ["Route::middleware('throttle:5,1')", "Route::withoutMiddleware(['auth', 'throttle:5,1'])", false],
+            'no argument' => ["Route::middleware('throttle:5,1')", 'Route::withoutMiddleware()', true],
+            'excluded before it is applied' => ["Route::withoutMiddleware('throttle:5,1')", "Route::middleware('throttle:5,1')", false],
+        ];
+    }
+
+    public function test_throttle_protected_route_files_read_exclusion_by_exact_name(): void
+    {
+        $registrations = <<<'PHP'
+Route::middleware('throttle:5,1')->group(function () {
+                Route::withoutMiddleware('throttle:5,1')->group(base_path('routes/excluded.php'));
+                Route::withoutMiddleware('throttle:api')->group(base_path('routes/kept.php'));
+                Route::group(['excluded_middleware' => 'throttle:5,1'], function () {
+                    require base_path('routes/attribute.php');
+                });
+            });
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registrations),
+            'routes/excluded.php' => '<?php',
+            'routes/kept.php' => '<?php',
+            'routes/attribute.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $files = $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertTrue($this->endsWithMatch($files, '/routes/kept.php'));
+            $this->assertFalse($this->endsWithMatch($files, '/routes/excluded.php'));
+            $this->assertFalse($this->endsWithMatch($files, '/routes/attribute.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_route_file_loads_list_every_load_with_the_groups_around_it(): void
+    {
+        $partner = <<<'PHP'
+<?php
+
+require __DIR__.'/partner_auth.php';
+
+Route::middleware('throttle:5,1')->group(function () {
+    require base_path('routes/partner_session.php');
+});
+
+Route::prefix('v2')->group(__DIR__.'/partner_v2.php');
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'routes/partner.php' => $partner,
+            'routes/partner_auth.php' => '<?php',
+            'routes/partner_session.php' => '<?php',
+            'routes/partner_v2.php' => '<?php',
+            'routes/empty.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $loads = $parser->getRouteFileLoads();
+
+            $this->assertSame([(string) realpath($tempDir.'/routes/partner.php')], array_keys($loads));
+            $partnerLoads = $loads[(string) realpath($tempDir.'/routes/partner.php')];
+            $this->assertSame(
+                [
+                    [(string) realpath($tempDir.'/routes/partner_auth.php'), 0],
+                    [(string) realpath($tempDir.'/routes/partner_session.php'), 1],
+                    [(string) realpath($tempDir.'/routes/partner_v2.php'), 1],
+                ],
+                array_map(fn (array $load): array => [$load['file'], count($load['calls'])], $partnerLoads),
+            );
+
+            // An ungrouped require is not a group registration
+            $registered = array_column($parser->getGroupRegisteredRouteFiles(), 'file');
+            $this->assertFalse($this->endsWithMatch($registered, '/routes/partner_auth.php'));
+            $this->assertTrue($this->endsWithMatch($registered, '/routes/partner_session.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_throttled_group_ranges_returns_empty_for_missing_file(): void
     {
         $parser = new BootstrapRouteParser('/nonexistent', $this->parser);
@@ -1841,6 +2146,33 @@ PHP;
                 [['start' => 3, 'end' => 5], ['start' => 5, 'end' => 5], ['start' => 6, 'end' => 8]],
                 $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
             );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_read_the_router_a_listed_callback_is_given(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('v1')->group([function ($r) {
+    $r->middleware('throttle:5,1')->group(function () {
+        Route::post('/login', [LoginController::class, 'store']);
+    });
+}]);
+Route::group(['prefix' => function ($r) {
+    $r->middleware('throttle:5,1')->group(function () {
+        Route::post('/signin', [LoginController::class, 'store']);
+    });
+}], []);
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([['start' => 4, 'end' => 6]], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
         } finally {
             $this->removeDir($tempDir);
         }

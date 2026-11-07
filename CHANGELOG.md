@@ -47,6 +47,7 @@
 - `csrf-protection` and `login-throttling` resolve `require base_path(...)` inside a route group, so the required file inherits its registration (#560)
 - `authentication-authorization` applies a group's prefix to every file in a `->group([...])` list (#571)
 - `authentication-authorization` applies the prefix a `withRouting(then:)` callback registers a route file under, so a `public_routes` pattern written for that prefix matches (#571)
+- `csrf-protection` no longer reports routes an `api` group reaches inside a custom route file, or a file loaded only inside such a group, as missing `web` middleware (#576)
 
 ## v1.21.0
 

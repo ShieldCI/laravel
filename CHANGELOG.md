@@ -26,6 +26,7 @@
 - `login-throttling` covers a login route only when every prefix and domain its route file is registered under is throttled, which can fail a default `fail_on: high` build (#560)
 - `login-throttling` no longer counts a computed middleware name such as `'throttle'.config(...)` on a route file registration, which can fail a default `fail_on: high` build (#560)
 - `login-throttling` counts a `group()` call as a route group only when it is made on the router, which can fail a default `fail_on: high` build (#560)
+- `BootstrapRouteParser::getGroupRegisteredRouteFiles()` returns each registration's group calls as a `calls` list instead of a single `call`, so code reading `call` breaks; the method is now `@internal` (#560, #575)
 - `csrf-protection` reports a Kernel that names CSRF only in `$middlewarePriority` or a `use` import as not registering it, which can fail a default `fail_on: high` build (#568)
 - `authentication-authorization` uses the prefix a `withRouting(then:)` callback gives `routes/api.php`, so a `public_routes` pattern written for `/api/...` may stop matching (#571)
 

@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Concerns\ResolvesClassNames;
+use ShieldCI\Support\BootstrapRouteParser;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -253,9 +254,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * whole route files, keyed by route file basename.
      *
      * Best-effort, literal-only discovery:
-     * - bootstrap/app.php (Laravel 11+): withRouting(api: ..., apiPrefix: ...)
+     * - bootstrap/app.php (Laravel 11+): withRouting(api: ..., apiPrefix: ...),
+     *   and registrar chains inside its then: callback, read as below
      * - app/Providers/RouteServiceProvider.php (Laravel 9/10): registrar chains
-     *   ending ->group(base_path('routes/X.php')), including custom route files
+     *   ending ->group(base_path('routes/X.php')) or a list of such files,
+     *   including custom route files
      * - convention fallback: routes/api.php → 'api'
      *
      * A wrong or missing guess is harmless: routes are matched against all
@@ -265,9 +268,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private function resolveRouteFileBasePrefixes(): array
     {
-        $map = $this->extractBootstrapRoutePrefixes($this->buildPath('bootstrap/app.php'));
+        $bootstrap = $this->buildPath('bootstrap/app.php');
+        $map = $this->extractBootstrapRoutePrefixes($bootstrap);
 
-        foreach ($this->extractProviderRoutePrefixes($this->buildPath('app/Providers/RouteServiceProvider.php')) as $basename => $prefix) {
+        $registered = $this->extractBootstrapThenRoutePrefixes($bootstrap)
+            + $this->extractProviderRoutePrefixes($this->buildPath('app/Providers/RouteServiceProvider.php'));
+
+        foreach ($registered as $basename => $prefix) {
             $map[$basename] ??= $prefix;
         }
 
@@ -340,9 +347,45 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Extract per-file prefixes from RouteServiceProvider registrations:
-     * chains ending ->group(base_path('routes/X.php')), lifting prefix('...')
-     * from the same chain.
+     * Extract per-file prefixes from registrar chains inside bootstrap/app.php's
+     * withRouting(then: ...) callback (Laravel 11+), read as
+     * {@see self::extractGroupRoutePrefixes()} reads them.
+     *
+     * @return array<string, string>
+     */
+    private function extractBootstrapThenRoutePrefixes(string $file): array
+    {
+        if (! is_file($file)) {
+            return [];
+        }
+
+        $ast = $this->parser->parseFile($file);
+        if (empty($ast)) {
+            return [];
+        }
+
+        $callbacks = [];
+        foreach ($this->parser->findMethodCalls($ast, 'withRouting') as $call) {
+            if (! ($call instanceof Node\Expr\MethodCall)) {
+                continue;
+            }
+
+            foreach ($call->args as $arg) {
+                if ($arg instanceof Node\Arg
+                    && $arg->name !== null
+                    && $arg->name->toString() === 'then'
+                    && ($arg->value instanceof Node\Expr\Closure || $arg->value instanceof Node\Expr\ArrowFunction)) {
+                    $callbacks[] = $arg->value;
+                }
+            }
+        }
+
+        return $this->extractGroupRoutePrefixes($callbacks);
+    }
+
+    /**
+     * Extract per-file prefixes from RouteServiceProvider registrations, read as
+     * {@see self::extractGroupRoutePrefixes()} reads them.
      *
      * @return array<string, string>
      */
@@ -357,21 +400,37 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return [];
         }
 
-        $map = [];
+        return $this->extractGroupRoutePrefixes($ast);
+    }
 
-        foreach ($this->parser->findMethodCalls($ast, 'group') as $call) {
+    /**
+     * Extract per-file prefixes from registrar chains under the given nodes:
+     * chains ending ->group(base_path('routes/X.php')) or a list of such files,
+     * lifting prefix('...') from the same chain onto every file.
+     *
+     * @param  array<Node>  $nodes
+     * @return array<string, string>
+     */
+    private function extractGroupRoutePrefixes(array $nodes): array
+    {
+        $map = [];
+        $routeParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
+
+        foreach ($this->parser->findMethodCalls($nodes, 'group') as $call) {
             if (! ($call instanceof Node\Expr\MethodCall)) {
                 continue;
             }
 
-            $basename = $this->extractBasePathRouteFile($call->args[0]->value ?? null);
-            if ($basename === null) {
+            $prefix = $this->extractPrefixFromRegistrarChain($call);
+            if ($prefix === '') {
                 continue;
             }
 
-            $prefix = $this->extractPrefixFromRegistrarChain($call);
-            if ($prefix !== '') {
-                $map[$basename] = $prefix;
+            foreach ($routeParser->groupRoutes($call->args) as $entry) {
+                $basename = $this->extractBasePathRouteFile($entry);
+                if ($basename !== null) {
+                    $map[$basename] = $prefix;
+                }
             }
         }
 

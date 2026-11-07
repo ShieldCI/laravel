@@ -509,7 +509,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if CSRF middleware is registered in Kernel.php.
+     * Check if CSRF middleware is registered in Kernel.php. The Kernel is read through the AST,
+     * and the file text is searched for a CSRF class name only when that reading is inconclusive.
      *
      * @param  array<int, Issue>  &$issues
      */
@@ -536,8 +537,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $commentedEntry = '/^\s*\/\/\s*[\'"]?\\\\?(?:\w+\\\\)*('.implode('|', self::CSRF_MIDDLEWARE).')(?:::class|[\'"])/';
         $commentedOut = [];
 
+        $runsCsrf = $this->kernelRunsCsrfOnWebRoutes($kernelFile);
+
         // A commented-out entry is a leftover, not a gap, while an active entry runs CSRF on web routes
-        $lines = $this->kernelRunsCsrfOnWebRoutes($kernelFile) ? [] : FileParser::getLines($kernelFile);
+        $lines = $runsCsrf === true ? [] : FileParser::getLines($kernelFile);
 
         foreach ($lines as $lineNumber => $line) {
             if (! is_string($line) || preg_match($commentedEntry, $line, $matches) !== 1) {
@@ -561,8 +564,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             );
         }
 
+        // A Kernel that cannot be read conclusively counts as registering CSRF if its code names it
+        $registered = $runsCsrf ?? $this->csrfMiddlewareIn(FileParser::stripAllComments($content)) !== null;
+
         // A commented-out entry is the more specific finding for a Kernel that registers none
-        if ($commentedOut === [] && $this->csrfMiddlewareIn(FileParser::stripAllComments($content)) === null) {
+        if ($commentedOut === [] && ! $registered) {
             $issues[] = $this->createIssueWithSnippet(
                 message: 'CSRF middleware is not registered in HTTP Kernel',
                 filePath: $kernelFile,
@@ -581,94 +587,220 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether the Kernel's global $middleware or its web group lists CSRF middleware on an active
-     * entry. A web group entry naming an alias or another group is followed, as Laravel resolves
-     * it. $middlewarePriority only orders middleware and an alias applies only where a route or
-     * group names it, so neither counts on its own. A list that cannot be read counts only for
-     * what it shows.
+     * Whether the Kernel's global $middleware or its web group runs CSRF middleware on an active
+     * entry, following a web group entry that names an alias or another group as Laravel does.
+     * $middlewarePriority only orders middleware, so it never counts.
+     *
+     * Null when the property defaults cannot settle it: the file has no single Kernel class, a
+     * list on that path cannot be read, a parent, trait or method may change the middleware, or
+     * an alias or another group may run CSRF on whichever routes apply it.
      */
-    private function kernelRunsCsrfOnWebRoutes(string $kernelFile): bool
+    private function kernelRunsCsrfOnWebRoutes(string $kernelFile): ?bool
     {
-        $global = null;
-        $groups = [];
-        $aliases = [];
-        $routeMiddleware = [];
-
         $ast = $this->resolveNamesForMatching($this->parser->parseFile($kernelFile));
 
-        foreach ($this->parser->findNodes($ast, Stmt\Class_::class) as $class) {
-            // Only the Kernel class counts, not an anonymous or helper class elsewhere in the file
-            if (! $class instanceof Stmt\Class_ || $class->name?->toString() !== 'Kernel') {
-                continue;
-            }
+        // Only the Kernel class counts, not an anonymous or helper class elsewhere in the file
+        $kernels = array_values(array_filter(
+            $this->parser->findNodes($ast, Stmt\Class_::class),
+            fn (Node $class): bool => $class instanceof Stmt\Class_ && $class->name?->toString() === 'Kernel',
+        ));
 
-            foreach ($class->getProperties() as $property) {
-                foreach ($property->props as $prop) {
-                    match ($prop->name->toString()) {
-                        'middleware' => $global = $prop->default,
-                        'middlewareGroups' => $groups = $this->keyedEntries($prop->default),
-                        'middlewareAliases' => $aliases = $this->keyedEntries($prop->default),
-                        'routeMiddleware' => $routeMiddleware = $this->keyedEntries($prop->default),
-                        default => null,
-                    };
-                }
+        $class = $kernels[0] ?? null;
+        if (count($kernels) !== 1 || ! $class instanceof Stmt\Class_) {
+            return null;
+        }
+
+        // An undeclared property keeps its parent's value: empty in Laravel's Kernel, unknown in a custom base
+        $parent = $class->extends?->getAttribute('resolvedName') ?? $class->extends;
+        $isCustomParent = $parent instanceof Name && $parent->toString() !== 'Illuminate\\Foundation\\Http\\Kernel';
+        $inherited = $isCustomParent ? null : new Expr\Array_;
+
+        $defaults = [];
+        foreach ($class->getProperties() as $property) {
+            foreach ($property->props as $prop) {
+                $defaults[$prop->name->toString()] = $prop->default ?? new Expr\Array_;
             }
         }
+
+        [$groups, $groupsComplete] = $this->keyedEntries($defaults['middlewareGroups'] ?? $inherited);
+        [$aliases, $aliasesComplete] = $this->keyedEntries($defaults['middlewareAliases'] ?? $inherited);
+        [$routeMiddleware, $routeMiddlewareComplete] = $this->keyedEntries($defaults['routeMiddleware'] ?? $inherited);
 
         // Laravel 10 registers both alias properties, $middlewareAliases winning a shared key
         $aliases = array_merge($routeMiddleware, $aliases);
+        $complete = $groupsComplete && $aliasesComplete && $routeMiddlewareComplete;
 
-        return $this->kernelListRunsCsrf($global, [], [], [])
-            || $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, ['web' => true]);
+        $global = $defaults['middleware'] ?? $inherited;
+        $globalRuns = $global !== null ? $this->kernelListRunsCsrf($global, [], [], true) : null;
+
+        $webRuns = isset($groups['web']) || $groupsComplete
+            ? $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, $complete, ['web' => true])
+            : null;
+
+        if ($globalRuns === true || $webRuns === true) {
+            return true;
+        }
+
+        if ($globalRuns === null || $webRuns === null || $this->kernelMayChangeMiddleware($class)) {
+            return null;
+        }
+
+        // Routes, providers and controllers may apply such an alias or group, which the Kernel does not show
+        return $this->kernelDefinesCsrfOutsideWebGroup($groups, $aliases, $complete) ? null : false;
     }
 
     /**
-     * The string-keyed entries of an array property's default value.
+     * The string-keyed entries of an array property's default value, and whether they are all of
+     * them. Anything other than a literal array, or an entry without a string key, may hold any
+     * key, so a key the entries lack is then unknown rather than absent.
      *
-     * @return array<string, Expr>
+     * @return array{array<string, Expr>, bool}
      */
     private function keyedEntries(?Expr $default): array
     {
-        $entries = [];
+        if (! $default instanceof Expr\Array_) {
+            return [[], false];
+        }
 
-        foreach ($default instanceof Expr\Array_ ? $default->items : [] as $item) {
+        $entries = [];
+        $complete = true;
+
+        foreach ($default->items as $item) {
             if ($item instanceof ArrayItem && $item->key instanceof String_) {
                 $entries[$item->key->value] = $item->value;
+            } else {
+                $complete = false;
             }
         }
 
-        return $entries;
+        return [$entries, $complete];
     }
 
     /**
-     * Whether a Kernel middleware list holds a CSRF middleware class, matched by its exact class
-     * basename so a class such as SkipVerifyCsrfTokenForWebhooks does not count. As Laravel
-     * resolves an entry, a group name comes first, then an alias, and only then a class name;
-     * a group is never followed back into itself.
+     * Whether a Kernel middleware list runs CSRF middleware. As Laravel resolves an entry, a group
+     * name comes first, then an alias, and only then a class name; a group is never followed back
+     * into itself. Null when none does but an entry, or the list itself, cannot be settled.
      *
      * @param  array<string, Expr>  $groups
      * @param  array<string, Expr>  $aliases
+     * @param  bool  $complete  Whether $groups and $aliases hold every key the Kernel registers
      * @param  array<string, true>  $seen
      */
-    private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, array $seen): bool
+    private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, bool $complete, array $seen = []): ?bool
     {
-        foreach ($this->middlewareList($list) ?? [] as $entry) {
+        $entries = $this->middlewareList($list);
+        $runsCsrf = $entries === null ? null : false;
+
+        foreach ($entries ?? [] as $entry) {
             if ($entry === null) {
+                $runsCsrf = null;
+
                 continue;
             }
 
-            $name = explode(':', $entry, 2)[0];
+            $alias = explode(':', $entry, 2)[0];
 
             if (isset($groups[$entry])) {
-                $runsCsrf = ! isset($seen[$entry]) && $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $seen + [$entry => true]);
-            } elseif (isset($aliases[$name])) {
-                $runsCsrf = $this->kernelListRunsCsrf($aliases[$name], [], [], $seen);
+                $entryRunsCsrf = isset($seen[$entry])
+                    ? false
+                    : $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $complete, $seen + [$entry => true]);
+            } elseif (isset($aliases[$alias])) {
+                // An alias names a class, so its target is read without the groups and aliases
+                $entryRunsCsrf = $this->kernelListRunsCsrf($aliases[$alias], [], [], true);
             } else {
-                // Case-sensitive, as the registration check's text match is
-                $runsCsrf = in_array(substr((string) strrchr('\\'.$name, '\\'), 1), self::CSRF_MIDDLEWARE, true);
+                $entryRunsCsrf = $this->kernelClassRunsCsrf($alias, $complete);
             }
 
-            if ($runsCsrf) {
+            if ($entryRunsCsrf === true) {
+                return true;
+            }
+
+            if ($entryRunsCsrf === null) {
+                $runsCsrf = null;
+            }
+        }
+
+        return $runsCsrf;
+    }
+
+    /**
+     * Whether a Kernel entry that is not a known group or alias names a CSRF middleware class,
+     * matched case-sensitively by its exact basename, as the registration check's text match is.
+     * Null when it may be a group or alias the maps do not show, or a class whose name only
+     * contains a CSRF middleware name, such as CustomVerifyCsrfToken, which may extend it.
+     */
+    private function kernelClassRunsCsrf(string $name, bool $complete): ?bool
+    {
+        $basename = substr((string) strrchr('\\'.$name, '\\'), 1);
+
+        if (in_array($basename, self::CSRF_MIDDLEWARE, true)) {
+            return true;
+        }
+
+        if (! $complete || $this->csrfMiddlewareIn($basename) !== null) {
+            return null;
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether the Kernel may change its middleware beyond the property defaults: it uses a trait,
+     * a method touches a middleware property at all, since a reference or a by-reference argument
+     * can write it, or a method calls, on any receiver, a Kernel or router method that sets or
+     * adds middleware.
+     */
+    private function kernelMayChangeMiddleware(Stmt\Class_ $class): bool
+    {
+        $mutators = [
+            'appendmiddlewaretogroup', 'prependmiddlewaretogroup', 'pushmiddleware', 'prependmiddleware',
+            'pushmiddlewaretogroup', 'middlewaregroup', 'aliasmiddleware',
+            'setmiddlewaregroups', 'setglobalmiddleware', 'setmiddlewarealiases',
+        ];
+        $properties = ['middleware', 'middlewareGroups', 'middlewareAliases', 'routeMiddleware'];
+
+        foreach ($class->stmts as $stmt) {
+            if ($stmt instanceof Stmt\TraitUse) {
+                return true;
+            }
+        }
+
+        foreach ($this->parser->findNodes($class->getMethods(), Expr::class) as $expr) {
+            if (($expr instanceof Expr\PropertyFetch || $expr instanceof Expr\NullsafePropertyFetch)
+                && $expr->var instanceof Expr\Variable
+                && $expr->var->name === 'this'
+                && $expr->name instanceof Identifier
+                && in_array($expr->name->toString(), $properties, true)) {
+                return true;
+            }
+
+            // The router may be reached as $this->router, $this->app['router'] or a local variable
+            if (($expr instanceof Expr\MethodCall || $expr instanceof Expr\NullsafeMethodCall || $expr instanceof Expr\StaticCall)
+                && $expr->name instanceof Identifier
+                && in_array($expr->name->toLowerString(), $mutators, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether an alias, or a group other than web, runs or may run CSRF middleware.
+     *
+     * @param  array<string, Expr>  $groups
+     * @param  array<string, Expr>  $aliases
+     */
+    private function kernelDefinesCsrfOutsideWebGroup(array $groups, array $aliases, bool $complete): bool
+    {
+        foreach ($groups as $name => $list) {
+            if ($name !== 'web' && $this->kernelListRunsCsrf($list, $groups, $aliases, $complete, [$name => true]) !== false) {
+                return true;
+            }
+        }
+
+        foreach ($aliases as $target) {
+            if ($this->kernelListRunsCsrf($target, [], [], true) !== false) {
                 return true;
             }
         }

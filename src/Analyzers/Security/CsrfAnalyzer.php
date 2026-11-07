@@ -1176,9 +1176,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
      * CSRF middleware reaches, and any file a covered file requires outside a group that removes
      * CSRF. In a covered file only routes that exclude the CSRF middleware are reported. A file a
-     * bootstrap or provider group strips CSRF from is not covered, and neither is any file it
-     * requires, or that a group excluding CSRF requires in a route file known to load. Every file
-     * is read through the AST: see walkRouteNode() for what reaches a route.
+     * load 'web' or a CSRF class reaches strips CSRF from has every route reported, and so does
+     * any file it requires; a file stripped by a plain load and covered by another counts as
+     * covered (see #567 for judging each load). Every file is read through the AST: see
+     * walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
      *
@@ -1221,7 +1222,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
         // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
-        // either, however else it loads. Groups in route files are read by the walk
+        // either. Groups in route files are read by the walk
         $stripped = [];
         // Files stripped by a load 'web' or a CSRF class reaches: they run as web routes. A strip
         // on an api load removes nothing, as the api group never ran CSRF
@@ -1240,12 +1241,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Coverage passes down require chains of any depth, and so does stripping, which
-        // Laravel merges into every nested group and which wins over 'web'. A group in a route
-        // file that excludes CSRF strips every file it requires, but only once that route file
-        // is known to load: routes/web.php, a file bootstrap or a provider registers, or a file
-        // one of them requires. A file nothing is known to load may never run, so its require
-        // can extend coverage but never take it away
+        // Coverage passes down require chains of any depth, and so does stripping, which Laravel
+        // merges into every nested group. A group in a route file that excludes CSRF strips every
+        // file it requires, but only once that route file is known to load: routes/web.php, a
+        // file bootstrap or a provider registers, or a file one of them requires. A file nothing is
+        // known to load may never run, so its require can extend coverage but never take it away.
+        // Every set here only grows, whatever order the files come in, and the report weighs them
+        // afterwards: a strip on a web load first, then coverage, then a strip on a plain load
         do {
             $changed = false;
             foreach ($loads as $path => $includes) {
@@ -1273,7 +1275,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                             $changed = true;
                             $webStripped[$file] = true;
                         }
-                    } elseif (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
+                    }
+
+                    if (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
                         $changed = true;
                         $covered[$file] = true;
                     }

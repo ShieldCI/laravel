@@ -4002,6 +4002,52 @@ PHP,
         $this->assertSame(['hooks-stripe.php:3' => 'missing', 'hooks-stripe.php:4' => 'stripped', 'hooks.php:4' => 'missing'], $messages);
     }
 
+    /**
+     * @dataProvider plainStripAndCoverageOrderProvider
+     */
+    #[DataProvider('plainStripAndCoverageOrderProvider')]
+    public function test_file_covered_and_plain_stripped_gives_the_same_verdict_in_any_order(string $shared, string $stripper): void
+    {
+        // The files' names change the order they are read in; the verdict must not change with it
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/RouteServiceProvider.php' => <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Support\\Facades\\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('web')->group(base_path('routes/web.php'));
+        Route::prefix('partner')->group(base_path('routes/{$stripper}.php'));
+    }
+}
+PHP,
+            'routes/web.php' => "<?php\n\nrequire __DIR__.'/{$shared}.php';\n",
+            "routes/{$stripper}.php" => "<?php\n\nRoute::withoutMiddleware('web')->group(function () {\n    require __DIR__.'/{$shared}.php';\n});\n",
+            "routes/{$shared}.php" => "<?php\n\nRoute::post('/cart', CartController::class);\nrequire __DIR__.'/{$shared}-inner.php';\n",
+            "routes/{$shared}-inner.php" => "<?php\n\nRoute::post('/checkout', CheckoutController::class);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function plainStripAndCoverageOrderProvider(): array
+    {
+        return [
+            'shop and partner' => ['shop', 'partner'],
+            'admin and zpartner' => ['admin', 'zpartner'],
+            'store and legacy' => ['store', 'legacy'],
+            'cart and tenant' => ['cart', 'tenant'],
+        ];
+    }
+
     public function test_csrf_exclusion_on_an_api_load_leaves_a_file_web_also_loads_protected(): void
     {
         // Laravel registers the file twice: the web copy keeps CSRF, the api copy never had it

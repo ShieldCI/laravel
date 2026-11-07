@@ -5875,6 +5875,419 @@ PHP);
         return $this->analyzeRouteFiles(['routes/billing.php' => $routes]);
     }
 
+    // ==================== api Groups in Route Files ====================
+
+    public function test_skips_api_group_in_a_route_file_bootstrap_loads_under_a_plain_prefix(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: fn () => Route::prefix('suppliers')->group(base_path('routes/supplier.php')),
+    )
+    ->create();
+PHP,
+            'routes/supplier.php' => <<<'PHP'
+<?php
+
+Route::middleware('api')->group(function () {
+    Route::post('/shipments', [ShipmentController::class, 'store']);
+    Route::apiResource('quotes', QuoteController::class);
+});
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_api_group_in_a_route_file_nothing_registers(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('api')->group(function () {
+    Route::post('/shipments', [ShipmentController::class, 'store']);
+    Route::apiResource('quotes', QuoteController::class);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_api_group_applied_through_a_middleware_list(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware(['api'])->group(function () {
+    Route::put('/shipments/{shipment}', [ShipmentController::class, 'update']);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_api_group_applied_through_a_group_attribute_array(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::group(['middleware' => 'api'], function () {
+    Route::delete('/shipments/{shipment}', [ShipmentController::class, 'destroy']);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_route_that_applies_api_on_its_own_chain(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::post('/shipments', [ShipmentController::class, 'store'])->middleware('api');
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_nested_group_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('api')->group(function () {
+    Route::prefix('v3')->middleware('auth:sanctum')->group(function () {
+        Route::patch('/shipments/{shipment}', [ShipmentController::class, 'update']);
+    });
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_skips_file_a_route_file_loads_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => <<<'PHP'
+<?php
+
+Route::middleware('api')->group(base_path('routes/supplier-api.php'));
+Route::middleware('api')->group(function () {
+    require __DIR__.'/supplier-legacy.php';
+});
+PHP,
+            'routes/supplier-api.php' => "<?php\n\nRoute::post('/shipments', [ShipmentController::class, 'store']);\n",
+            'routes/supplier-legacy.php' => "<?php\n\nRoute::post('/manifests', [ManifestController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reports_file_a_route_file_loads_both_inside_an_api_group_and_plainly(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => <<<'PHP'
+<?php
+
+Route::middleware('api')->group(base_path('routes/supplier-shared.php'));
+Route::prefix('dock')->group(base_path('routes/supplier-shared.php'));
+PHP,
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_api_group_load_in_an_unloaded_file_does_not_hide_a_plain_bootstrap_registration(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        then: fn () => Route::prefix('dock')->group(base_path('routes/supplier-shared.php')),
+    )
+    ->create();
+PHP,
+            'routes/web.php' => "<?php\n",
+            'routes/supplier-unused.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_skips_file_route_files_load_only_inside_api_groups(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/carrier.php' => "<?php\n\nRoute::middleware(['api'])->prefix('carrier')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => <<<'PHP'
+<?php
+
+Route::post('/arrivals', [ArrivalController::class, 'store']);
+require __DIR__.'/supplier-shared-extra.php';
+PHP,
+            'routes/supplier-shared-extra.php' => "<?php\n\nRoute::post('/departures', [DepartureController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reports_file_bootstrap_requires_plainly_when_a_route_file_also_loads_it_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            require base_path('routes/supplier-shared.php');
+        },
+    )
+    ->create();
+PHP,
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_file_bootstrap_requires_plainly_without_any_api_load(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            require base_path('routes/supplier-shared.php');
+        },
+    )
+    ->create();
+PHP,
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_file_a_provider_loads_with_load_routes_from_when_a_route_file_also_loads_it_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/SupplierServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class SupplierServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->loadRoutesFrom(base_path('routes/supplier-shared.php'));
+    }
+}
+PHP,
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_file_a_provider_requires_when_a_route_file_also_loads_it_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/SupplierServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\ServiceProvider;
+
+class SupplierServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        require base_path('routes/supplier-shared.php');
+    }
+}
+PHP,
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_skips_file_a_provider_loads_with_load_routes_from_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/SupplierServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class SupplierServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->group(function () {
+            $this->loadRoutesFrom(base_path('routes/supplier-shared.php'));
+        });
+    }
+}
+PHP,
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reports_route_excluding_api_in_a_file_loaded_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => <<<'PHP'
+<?php
+
+Route::post('/arrivals', [ArrivalController::class, 'store'])->withoutMiddleware('api');
+Route::post('/departures', [DepartureController::class, 'store']);
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_file_loaded_inside_a_group_excluding_api_from_a_file_loaded_inside_an_api_group(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => "<?php\n\nRoute::middleware('api')->group(base_path('routes/supplier-mid.php'));\n",
+            'routes/supplier-mid.php' => "<?php\n\nRoute::withoutMiddleware('api')->group(base_path('routes/supplier-shared.php'));\n",
+            'routes/supplier-shared.php' => "<?php\n\nRoute::post('/arrivals', [ArrivalController::class, 'store']);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues());
+        $this->assertSame(['supplier-shared.php:3'], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_routes_outside_the_api_group_of_a_route_file(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('api')->group(function () {
+    Route::post('/shipments', [ShipmentController::class, 'store']);
+});
+
+Route::prefix('dock')->group(function () {
+    Route::post('/arrivals', [ArrivalController::class, 'store']);
+});
+
+Route::post('/manifests', [ManifestController::class, 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $lines = array_map(fn ($issue) => $issue->location?->line, $result->getIssues());
+        sort($lines);
+        $this->assertSame([8, 11], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_reports_route_that_excludes_api_from_its_group(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('api')->group(function () {
+    Route::post('/shipments', [ShipmentController::class, 'store'])->withoutMiddleware('api');
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    public function test_route_that_web_and_api_reach_is_judged_as_web(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware(['api', 'web'])->group(function () {
+    Route::post('/shipments', [ShipmentController::class, 'store']);
+    Route::post('/hooks', HookController::class)->withoutMiddleware('web');
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_file_a_route_file_loads_inside_a_web_and_api_group_is_covered_not_skipped(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/supplier.php' => "<?php\n\nRoute::middleware(['web', 'api'])->group(base_path('routes/supplier-portal.php'));\n",
+            'routes/supplier-portal.php' => <<<'PHP'
+<?php
+
+Route::post('/messages', [MessageController::class, 'store']);
+Route::post('/hooks', HookController::class)->withoutMiddleware('web');
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
+    }
+
     // ==================== Excluded Paths Tests (3 tests) ====================
 
     public function test_skips_blade_files_under_excluded_paths(): void

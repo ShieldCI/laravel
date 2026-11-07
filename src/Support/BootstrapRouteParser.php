@@ -351,7 +351,7 @@ class BootstrapRouteParser
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return list<Node\Expr\Closure|Node\Expr\ArrowFunction>
      *
-     * @internal An implementation detail of login-throttling, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
      */
     public function closureArguments(array $args): array
     {
@@ -373,7 +373,7 @@ class BootstrapRouteParser
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return list<Node\Expr>
      *
-     * @internal An implementation detail of authentication-authorization and csrf-protection, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of authentication-authorization, csrf-protection and this class itself, outside this package's backward-compatibility promise.
      */
     public function groupRoutes(array $args): array
     {
@@ -449,7 +449,7 @@ class BootstrapRouteParser
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return array<Node\Expr>
      *
-     * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public function groupAttributeEntries(array $args, string $key): array
     {
@@ -972,7 +972,7 @@ class BootstrapRouteParser
      * base_path('...'), or null. A bare string is not read: Router::loadRoutes()
      * requires it from the include path, not the declaring file's directory.
      *
-     * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public function groupRouteFile(Node\Expr $expr, string $dir): ?string
     {
@@ -1135,7 +1135,7 @@ class BootstrapRouteParser
      * The normalized absolute path of an existing file a require/include in $dir loads,
      * or null when the path cannot be read or the file does not exist.
      *
-     * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public function includedFile(Include_ $include, string $dir): ?string
     {
@@ -1255,7 +1255,7 @@ class BootstrapRouteParser
      *
      * @return array<Node\Expr>
      *
-     * @internal An implementation detail of csrf-protection and login-throttling, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public function middlewareEntries(StaticCall|MethodCall $call): array
     {

@@ -141,7 +141,7 @@ class MiddlewareThrottleDetector
      * @param  array<Expr>  $applied
      * @param  array<Expr>  $excluded
      *
-     * @internal An implementation detail of BootstrapRouteParser, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of BootstrapRouteParser::getThrottleProtectedRouteFiles() and getThrottledGroupLineRanges(), outside this package's backward-compatibility promise.
      */
     public function throttlesAfterExclusion(array $applied, array $excluded): bool
     {
@@ -397,7 +397,7 @@ class MiddlewareThrottleDetector
      * once bootstrap/app.php calls throttleWithRedis() or throttleApi() with redis true,
      * otherwise ThrottleRequests.
      *
-     * @internal An implementation detail of login-throttling, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
      */
     public function frameworkThrottleClass(): string
     {

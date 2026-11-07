@@ -41,7 +41,7 @@ use ShieldCI\Support\BootstrapRouteParser;
  *   - $middleware->web(replace: [...]) or replaceInGroup('web', ...) swapping CSRF middleware out
  *   - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
  *
- * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>}
+ * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>, api: bool}
  * @phpstan-type RouteWalk array{
  *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
  *     groups: array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>,
@@ -78,9 +78,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * The CSRF state of a chain that applies and excludes nothing.
      *
-     * @var array{group: false, applied: list<string>, excluded: list<string|null>}
+     * @var array{group: false, applied: list<string>, excluded: list<string|null>, api: false}
      */
-    private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => []];
+    private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => [], 'api' => false];
 
     /**
      * The most registrations of one route statesReaching() follows, one per group() call that
@@ -1302,16 +1302,24 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * routes/api.php, files registered under 'api', and any file they load where neither 'web'
      * nor a CSRF class reaches the load are api files, unless something also loads them under
-     * 'web', stripped or not. In an api file only a route that applies 'web' or a CSRF class
-     * itself is judged, and it is reported when its own exclusions or a strip on the file's load
-     * remove the check. A route file loads a file by requiring it or through a group() path
-     * argument, which then counts as a require at that place. routes/web.php is covered,
-     * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
-     * CSRF middleware reaches, and any file a covered file requires outside a group that removes
-     * CSRF. In a covered file only routes that exclude the CSRF middleware are reported. A file a
-     * load 'web' or a CSRF class reaches strips CSRF from has every route reported, and so does
-     * any file it requires; a file stripped by a plain load and covered by another counts as
-     * covered (see #567 for judging each load). Every file is read through the AST: see
+     * 'web', stripped or not. So is a file a route file loads inside a group 'api' reaches, and
+     * any file such a file loads where neither 'web' nor a CSRF class reaches the load and no
+     * group excludes 'api' again, unless a plain load also loads it: one neither 'api' nor 'web'
+     * or a CSRF class reaches, made by bootstrap/app.php or a provider, group or not, or by a
+     * route file that is not itself loaded only under 'api'. Such an api load counts even from a
+     * route file nothing is known to load, which is the exception to such a file never taking
+     * findings away. In an api file only a route that applies 'web' or a CSRF class itself is
+     * judged, and it is reported when its own exclusions or a strip on the file's load remove the
+     * check; in a file only api-group loads reach, a route that excludes 'api' itself is judged
+     * as in any other file. A route 'api' reaches through its own chain or a group around it is
+     * judged as one in an api file. A route file loads a file by requiring it or through a
+     * group() path argument, which then counts as a require at that place. routes/web.php is
+     * covered, and so is a file registered under 'web' externally, a file loaded by a group 'web'
+     * or the CSRF middleware reaches, and any file a covered file requires outside a group that
+     * removes CSRF. In a covered file only routes that exclude the CSRF middleware are reported.
+     * A file a load 'web' or a CSRF class reaches strips CSRF from has every route reported, and
+     * so does any file it requires; a file stripped by a plain load and covered by another counts
+     * as covered (see #567 for judging each load). Every file is read through the AST: see
      * walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
@@ -1360,6 +1368,20 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // Files stripped by a load 'web' or a CSRF class reaches: they run as web routes. A strip
         // on an api load leaves the file an api file, removing only what a route applies itself
         $webStripped = [];
+        // Files a route file loads inside a group 'api' reaches, and any file they load where
+        // neither 'web' nor a CSRF class reaches and no group excludes 'api' again. Unlike $api,
+        // a plain load of the same file wins
+        $apiGrouped = [];
+        // Files a plain load reaches, one that neither 'api' nor 'web' or a CSRF class reaches:
+        // made by bootstrap or a provider, group or not, by a $this->loadRoutesFrom() or a
+        // require there, or by a route file that is not itself loaded only under 'api'
+        $plain = [];
+        foreach ($routeParser->getExternalRouteFileLoads() as $load) {
+            $state = $this->csrfFlags($load['calls'] === [] ? self::NO_CSRF : $this->groupsCsrfState($load['calls'], $routeParser));
+            if (! $state['reached'] && ! $state['api']) {
+                $plain[$load['file']] = true;
+            }
+        }
         $loaded = $covered + $api;
         foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
             $state = $this->csrfFlags($this->groupsCsrfState($registration['calls'], $routeParser));
@@ -1378,7 +1400,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // merges into every nested group. A group in a route file that excludes CSRF strips every
         // file it requires, but only once that route file is known to load: routes/web.php, a
         // file bootstrap or a provider registers, or a file one of them requires. A file nothing is
-        // known to load may never run, so its require can extend coverage but never take it away.
+        // known to load may never run, so its require can extend coverage but never take it away;
+        // its load inside an api group is the exception, read below through $apiGrouped.
         // Every set here only grows, whatever order the files come in, and the report weighs them
         // afterwards: a strip on a web load first, then coverage, then a strip on a plain load
         do {
@@ -1394,6 +1417,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     if (isset($api[$path]) && ! $include['reached'] && ! isset($api[$file])) {
                         $changed = true;
                         $api[$file] = true;
+                    }
+
+                    if (((isset($apiGrouped[$path]) && ! $include['dropsApi']) || $include['api']) && ! $include['reached'] && ! isset($apiGrouped[$file])) {
+                        $changed = true;
+                        $apiGrouped[$file] = true;
                     }
 
                     if (isset($stripped[$path]) || ($include['strips'] && isset($loaded[$path]))) {
@@ -1418,11 +1446,31 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
         } while ($changed);
 
+        // A plain load passes down require chains too, once the api sets are known: a load from a
+        // file a plain load reaches, or one not loaded only under 'api', is plain, and so is a
+        // load from an $apiGrouped file that excludes 'api' again
+        do {
+            $changed = false;
+            foreach ($loads as $path => $includes) {
+                foreach ($includes as $include) {
+                    $plainSource = isset($plain[$path])
+                        || (! isset($api[$path]) && (! isset($apiGrouped[$path]) || $include['dropsApi']));
+                    if ($plainSource && ! $include['reached'] && ! $include['api'] && ! isset($plain[$include['file']])) {
+                        $changed = true;
+                        $plain[$include['file']] = true;
+                    }
+                }
+            }
+        } while ($changed);
+
         foreach ($walks as $path => $entry) {
             // A file only the api routes load runs without CSRF cookies, so only a route that applies
             // 'web' or a CSRF class itself is judged there: by its own exclusions, and by a strip on
             // the load, which Laravel merges into it
             $apiOnly = isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
+            // A file loaded only inside groups 'api' reaches is judged the same way, but a route
+            // that excludes 'api' itself drops what the load gave it
+            $apiGroupedOnly = isset($apiGrouped[$path]) && ! isset($plain[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
 
             // A strip on a web load strips every route. A strip on an api load or a plain load
             // removes only what a route applies itself
@@ -1435,12 +1483,15 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 // Each state is one registration of the route; any that leaves it unprotected is
                 // reported, the weakest first
                 $reasons = [];
-                foreach ($route['states'] as ['group' => $group, 'applied' => $applied, 'excluded' => $excluded]) {
+                foreach ($route['states'] as $state) {
+                    ['group' => $group, 'applied' => $applied, 'excluded' => $excluded] = $state;
                     $reasons[] = match (true) {
-                        $apiOnly => ($group || $applied !== []) && (isset($stripped[$path]) || ! $this->csrfRuns($group, $applied, $excluded)) ? 'stripped' : null,
                         $fileStripped => 'stripped',
                         // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
                         $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',
+                        // A registration 'api' reaches, through the route's own chain or a group around
+                        // it, is judged as a route in an api file
+                        $apiOnly || ($apiGroupedOnly && ! in_array('api', $excluded, true)) || $this->apiReaches($state) => ($group || $applied !== []) && (isset($stripped[$path]) || ! $this->csrfRuns($group, $applied, $excluded)) ? 'stripped' : null,
                         ! $group && $applied === [] => 'missing',
                         $plainStripped => 'stripped',
                         default => $this->csrfRuns($group, $applied, $excluded) ? null : 'stripped',
@@ -1507,7 +1558,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * each with the CSRF state of its chain and every group around it, and the files it loads
      * by a require or a group() path argument, each with the flags csrfFlags() hands them.
      *
-     * @return array{routes: list<array{line: int, method: string, states: list<CsrfState>}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool}>}
+     * @return array{routes: list<array{line: int, method: string, states: list<CsrfState>}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool, api: bool, dropsApi: bool}>}
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
@@ -1616,7 +1667,19 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             'group' => $a['group'] || $b['group'],
             'applied' => [...$a['applied'], ...$b['applied']],
             'excluded' => [...$a['excluded'], ...$b['excluded']],
+            'api' => $a['api'] || $b['api'],
         ];
+    }
+
+    /**
+     * Whether the 'api' group reaches a registration: applied by its chain or a group around
+     * it, and not excluded again, as excluding 'api' removes the group's members.
+     *
+     * @param  CsrfState  $state
+     */
+    private function apiReaches(array $state): bool
+    {
+        return $state['api'] && ! in_array('api', $state['excluded'], true);
     }
 
     /**
@@ -1655,12 +1718,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * What a group or registration hands the file it loads: 'web' when a CSRF check runs there,
-     * strips when an exclusion removes the web group's CSRF from everything inside it, and
-     * reached when 'web' or a CSRF class is applied at all, so the load is a web load even
-     * when the check is then excluded.
+     * strips when an exclusion removes the web group's CSRF from everything inside it, reached
+     * when 'web' or a CSRF class is applied at all, so the load is a web load even when the
+     * check is then excluded, api when 'api' reaches it (see apiReaches()), which makes the
+     * loaded file an api file unless the load is reached or a plain load also loads it, and
+     * dropsApi when it excludes 'api', which an api-grouped file's load then does not pass on.
      *
      * @param  CsrfState  $state
-     * @return array{web: bool, strips: bool, reached: bool}
+     * @return array{web: bool, strips: bool, reached: bool, api: bool, dropsApi: bool}
      */
     private function csrfFlags(array $state): array
     {
@@ -1668,6 +1733,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             'web' => $this->csrfRuns($state['group'], $state['applied'], $state['excluded']),
             'strips' => $this->namesStripCsrf($state['excluded']),
             'reached' => $state['group'] || $state['applied'] !== [],
+            'api' => $this->apiReaches($state),
+            'dropsApi' => in_array('api', $state['excluded'], true),
         ];
     }
 
@@ -2033,7 +2100,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The CSRF state of a middleware list and an excluded list: whether the list names 'web',
-     * the CSRF classes it applies itself, and what is excluded.
+     * the CSRF classes it applies itself, what is excluded, and whether the list names 'api'.
      *
      * @param  list<string|null>  $middleware
      * @param  list<string|null>  $excluded
@@ -2045,6 +2112,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             'group' => in_array('web', $middleware, true),
             'applied' => array_values(array_filter($middleware, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null)),
             'excluded' => $excluded,
+            'api' => in_array('api', $middleware, true),
         ];
     }
 

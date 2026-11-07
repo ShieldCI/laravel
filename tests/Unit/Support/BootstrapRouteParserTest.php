@@ -1632,6 +1632,76 @@ PHP;
         }
     }
 
+    public function test_external_route_file_loads_list_bootstrap_and_provider_loads_group_or_not(): void
+    {
+        $bootstrap = <<<'PHP'
+<?php
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            require base_path('routes/depot.php');
+            Route::prefix('yard')->group(base_path('routes/yard.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $provider = <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class DepotServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->loadRoutesFrom(base_path('routes/dock.php'));
+        $this->loadRoutesFrom('routes/relative.php');
+        $other->loadRoutesFrom(base_path('routes/other.php'));
+
+        Route::middleware('api')->group(function () {
+            $this->LoadRoutesFrom(__DIR__.'/../../routes/gate.php');
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrap,
+            'app/Providers/DepotServiceProvider.php' => $provider,
+            'routes/depot.php' => '<?php',
+            'routes/yard.php' => '<?php',
+            'routes/dock.php' => '<?php',
+            'routes/relative.php' => '<?php',
+            'routes/other.php' => '<?php',
+            'routes/gate.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $loads = array_map(
+                fn (array $load): array => [basename($load['file']), basename($load['source']), count($load['calls'])],
+                $parser->getExternalRouteFileLoads(),
+            );
+            $this->assertSame([
+                ['depot.php', 'app.php', 0],
+                ['yard.php', 'app.php', 1],
+                ['dock.php', 'DepotServiceProvider.php', 0],
+                ['gate.php', 'DepotServiceProvider.php', 1],
+            ], $loads);
+
+            // loadRoutesFrom() is not a group registration or a route file load
+            $this->assertFalse($this->endsWithMatch(array_column($parser->getGroupRegisteredRouteFiles(), 'file'), '/routes/gate.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_throttled_group_ranges_returns_empty_for_missing_file(): void
     {
         $parser = new BootstrapRouteParser('/nonexistent', $this->parser);

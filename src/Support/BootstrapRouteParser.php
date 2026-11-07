@@ -38,7 +38,7 @@ use ShieldCI\Concerns\ResolvesClassNames;
  * A group counts as throttled by the middleware MiddlewareThrottleDetector recognises,
  * with class names resolved against the imports of the file that declares the group.
  *
- * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, true>}
+ * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, true>}
  */
 class BootstrapRouteParser
 {
@@ -228,6 +228,30 @@ class BootstrapRouteParser
             $normalized = $this->normalizePath($source);
             if ($loads !== [] && $normalized !== null) {
                 $found[$normalized] = $loads;
+            }
+        }
+
+        return $found;
+    }
+
+    /**
+     * Every route file bootstrap/app.php and app/Providers/*.php load, group or not: the
+     * loads {@see self::getGroupRegisteredRouteFiles()} reads, the files they
+     * require/include inside a group or outside one, and those $this->loadRoutesFrom(...)
+     * requires, each with the source file and the group calls enclosing the load, outermost
+     * first, which may be none.
+     *
+     * @return list<array{file: string, source: string, calls: list<MethodCall|StaticCall>}>
+     *
+     * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
+     */
+    public function getExternalRouteFileLoads(): array
+    {
+        $found = [];
+        foreach ([$this->basePath.'/bootstrap/app.php', ...$this->phpFilesUnder('app/Providers')] as $source) {
+            $walk = $this->walkFile($source);
+            foreach ([...$walk['loads'], ...$walk['routesFrom']] as $load) {
+                $found[] = ['file' => $load['file'], 'source' => $source, 'calls' => $load['calls']];
             }
         }
 
@@ -795,7 +819,7 @@ class BootstrapRouteParser
      */
     public function routerGroupCalls(array $ast): array
     {
-        $walk = ['loads' => [], 'closures' => [], 'groups' => []];
+        $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => []];
         $routers = [];
         foreach ($this->resolveNamesForMatching($ast) as $node) {
             $this->walkRouteNode($node, [], $routers, null, $walk);
@@ -812,7 +836,7 @@ class BootstrapRouteParser
     private function walkFile(string $path): array
     {
         if (! isset($this->walks[$path])) {
-            $walk = ['loads' => [], 'closures' => [], 'groups' => []];
+            $walk = ['loads' => [], 'routesFrom' => [], 'closures' => [], 'groups' => []];
             $routers = [];
             if (file_exists($path)) {
                 foreach ($this->resolveNamesForMatching($this->parser->parseFile($path)) as $node) {
@@ -867,6 +891,16 @@ class BootstrapRouteParser
             }
         }
 
+        // ServiceProvider::loadRoutesFrom() requires the file where it is called, kept apart
+        // from the loads so only getExternalRouteFileLoads() reads it
+        if ($dir !== null && $this->isLoadRoutesFrom($node)) {
+            $first = $this->firstArgument($node);
+            $path = $first !== null ? $this->groupRouteFile($first, $dir) : null;
+            if ($path !== null) {
+                $walk['routesFrom'][] = ['file' => $path, 'calls' => $groups];
+            }
+        }
+
         if ($this->isGroupCall($node, $routers)) {
             $walk['groups'][spl_object_id($node)] = true;
             $inner = [...$groups, $node];
@@ -890,6 +924,21 @@ class BootstrapRouteParser
         foreach ($children as $child) {
             $this->walkRouteNode($child, $groups, $routers, $dir, $walk);
         }
+    }
+
+    /**
+     * Whether a node is $this->loadRoutesFrom(...), as a service provider calls it. The name
+     * is matched case-insensitively, as PHP calls methods.
+     *
+     * @phpstan-assert-if-true MethodCall $node
+     */
+    private function isLoadRoutesFrom(Node $node): bool
+    {
+        return $node instanceof MethodCall
+            && $node->var instanceof Node\Expr\Variable
+            && $node->var->name === 'this'
+            && $node->name instanceof Identifier
+            && $node->name->toLowerString() === 'loadroutesfrom';
     }
 
     /**

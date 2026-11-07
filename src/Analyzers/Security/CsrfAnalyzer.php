@@ -1308,9 +1308,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Report each unprotected route once per line. The reason picks the message: 'missing' when
-     * 'web' never reaches the route, 'stripped' when the CSRF middleware is excluded from a route
-     * in a file 'web' does not cover, and 'excluded' when a route in a covered file, such as
-     * routes/web.php, excludes it.
+     * 'web' never reaches the route, 'stripped' when a load of its file, or the route's own chain
+     * outside a covered file, excludes the CSRF middleware from it, and 'excluded' when a route in
+     * a covered file, such as routes/web.php, excludes it itself.
      *
      * @param  list<array{line: int, method: string, reason: 'missing'|'stripped'|'excluded'}>  $routes
      * @param  array<int, Issue>  $issues
@@ -1441,6 +1441,23 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         return [
             'group' => $a['group'] || $b['group'],
             'applied' => [...$a['applied'], ...$b['applied']],
+            'excluded' => [...$a['excluded'], ...$b['excluded']],
+        ];
+    }
+
+    /**
+     * The state that stands for two registrations of the same routes, where a finding in either
+     * is a finding: 'web' and the CSRF classes when both apply them, and what either excludes.
+     *
+     * @param  CsrfState  $a
+     * @param  CsrfState  $b
+     * @return CsrfState
+     */
+    private function weakestCsrfState(array $a, array $b): array
+    {
+        return [
+            'group' => $a['group'] && $b['group'],
+            'applied' => array_values(array_intersect($a['applied'], $b['applied'])),
             'excluded' => [...$a['excluded'], ...$b['excluded']],
         ];
     }
@@ -1761,9 +1778,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 // The variable's closure was walked before its first parameter was known as the router
                 $walk['late'] = $walk['late'] || (! $direct && ! isset($walk['callbacks'][$closureId]));
-                // The closures around this call reach the callback too, wherever it was written
+                // The closures around this call reach the callback too, wherever it was written. A
+                // callback several groups run registers its routes once per group, so it holds what
+                // every one of them applies and what any excludes
                 $walk['groups'][$closureId] = [
-                    'state' => $this->mergeCsrfState($walk['groups'][$closureId]['state'] ?? self::NO_CSRF, $state),
+                    'state' => isset($walk['groups'][$closureId]) ? $this->weakestCsrfState($walk['groups'][$closureId]['state'], $state) : $state,
                     'closures' => [...($walk['groups'][$closureId]['closures'] ?? []), ...$closures],
                 ];
             }
@@ -2042,11 +2061,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $state = null;
         foreach ($writes as $method) {
             $own = $this->csrfState($middlewareFor[$method] ?? $middleware, [...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
-            $state = $state === null ? $own : [
-                'group' => $state['group'] && $own['group'],
-                'applied' => array_values(array_intersect($state['applied'], $own['applied'])),
-                'excluded' => [...$state['excluded'], ...$own['excluded']],
-            ];
+            $state = $state === null ? $own : $this->weakestCsrfState($state, $own);
         }
 
         return [$state !== null, $state ?? self::NO_CSRF];

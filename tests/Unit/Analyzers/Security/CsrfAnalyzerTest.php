@@ -4932,6 +4932,52 @@ PHP);
         $this->assertSame([3, 4, 7, 9], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
+    public function test_registrar_attributes_between_middleware_calls_keep_the_replace_rule(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::middleware('web')->prefix('admin')->middleware('auth')->group(function () {
+    Route::post('/users', [UserController::class, 'store']);
+});
+Route::middleware('web')->name('billing.')->middleware('auth')->post('/invoices', [InvoiceController::class, 'store']);
+Route::middleware('web')->domain('app.myapp.com')->as('app.')->post('/orders', [OrderController::class, 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4, 6], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_callback_two_groups_run_is_judged_by_the_weaker_registration(): void
+    {
+        // Laravel registers the callback's routes once per group; the prefix copy has no 'web'
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$orders = function () {
+    Route::post('/orders', [OrderController::class, 'store']);
+};
+Route::prefix('legacy')->group($orders);
+Route::middleware('web')->group($orders);
+
+$refunds = function () {
+    Route::post('/refunds', [RefundController::class, 'store']);
+};
+Route::middleware('web')->group($refunds);
+Route::middleware(['web', 'auth'])->prefix('admin')->group($refunds);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
+    public function test_resource_filter_that_cannot_be_read_is_skipped(): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\nRoute::resource('orders', OrderController::class)->only(\$methods);\nRoute::apiResource('refunds', RefundController::class, ['except' => [\$excluded]]);\n");
+
+        $this->assertPassed($result);
+    }
+
     public function test_where_helpers_keep_the_chain_on_the_registrar(): void
     {
         $result = $this->analyzeRouteFile(<<<'PHP'

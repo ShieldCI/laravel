@@ -1441,6 +1441,8 @@ PHP;
             'another variable' => ['', "\$pipeline->middleware('web')->group({$require});", false],
             'another facade' => ['use Illuminate\Support\Facades\Http;', "Http::middleware('web')->group({$require});", false],
             'another class static group' => ['', "Schedule::group(['middleware' => 'web'], {$require});", false],
+            "listed group callback's first parameter" => ['', "Route::prefix('v1')->group([base_path('routes/other.php'), function (\$r) { \$r->middleware('web')->group(function () { require base_path('routes/partner.php'); }); }]);", true],
+            "list on a group callback's router" => ['', "Route::prefix('v1')->group(function (\$r) { \$r->middleware('web')->group([base_path('routes/partner.php')]); });", true],
         ];
     }
 
@@ -2144,6 +2146,33 @@ PHP;
                 [['start' => 3, 'end' => 5], ['start' => 5, 'end' => 5], ['start' => 6, 'end' => 8]],
                 $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
             );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_throttled_group_ranges_read_the_router_a_listed_callback_is_given(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+Route::prefix('v1')->group([function ($r) {
+    $r->middleware('throttle:5,1')->group(function () {
+        Route::post('/login', [LoginController::class, 'store']);
+    });
+}]);
+Route::group(['prefix' => function ($r) {
+    $r->middleware('throttle:5,1')->group(function () {
+        Route::post('/signin', [LoginController::class, 'store']);
+    });
+}], []);
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([['start' => 4, 'end' => 6]], $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
         } finally {
             $this->removeDir($tempDir);
         }

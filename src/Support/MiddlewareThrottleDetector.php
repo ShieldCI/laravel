@@ -88,6 +88,8 @@ class MiddlewareThrottleDetector
      *
      * @param  array<int, string>  $groups
      * @return array{global: bool, names: list<string>}
+     *
+     * @internal Shared between this package's analyzers, outside its backward-compatibility promise.
      */
     public function groupThrottleNames(array $groups): array
     {
@@ -161,6 +163,8 @@ class MiddlewareThrottleDetector
      * the parameters X::class.':5,1', X::using('login') and X::with(5, 1) append. A part
      * that is not a literal reads as a parameter that equals no other, so it never matches
      * an exclusion. Null for a value that names no middleware.
+     *
+     * @internal Shared between this package's analyzers, outside its backward-compatibility promise.
      */
     public function middlewareNameWithParameters(Expr $expr): ?string
     {
@@ -360,6 +364,8 @@ class MiddlewareThrottleDetector
      * Kernel's $middlewareAliases / $routeMiddleware or through $middleware->alias([...])
      * in bootstrap/app.php, which Laravel merges over its own; otherwise
      * {@see self::frameworkThrottleClass()}.
+     *
+     * @internal Shared between this package's analyzers, outside its backward-compatibility promise.
      */
     public function throttleAliasClass(): string
     {
@@ -392,6 +398,8 @@ class MiddlewareThrottleDetector
      * The class Laravel itself registers the 'throttle' alias as: ThrottleRequestsWithRedis
      * once bootstrap/app.php calls throttleWithRedis() or throttleApi() with redis true,
      * otherwise ThrottleRequests.
+     *
+     * @internal Shared between this package's analyzers, outside its backward-compatibility promise.
      */
     public function frameworkThrottleClass(): string
     {

@@ -4570,6 +4570,24 @@ PHP,
         $this->assertPassed($result);
     }
 
+    public function test_route_in_an_api_file_that_applies_and_excludes_a_csrf_class_is_reported(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/orders', OrderController::class)->middleware(VerifyCsrfToken::class)->withoutMiddleware(VerifyCsrfToken::class);
+Route::post('/refunds', RefundController::class)->middleware(VerifyCsrfToken::class);
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame([5], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
     public function test_strip_on_an_api_load_removes_web_a_route_applies_itself(): void
     {
         $result = $this->analyzeRouteFiles([

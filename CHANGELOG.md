@@ -2,11 +2,6 @@
 
 ## v1.22.0
 
-### Added
-- `BootstrapRouteParser::groupRoutes()` reads every route file or closure passed to `group()`, including a list (#555)
-- `BootstrapRouteParser::getRouteFileLoads()` lists every file a route file loads through `require` or `group()` (#560)
-- `MiddlewareThrottleDetector::throttlesAfterExclusion()` drops a throttle only when an excluded middleware resolves to the same name and parameters (#560)
-
 ### Changed
 - `login-throttling` grades more api route files by the API rules, such as one listed in `group([...])`, which can fail a default `fail_on: high` build (#549, #555, #560)
 - `login-throttling` reports a login route whose throttle is removed through `withoutMiddleware()` or `excluded_middleware`, which can fail a default `fail_on: high` build (#560)
@@ -19,7 +14,7 @@
 - `csrf-protection` moves some routes between its `no "web" middleware detected` and CSRF-excluded messages, so their baseline entries stop matching (#556)
 - `csrf-protection` reports a Kernel that names CSRF only in `$middlewarePriority` or a `use` import as not registering it, which can fail a default `fail_on: high` build (#568)
 - `authentication-authorization` uses the prefix a `withRouting(then:)` callback gives `routes/api.php`, so a `public_routes` pattern written for `/api/...` may stop matching (#571)
-- `BootstrapRouteParser::getGroupRegisteredRouteFiles()` returns each file's enclosing group calls under `calls` instead of a single `call`, and takes an optional `$routeFiles` flag (#549, #560)
+- `BootstrapRouteParser::getGroupRegisteredRouteFiles()` returns each file's enclosing group calls under `calls` instead of a single `call`, takes an optional `$routeFiles` flag and is now `@internal` (#549, #560, #575)
 - `BootstrapRouteParser::getThrottledGroupLineRanges()` leaves out a nested group whose throttle is removed through `withoutMiddleware()` or `excluded_middleware` (#560)
 
 ### Fixed

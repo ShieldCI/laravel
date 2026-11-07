@@ -3749,6 +3749,27 @@ PHP,
         $this->assertHasIssueContaining('POST route excludes the CSRF middleware', $result);
     }
 
+    public function test_web_group_configured_in_an_arrow_function_is_modelled(): void
+    {
+        // The modelled group holds only ValidateCsrfToken, so excluding the application class removes nothing
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Http\Middleware\ValidateCsrfToken;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(web: __DIR__.'/../routes/web.php')
+    ->withMiddleware(fn ($middleware) => $middleware->group('web', [ValidateCsrfToken::class]))
+    ->create();
+PHP,
+            'routes/web.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->withoutMiddleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_csrf_middleware_appended_to_the_web_group_counts(): void
     {
         $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\';
@@ -4667,6 +4688,21 @@ PHP);
         $this->assertSame([6], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
+    public function test_reads_routes_on_a_variable_holding_the_container_router(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$routes = app()->make('router');
+$routes->post('/orders', [OrderController::class, 'store']);
+
+app('\Illuminate\Routing\Router')->post('/refunds', [RefundController::class, 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4, 6], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+    }
+
     public function test_reads_aliased_route_facade(): void
     {
         $result = $this->analyzeRouteFile(<<<'PHP'
@@ -5078,6 +5114,19 @@ PHP,
             'require, stripping registration last' => [$require, false],
             'require, stripping registration first' => [$require, true],
         ];
+    }
+
+    public function test_deeply_nested_reused_callbacks_stay_bounded(): void
+    {
+        // Each level runs the next twice, so every path would number 2^22; the walk stops at its cap
+        $routes = "<?php\n\n\$level0 = function () {\n    Route::post('/orders', OrderController::class);\n};\n";
+        for ($level = 1; $level <= 22; $level++) {
+            $previous = $level - 1;
+            $routes .= "\$level{$level} = function () use (\$level{$previous}) {\n    Route::group([], \$level{$previous});\n    Route::prefix('b')->group(\$level{$previous});\n};\n";
+        }
+        $routes .= "Route::middleware('web')->group(\$level22);\n";
+
+        $this->assertPassed($this->analyzeRouteFile($routes));
     }
 
     public function test_callback_that_registers_itself_as_a_group_is_walked_once(): void

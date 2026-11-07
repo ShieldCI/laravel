@@ -238,6 +238,8 @@ class BootstrapRouteParser
      * first, which may be none.
      *
      * @return list<array{file: string, source: string, calls: list<MethodCall|StaticCall>}>
+     *
+     * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
      */
     public function getExternalRouteFileLoads(): array
     {

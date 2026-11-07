@@ -43,8 +43,8 @@ use ShieldCI\Support\BootstrapRouteParser;
  *
  * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>}
  * @phpstan-type RouteWalk array{
- *     routes: list<array{line: int, method: string, state: CsrfState, closures: list<int>}>,
- *     groups: array<int, array{state: CsrfState, closures: list<int>}>,
+ *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
+ *     groups: array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>,
  *     variables: array<string, int>,
  *     includes: list<array{include: Expr\Include_, closures: list<int>}>,
  *     paths: list<array{path: Expr, state: CsrfState, closures: list<int>}>,
@@ -81,6 +81,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * @var array{group: false, applied: list<string>, excluded: list<string|null>}
      */
     private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => []];
+
+    /**
+     * The most registrations of one route a walk follows: one per group() call that runs each
+     * reused group callback around it.
+     */
+    private const MAX_REGISTRATIONS = 64;
 
     /**
      * The RouteRegistrar attribute methods, lowercased: calls a chain makes before it registers
@@ -1289,17 +1295,25 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             $unprotected = [];
             foreach ($entry['walk']['routes'] as $route) {
-                ['group' => $group, 'applied' => $applied, 'excluded' => $excluded] = $route['state'];
-                $reason = match (true) {
-                    $fileStripped => 'stripped',
-                    // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
-                    $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',
-                    ! $group && $applied === [] => 'missing',
-                    $plainStripped => 'stripped',
-                    default => $this->csrfRuns($group, $applied, $excluded) ? null : 'stripped',
-                };
-                if ($reason !== null) {
-                    $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'reason' => $reason];
+                // Each state is one registration of the route; any that leaves it unprotected is
+                // reported, the weakest first
+                $reasons = [];
+                foreach ($route['states'] as ['group' => $group, 'applied' => $applied, 'excluded' => $excluded]) {
+                    $reasons[] = match (true) {
+                        $fileStripped => 'stripped',
+                        // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
+                        $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',
+                        ! $group && $applied === [] => 'missing',
+                        $plainStripped => 'stripped',
+                        default => $this->csrfRuns($group, $applied, $excluded) ? null : 'stripped',
+                    };
+                }
+                foreach (['missing', 'stripped', 'excluded'] as $reason) {
+                    if (in_array($reason, $reasons, true)) {
+                        $unprotected[] = ['line' => $route['line'], 'method' => $route['method'], 'reason' => $reason];
+
+                        break;
+                    }
                 }
             }
             $this->reportUnprotectedRoutes($entry['file'], $unprotected, $issues);
@@ -1355,7 +1369,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * each with the CSRF state of its chain and every group around it, and the files it loads
      * by a require or a group() path argument, each with the flags csrfFlags() hands them.
      *
-     * @return array{routes: list<array{line: int, method: string, state: CsrfState}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool}>}
+     * @return array{routes: list<array{line: int, method: string, states: list<CsrfState>}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool}>}
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
@@ -1380,20 +1394,31 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $routes = [];
         foreach ($walk['routes'] as $route) {
-            $routes[] = ['line' => $route['line'], 'method' => $route['method'], 'state' => $this->groupsReaching($route['closures'], $groups, $route['state'])];
+            $states = [];
+            foreach ($route['states'] as $state) {
+                $states = [...$states, ...$this->statesReaching($route['closures'], $groups, $state)];
+            }
+            $routes[] = ['line' => $route['line'], 'method' => $route['method'], 'states' => $states];
         }
 
+        // A file loaded once per registration of the group around it gets one entry per registration
         $includes = [];
         foreach ($walk['includes'] as $include) {
             $path = $routeParser->includedFile($include['include'], dirname($file));
-            if ($path !== null) {
-                $includes[] = ['file' => $path, ...$this->csrfFlags($this->groupsReaching($include['closures'], $groups, self::NO_CSRF))];
+            if ($path === null) {
+                continue;
+            }
+            foreach ($this->statesReaching($include['closures'], $groups, self::NO_CSRF) as $state) {
+                $includes[] = ['file' => $path, ...$this->csrfFlags($state)];
             }
         }
         foreach ($walk['paths'] as $load) {
             $path = $routeParser->groupRouteFile($load['path'], dirname($file));
-            if ($path !== null) {
-                $includes[] = ['file' => $path, ...$this->csrfFlags($this->groupsReaching($load['closures'], $groups, $load['state']))];
+            if ($path === null) {
+                continue;
+            }
+            foreach ($this->statesReaching($load['closures'], $groups, $load['state']) as $state) {
+                $includes[] = ['file' => $path, ...$this->csrfFlags($state)];
             }
         }
 
@@ -1401,32 +1426,39 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The CSRF state that reaches a node: its own chain's, merged with that of every group
-     * whose closure encloses it, as Laravel merges a group's middleware and excluded middleware
-     * into every route inside it. csrfRuns() then judges the result. A group callback is also
-     * reached by the closures around the group() call that runs it, which differ from its own
-     * when it is passed through a variable.
+     * The CSRF states that reach a node, one per way Laravel registers it: its own chain's state
+     * merged with that of each group around it, as Laravel merges a group's middleware and
+     * excluded middleware into every route inside it. The innermost group callback around the
+     * node decides: each group() call that runs it is one registration, reached in turn through
+     * the closures around that call, which differ from the callback's own when it is passed
+     * through a variable. csrfRuns() then judges each state.
      *
-     * @param  list<int>  $closures
-     * @param  array<int, array{state: CsrfState, closures: list<int>}>  $groups
+     * @param  list<int>  $closures  The closures enclosing the node, outermost first
+     * @param  array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>  $groups
      * @param  CsrfState  $state  The node's own chain's state
-     * @return CsrfState
+     * @param  array<int, true>  $seen  Callbacks already on this path, which a callback that runs
+     *                                  itself would otherwise revisit forever
+     * @return non-empty-list<CsrfState>
      */
-    private function groupsReaching(array $closures, array $groups, array $state): array
+    private function statesReaching(array $closures, array $groups, array $state, array $seen = []): array
     {
-        $seen = [];
-        while ($closures !== []) {
-            $closure = array_pop($closures);
-            if (isset($seen[$closure]) || ! isset($groups[$closure])) {
+        for ($index = count($closures) - 1; $index >= 0; $index--) {
+            $closure = $closures[$index];
+            if (! isset($groups[$closure]) || isset($seen[$closure])) {
                 continue;
             }
-            $seen[$closure] = true;
 
-            $state = $this->mergeCsrfState($state, $groups[$closure]['state']);
-            $closures = [...$closures, ...$groups[$closure]['closures']];
+            $states = [];
+            foreach ($groups[$closure] as $registration) {
+                $reached = $this->statesReaching($registration['closures'], $groups, $this->mergeCsrfState($state, $registration['state']), $seen + [$closure => true]);
+                $states = [...$states, ...$reached];
+            }
+
+            // A file can only nest so many reused callbacks; the cap keeps a pathological one bounded
+            return array_slice($states, 0, self::MAX_REGISTRATIONS);
         }
 
-        return $state;
+        return [$state];
     }
 
     /**
@@ -1441,23 +1473,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         return [
             'group' => $a['group'] || $b['group'],
             'applied' => [...$a['applied'], ...$b['applied']],
-            'excluded' => [...$a['excluded'], ...$b['excluded']],
-        ];
-    }
-
-    /**
-     * The state that stands for two registrations of the same routes, where a finding in either
-     * is a finding: 'web' and the CSRF classes when both apply them, and what either excludes.
-     *
-     * @param  CsrfState  $a
-     * @param  CsrfState  $b
-     * @return CsrfState
-     */
-    private function weakestCsrfState(array $a, array $b): array
-    {
-        return [
-            'group' => $a['group'] && $b['group'],
-            'applied' => array_values(array_intersect($a['applied'], $b['applied'])),
             'excluded' => [...$a['excluded'], ...$b['excluded']],
         ];
     }
@@ -1778,21 +1793,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                 // The variable's closure was walked before its first parameter was known as the router
                 $walk['late'] = $walk['late'] || (! $direct && ! isset($walk['callbacks'][$closureId]));
-                // The closures around this call reach the callback too, wherever it was written. A
-                // callback several groups run registers its routes once per group, so it holds what
-                // every one of them applies and what any excludes
-                $walk['groups'][$closureId] = [
-                    'state' => isset($walk['groups'][$closureId]) ? $this->weakestCsrfState($walk['groups'][$closureId]['state'], $state) : $state,
-                    'closures' => [...($walk['groups'][$closureId]['closures'] ?? []), ...$closures],
-                ];
+                // Each group() call that runs the callback registers its routes once more, under
+                // that call's own chain and the closures around it, wherever the callback was written
+                $walk['groups'][$closureId][] = ['state' => $state, 'closures' => $closures];
             }
 
             return;
         }
 
         $method = $this->stateChangingRouteMethod($calls);
+        $states = [$state];
         if ($resourceAt !== null) {
-            [$writes, $state] = $this->resourceState(
+            [$writes, $states] = $this->resourceState(
                 $chain[$resourceAt],
                 array_slice($chain, 0, $resourceAt),
                 array_slice($chain, $resourceAt + 1),
@@ -1805,7 +1817,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $walk['routes'][] = [
                 'line' => $chain[0]->getStartLine(),
                 'method' => $method,
-                'state' => $state,
+                'states' => $states,
                 'closures' => $closures,
             ];
         }
@@ -1970,7 +1982,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      *
      * @param  list<Expr\MethodCall|Expr\StaticCall>  $registrar  The calls before the registration
      * @param  list<Expr\MethodCall|Expr\StaticCall>  $pending  The calls chained after the registration
-     * @return array{bool, CsrfState}
+     * @return array{bool, non-empty-list<CsrfState>}
      */
     private function resourceState(Expr\MethodCall|Expr\StaticCall $resource, array $registrar, array $pending, BootstrapRouteParser $routeParser): array
     {
@@ -1979,7 +1991,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         if ($plural) {
             $registered = $resource->args[0] ?? null;
             if (! $registered instanceof Node\Arg || ! $registered->value instanceof Expr\Array_ || $registered->value->items === []) {
-                return [false, self::NO_CSRF];
+                return [false, [self::NO_CSRF]];
             }
         }
 
@@ -2052,19 +2064,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
             $names = $this->entryNames($filters[$filter]);
             if (in_array(null, $names, true)) {
-                return [false, self::NO_CSRF];
+                return [false, [self::NO_CSRF]];
             }
             $writes = $keeps ? array_intersect($writes, $names) : array_diff($writes, $names);
         }
 
-        // One finding stands for every write: it holds what all of them apply and what any excludes
-        $state = null;
+        // One finding stands for every write, each judged by its own state
+        $states = [];
         foreach ($writes as $method) {
-            $own = $this->csrfState($middlewareFor[$method] ?? $middleware, [...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
-            $state = $state === null ? $own : $this->weakestCsrfState($state, $own);
+            $states[] = $this->csrfState($middlewareFor[$method] ?? $middleware, [...$excluded, ...($excludedFor[$method] ?? []), ...($excludedFor['*'] ?? [])]);
         }
 
-        return [$state !== null, $state ?? self::NO_CSRF];
+        return $states === [] ? [false, [self::NO_CSRF]] : [true, $states];
     }
 
     /**

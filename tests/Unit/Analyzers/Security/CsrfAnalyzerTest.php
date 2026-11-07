@@ -4971,6 +4971,102 @@ PHP);
         $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
     }
 
+    /**
+     * @dataProvider reusedCallbackRegistrationOrderProvider
+     */
+    #[DataProvider('reusedCallbackRegistrationOrderProvider')]
+    public function test_each_registration_of_a_reused_callback_is_judged_with_its_own_groups(string $first, string $second): void
+    {
+        // Only the registration inside the web group gets 'web'; the legacy one runs without it
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+\$admin = function () {
+    Route::post('/admin/orders', [OrderController::class, 'store']);
+};
+{$first}
+{$second}
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertSame([4], array_map(fn ($issue) => $issue->location?->line, $result->getIssues()));
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function reusedCallbackRegistrationOrderProvider(): array
+    {
+        $web = "Route::middleware('web')->group(function () use (\$admin) {\n    Route::prefix('admin')->group(\$admin);\n});";
+        $legacy = "Route::prefix('legacy')->group(\$admin);";
+        $direct = "Route::middleware('web')->group(\$admin);";
+
+        return [
+            'web group around the first call' => [$web, $legacy],
+            'web group around the second call' => [$legacy, $web],
+            'web on the first call' => [$direct, $legacy],
+        ];
+    }
+
+    public function test_reused_callback_reports_its_weakest_registration(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+$hooks = function () {
+    require __DIR__.'/hooks.php';
+};
+Route::middleware('web')->group($hooks);
+Route::middleware('web')->withoutMiddleware('web')->group($hooks);
+PHP,
+            'routes/hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+            'routes/admin.php' => <<<'PHP'
+<?php
+
+$admin = function () {
+    Route::post('/admin/orders', [OrderController::class, 'store']);
+};
+Route::middleware('web')->withoutMiddleware('web')->group($admin);
+Route::prefix('legacy')->group($admin);
+PHP,
+        ]);
+
+        // hooks.php is loaded once with web and once stripped of it; the admin route is stripped
+        // in one registration and has no web at all in the other, which is the weaker
+        $messages = [];
+        foreach ($result->getIssues() as $issue) {
+            $messages[basename((string) $issue->location?->file)] = str_contains($issue->message, 'excluded from it') ? 'stripped' : 'missing';
+        }
+        ksort($messages);
+        $this->assertSame(['admin.php' => 'missing', 'hooks.php' => 'stripped'], $messages);
+    }
+
+    public function test_each_registration_of_a_reused_callback_may_protect_it_its_own_way(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN,
+            'routes/admin.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+$admin = function () {
+    Route::post('/admin/orders', [OrderController::class, 'store']);
+};
+Route::middleware('web')->group($admin);
+Route::middleware(['auth', VerifyCsrfToken::class])->prefix('internal')->group($admin);
+
+Route::apiResource('refunds', RefundController::class)
+    ->middlewareFor('store', 'web')
+    ->middlewareFor(['update', 'destroy'], VerifyCsrfToken::class);
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_resource_filter_that_cannot_be_read_is_skipped(): void
     {
         $result = $this->analyzeRouteFile("<?php\n\nRoute::resource('orders', OrderController::class)->only(\$methods);\nRoute::apiResource('refunds', RefundController::class, ['except' => [\$excluded]]);\n");

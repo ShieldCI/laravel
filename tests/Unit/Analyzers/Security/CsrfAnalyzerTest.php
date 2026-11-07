@@ -4412,6 +4412,32 @@ PHP,
         $this->assertHasIssueContaining('no "web" middleware detected', $result);
     }
 
+    public function test_route_file_group_list_loads_each_file_it_names(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/api.php' => "<?php\n\nRoute::prefix('v3')->group([__DIR__.'/api/v3.php', base_path('routes/api/v4.php')]);\n",
+            'routes/api/v3.php' => "<?php\n\nRoute::apiResources(['orders' => OrderController::class]);\n",
+            'routes/api/v4.php' => "<?php\n\nRoute::apiSingleton('profile', ProfileController::class)->creatable();\n",
+            'routes/web.php' => <<<'PHP'
+<?php
+
+Route::withoutMiddleware('web')->group([
+    base_path('routes/hooks.php'),
+    function () {
+        Route::post('/inline', InlineHookController::class);
+    },
+]);
+PHP,
+            'routes/hooks.php' => "<?php\n\nRoute::post('/hooks', HookController::class);\n",
+        ]);
+
+        // The api list's files are api files; the web list strips both its file and its closure
+        $this->assertFailed($result);
+        $files = array_map(fn ($issue) => basename((string) $issue->location?->file), $result->getIssues());
+        sort($files);
+        $this->assertSame(['hooks.php', 'web.php'], $files);
+    }
+
     public function test_file_web_php_loads_through_a_group_path_is_covered(): void
     {
         $result = $this->analyzeRouteFiles([

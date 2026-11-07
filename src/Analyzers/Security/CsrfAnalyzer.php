@@ -1285,7 +1285,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // nothing, and one on a plain load removes only what a route applies itself
             $fileStripped = isset($webStripped[$path]);
             $fileCovered = isset($covered[$path]) && ! $fileStripped;
-            $plainStripped = ! $fileStripped && ! $fileCovered && isset($stripped[$path]) && ! isset($api[$path]);
+            $plainStripped = ! $fileStripped && ! $fileCovered && isset($stripped[$path]);
 
             $unprotected = [];
             foreach ($entry['walk']['routes'] as $route) {
@@ -1754,9 +1754,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     default => null,
                 };
                 if ($closureId === null) {
-                    if (! $direct) {
-                        $walk['paths'][] = ['path' => $callback, 'state' => $state, 'closures' => $closures];
-                    }
+                    $walk['paths'][] = ['path' => $callback, 'state' => $state, 'closures' => $closures];
 
                     continue;
                 }

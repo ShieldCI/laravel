@@ -2295,6 +2295,7 @@ PHP;
             '__DIR__ variable in an attribute-array group' => ["\$file = __DIR__.'/../routes/admin.php'; Route::group(['middleware' => 'web'], \$file);", 'web', ['admin.php']],
             'variables listed in a literal list' => ["\$a = base_path('routes/admin.php'); \$m = base_path('routes/mobile.php'); Route::middleware('web')->group([\$a, \$m]);", 'web', ['admin.php', 'mobile.php']],
             'list variable naming path variables' => ["\$a = base_path('routes/admin.php'); \$files = [\$a, base_path('routes/mobile.php')]; Route::middleware('web')->group(\$files);", 'web', ['admin.php', 'mobile.php']],
+            'list unpacking a path list' => ["\$files = [base_path('routes/admin.php')]; \$f = [...\$files]; Route::middleware('web')->group(\$f);", 'web', []],
             'variable closure requiring a file' => ["\$routes = function () { require base_path('routes/admin.php'); }; Route::middleware('web')->group(\$routes);", 'web', []],
             'last assignment before the call wins' => ["\$file = base_path('routes/mobile.php'); \$file = base_path('routes/admin.php'); Route::middleware('web')->group(\$file);", 'web', ['admin.php']],
             'reassigned to an unresolvable value' => ["\$file = base_path('routes/admin.php'); \$file = config('routes.admin'); Route::middleware('web')->group(\$file);", 'web', []],

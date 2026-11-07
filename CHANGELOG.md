@@ -2,11 +2,6 @@
 
 ## v1.22.0
 
-### Added
-- `BootstrapRouteParser::groupRoutes()` reads every route file or closure passed to `group()`, including a list (#555)
-- `BootstrapRouteParser::getRouteFileLoads()` lists every file a route file loads through `require` or `group()` (#560)
-- `MiddlewareThrottleDetector::throttlesAfterExclusion()` drops a throttle only when an excluded middleware resolves to the same name and parameters (#560)
-
 ### Changed
 - `csrf-protection` reports `preventRequestForgery(except: ['*'])` and `web(remove: [PreventRequestForgery::class])` on Laravel 13 at Critical instead of passing them, which can fail a default `fail_on: high` build (#539)
 - `csrf-protection` reports a `group('web', ...)`, `replace` or `removeFromGroup()` call that drops the CSRF middleware from the web group, which can fail a default `fail_on: high` build (#539)

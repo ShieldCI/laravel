@@ -1303,7 +1303,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * routes/api.php, files registered under 'api', and any file they load where neither 'web'
      * nor a CSRF class reaches the load are api files, unless something also loads them under
      * 'web', stripped or not. In an api file only a route that applies 'web' or a CSRF class
-     * itself and then excludes it is reported. A route file loads a file by requiring it or through a group() path
+     * itself is judged, and it is reported when its own exclusions or a strip on the file's load
+     * remove the check. A route file loads a file by requiring it or through a group() path
      * argument, which then counts as a require at that place. routes/web.php is covered,
      * and so is a file registered under 'web' externally, a file loaded by a group 'web' or the
      * CSRF middleware reaches, and any file a covered file requires outside a group that removes
@@ -1423,8 +1424,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             // the load, which Laravel merges into it
             $apiOnly = isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
 
-            // A strip on a web load strips every route. A strip only an api load applies removes
-            // nothing, and one on a plain load removes only what a route applies itself
+            // A strip on a web load strips every route. A strip on an api load or a plain load
+            // removes only what a route applies itself
             $fileStripped = isset($webStripped[$path]);
             $fileCovered = isset($covered[$path]) && ! $fileStripped;
             $plainStripped = ! $fileStripped && ! $fileCovered && isset($stripped[$path]);

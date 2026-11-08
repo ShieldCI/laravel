@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\ConfigOutsideConfigAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -886,7 +887,7 @@ namespace App\Services;
 
 class PaymentService
 {
-    private $stripeKey = 'sk_live_51HqLyjWDarjtT1zdp7dc';
+    private $stripeKey = 'sk_live_4eC39HqLyjWDarjtT1zdp7dc1234567890ABCDEFGH';
     private $testKey = 'test_key_abc123def456ghi789jkl012mno345pqr678';
 }
 PHP;
@@ -1580,5 +1581,228 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    public function test_excludes_snake_case_identifiers_with_key_like_prefixes(): void
+    {
+        // A cache key or message key that happens to start with api_, auth_, token_ or
+        // test_ is still an identifier, not a secret.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+use Illuminate\Support\Facades\Cache;
+
+class ReportService
+{
+    public function flush(): void
+    {
+        Cache::forget('api_widget_totals_for_reporting_page');
+        Cache::forget('token_rotation_queue_name_for_workers');
+    }
+
+    public function lockoutMessage(): string
+    {
+        return 'auth_lockout_after_repeated_failures_notice';
+    }
+
+    public function scenario(): string
+    {
+        return 'test_guest_can_request_a_new_invitation_link';
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/ReportService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_still_detects_prefixed_keys_with_mixed_case_and_digits(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BillingService
+{
+    private $first = 'sk_test_4eC39HqLyjWDarjtT1zdp7dc';
+    private $second = 'pk_live_62Kd9xQWzyMNO481rstUVW735abc';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/BillingService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    /**
+     * @dataProvider prefixedKeyProvider
+     */
+    #[DataProvider('prefixedKeyProvider')]
+    public function test_prefixed_snake_case_with_a_digit_heavy_segment_is_a_key(string $value): void
+    {
+        // Three or more digits in one segment reads as key material rather than a word,
+        // so the prefix decides even when the whole string is lowercase snake_case.
+        $code = <<<PHP
+<?php
+
+namespace App\\Services;
+
+class KeyService
+{
+    private \$key = '{$value}';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/KeyService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function prefixedKeyProvider(): array
+    {
+        return [
+            'digit rule, digits spread across a segment' => ['test_key_abc123def456ghi789jkl012mno345pqr678'],
+            'digit rule, two segments of lowercase hex' => ['api_f3a9e17c4b2d8e6a0c5f1b7d9e3a'],
+            'digit rule, three segments of lowercase hex' => ['api_live_f3a9e17c4b2d8e6a0c5f1b7d'],
+            'digit rule, digit-led segment' => ['api_live_4ec39hq8x2mzp7wq1rt5vk8n'],
+            'not snake_case, mixed case' => ['sk_test_4eC39HqLyjWDarjtT1zdp7dc'],
+            'digit rule, trailing underscore' => ['api_live_f3a9e17c4b2d8e6a0c5f1b7d_'],
+            'digit rule, exactly three digits in a segment' => ['api_response_cache_for_dashboard_123'],
+        ];
+    }
+
+    /**
+     * @dataProvider snakeCaseIdentifierProvider
+     */
+    #[DataProvider('snakeCaseIdentifierProvider')]
+    public function test_snake_case_identifiers_with_few_digits_per_segment_are_not_keys(string $value): void
+    {
+        // A prefixed string reads as an identifier when its words hold few digits, including
+        // a word that leads with one (2fa) and a two-word name. The digit rule applies to
+        // prefixed strings only, so an unprefixed identifier with a digit-heavy segment
+        // stays excused.
+        $code = <<<PHP
+<?php
+
+namespace App\\Services;
+
+class CacheService
+{
+    private \$name = '{$value}';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function snakeCaseIdentifierProvider(): array
+    {
+        return [
+            'prefixed, no digits' => ['api_response_cache_for_dashboard'],
+            'prefixed, one digit in a segment' => ['api_v2_widget_cache_for_dashboard'],
+            'unprefixed, digit-heavy segment' => ['report_q2024_summary_for_finance_team'],
+            'prefixed, digit-led segment' => ['auth_2fa_challenge_required_for_session'],
+            'prefixed, two-digit segment' => ['api_rate_limit_60_per_minute_cache_key'],
+            'prefixed, trailing number segment' => ['token_refresh_queue_for_workers_10'],
+            'prefixed, two segments' => ['secret_rotationschedulerforworkers'],
+            'prefixed, two segments with test_' => ['test_userscanresetpasswordviaemailx'],
+            'prefixed, trailing underscore of a concatenated key' => ['api_widget_totals_for_reporting_page_'],
+            'prefixed, double underscore' => ['api__response_cache_for_dashboard'],
+            'unprefixed, trailing underscore' => ['report_widget_totals_for_reporting_'],
+            'prefixed, thousands of segments' => ['api'.str_repeat('_ab', 5000)],
+        ];
+    }
+
+    /**
+     * @dataProvider excludedSegmentAboveBasePathProvider
+     */
+    #[DataProvider('excludedSegmentAboveBasePathProvider')]
+    public function test_excluded_directory_names_above_the_base_path_do_not_skip_the_project(string $segment): void
+    {
+        // Only the path inside the project decides what is excluded, so a checkout that
+        // sits under a directory named tests/ or config/ is still analyzed, while its own
+        // tests/ and config/ are still skipped.
+        $key = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+class Keys
+{
+    public const TOKEN = 'sk_test_4eC39HqLyjWDarjtT1zdp7dc';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            "workspace/{$segment}/acme/app/Http/Keys.php" => $key,
+            "workspace/{$segment}/acme/tests/Feature/KeysTest.php" => $key,
+            "workspace/{$segment}/acme/config/keys.php" => $key,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath("{$tempDir}/workspace/{$segment}/acme");
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $location = $result->getIssues()[0]->location;
+        $this->assertNotNull($location);
+        $this->assertStringEndsWith('app/Http/Keys.php', $location->file);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function excludedSegmentAboveBasePathProvider(): array
+    {
+        return [
+            'tests' => ['tests'],
+            'config' => ['config'],
+            'vendor' => ['vendor'],
+            'database/seeders' => ['database/seeders'],
+            'mixed case' => ['Tests'],
+        ];
     }
 }

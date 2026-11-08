@@ -110,7 +110,9 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
      */
     private function shouldSkipFile(string $file): bool
     {
-        $normalizedPath = strtolower(str_replace('\\', '/', $file));
+        // Match against the project-relative path, so directories above the base path
+        // (a checkout under ~/tests/ or /srv/config/) do not exclude the whole project
+        $normalizedPath = '/'.ltrim(strtolower(str_replace('\\', '/', $this->getRelativePath($file))), '/');
 
         foreach (self::EXCLUDE_PATHS as $excludePath) {
             if (str_contains($normalizedPath, $excludePath)) {
@@ -168,6 +170,12 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
     /** @var int Minimum total length for API key detection */
     private const MIN_API_KEY_TOTAL_LENGTH = 30;
+
+    /** @var string Common API key prefixes (sk_, pk_, api_, token_, ...) */
+    private const API_KEY_PREFIX_PATTERN = '/^(sk|pk|live|test|key|api|secret|token|bearer|auth)_[a-zA-Z0-9_-]+$/';
+
+    /** @var int Digits in one snake_case segment that read as key material rather than a word */
+    private const MIN_KEY_SEGMENT_DIGITS = 3;
 
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
@@ -435,19 +443,16 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // Check for common API key prefixes - these are definite API keys
-        if (preg_match('/^(sk|pk|live|test|key|api|secret|token|bearer|auth)_[a-zA-Z0-9_-]+$/', $value)) {
-            return true;
-        }
-
         // Must be mostly alphanumeric (allow underscores and dashes)
         if (! preg_match('/^[a-zA-Z0-9_-]{'.self::MIN_API_KEY_PATTERN_LENGTH.',}$/', $value)) {
             return false;
         }
 
+        $hasKeyPrefix = preg_match(self::API_KEY_PREFIX_PATTERN, $value) === 1;
+
         // Exclude snake_case identifiers (method names, constants, etc.)
-        // Pattern: lowercase words separated by underscores
-        if (preg_match('/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){2,}$/', $value)) {
+        // Pattern: lowercase words separated by underscores. Prefixed strings are graded below
+        if (! $hasKeyPrefix && preg_match('/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){2,}$/', $value)) {
             return false;
         }
 
@@ -459,6 +464,17 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         // Exclude camelCase identifiers (require lowercase after each capital)
         if (preg_match('/^[a-z][a-z0-9]*([A-Z][a-z0-9]+){2,}$/', $value)) {
             return false;
+        }
+
+        // A common API key prefix makes it a key, unless the rest reads as lowercase words
+        // (api_response_cache_for_dashboard, auth_2fa_challenge, a concatenated api_cache_ key
+        // prefix) with no digit-heavy segment such as the abc123def456 in test_key_abc123def456...
+        // The prefix guarantees the leading word and underscore, so a character span suffices
+        // (a repeated regex group hits the JIT stack limit on long input)
+        if ($hasKeyPrefix) {
+            $isLowercaseWords = strspn($value, 'abcdefghijklmnopqrstuvwxyz0123456789_') === $length;
+
+            return ! $isLowercaseWords || $this->hasDigitHeavySegment($value);
         }
 
         // Exclude CSS class combinations (only check if contains dashes, which are typical in CSS)
@@ -487,6 +503,20 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
         // Likely an API key if it passes all filters
         return true;
+    }
+
+    /**
+     * Check if any underscore-separated segment holds enough digits to read as key material.
+     */
+    private function hasDigitHeavySegment(string $value): bool
+    {
+        foreach (explode('_', $value) as $segment) {
+            if (preg_match_all('/\d/', $segment) >= self::MIN_KEY_SEGMENT_DIGITS) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

@@ -358,13 +358,19 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Compare the whole host from here on, so a public host that merely starts with a
+        // loopback name or private address (localhost.run, 10.20.30.40.cdn.example) is not one.
+        $bareHost = rtrim($host, '.');
+
         // Detect localhost URLs (should always be configured)
-        if (preg_match('/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?/', $value)) {
+        if (in_array($bareHost, ['localhost', '127.0.0.1'], true)) {
             return true;
         }
 
-        // Detect private IP addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-        if (preg_match('/^https?:\/\/(192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2[0-9]|3[0-1])\.\d+\.\d+)(:\d+)?/', $value)) {
+        // Detect private IPv4 addresses: for IPv4, FILTER_FLAG_NO_PRIV_RANGE rejects exactly
+        // 10.0.0.0/8, 172.16.0.0/12 and 192.168.0.0/16
+        if (filter_var($bareHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
+            && filter_var($bareHost, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_NO_PRIV_RANGE) === false) {
             return true;
         }
 

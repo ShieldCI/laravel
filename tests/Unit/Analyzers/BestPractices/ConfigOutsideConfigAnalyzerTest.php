@@ -1805,4 +1805,151 @@ PHP;
             'mixed case' => ['Tests'],
         ];
     }
+
+    /**
+     * @dataProvider loopbackLookalikeHostProvider
+     */
+    #[DataProvider('loopbackLookalikeHostProvider')]
+    public function test_hosts_that_only_start_with_a_loopback_name_are_graded_as_public(string $url): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($url)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function loopbackLookalikeHostProvider(): array
+    {
+        return [
+            'localhost-prefixed registrable domain' => ['https://localhost.run/docs'],
+            'localhost-prefixed word' => ['https://localhostify.com/api/v1'],
+            'loopback-prefixed octet' => ['https://127.0.0.10.acme.io/status'],
+        ];
+    }
+
+    /**
+     * @dataProvider loopbackUrlProvider
+     */
+    #[DataProvider('loopbackUrlProvider')]
+    public function test_loopback_hosts_are_flagged_whatever_follows_the_host(string $url): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($url)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Hardcoded URL', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function loopbackUrlProvider(): array
+    {
+        return [
+            'bare localhost' => ['http://localhost'],
+            'localhost with port and path' => ['http://localhost:8000/api'],
+            'localhost with path' => ['http://localhost/path'],
+            'localhost with query' => ['http://localhost?x=1'],
+            'localhost with fragment' => ['http://localhost#f'],
+            'localhost with userinfo' => ['http://user:pass@localhost/api'],
+            'localhost with trailing dot' => ['http://localhost./api'],
+            'loopback ip with port' => ['http://127.0.0.1:8080'],
+            'loopback ip with path' => ['http://127.0.0.1/api'],
+            'loopback ip with trailing dot' => ['http://127.0.0.1./api'],
+            'loopback ip with userinfo' => ['http://user@127.0.0.1/api'],
+        ];
+    }
+
+    /**
+     * @dataProvider privateIpLookalikeHostProvider
+     */
+    #[DataProvider('privateIpLookalikeHostProvider')]
+    public function test_hosts_that_are_not_exactly_a_private_ip_are_graded_as_public(string $url): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($url)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function privateIpLookalikeHostProvider(): array
+    {
+        return [
+            'private-ip-prefixed hostname' => ['https://10.20.30.40.cdn.acme.io/assets'],
+            'private ip as userinfo' => ['http://192.168.1.1@acme.io/'],
+            'out-of-range octet' => ['http://10.0.0.1234/'],
+            'below the 172.16/12 range' => ['http://172.15.0.1/'],
+            'above the 172.16/12 range' => ['http://172.32.0.1/'],
+        ];
+    }
+
+    /**
+     * @dataProvider privateIpUrlProvider
+     */
+    #[DataProvider('privateIpUrlProvider')]
+    public function test_private_ip_hosts_are_flagged_whatever_follows_the_host(string $url): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($url)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Hardcoded URL', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function privateIpUrlProvider(): array
+    {
+        return [
+            '192.168/16 with path' => ['http://192.168.1.10/api'],
+            '10/8 with port' => ['http://10.0.0.5:8080'],
+            'bottom of 172.16/12' => ['http://172.16.0.1'],
+            'top of 172.16/12' => ['http://172.31.255.255/x'],
+            'trailing dot' => ['http://192.168.1.10./api'],
+            'with userinfo' => ['http://user:pass@192.168.1.10/api'],
+        ];
+    }
+
+    private function urlPropertyFixture(string $url): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\\Services;
+
+class CacheService
+{
+    private \$name = '{$url}';
+}
+PHP;
+    }
 }

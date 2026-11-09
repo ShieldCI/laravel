@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use Illuminate\Config\Repository;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -1463,6 +1464,48 @@ PHP;
         $messagesString = implode(' ', $messages);
         $this->assertStringNotContainsString('users', $messagesString);
         $this->assertStringNotContainsString('dashboard', $messagesString);
+    }
+
+    /**
+     * @dataProvider lastRegistrarMiddlewareProvider
+     */
+    #[DataProvider('lastRegistrarMiddlewareProvider')]
+    public function test_group_middleware_reads_only_the_last_registrar_middleware_call(string $routes, bool $reported): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => "<?php\n\n{$routes}\n"]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        if ($reported) {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function lastRegistrarMiddlewareProvider(): array
+    {
+        $route = "Route::post('/backoffice/members', [MemberController::class, 'store'])";
+
+        return [
+            // RouteRegistrar::attribute() replaces 'middleware' on each call: the last one applies.
+            'auth replaced by a later call' => ["Route::middleware('auth')->middleware('verified')->group(function () {\n    {$route};\n});", true],
+            'auth replaced across another registrar call' => ["Route::middleware('auth')->prefix('ops')->middleware('verified')->group(function () {\n    {$route};\n});", true],
+            'no auth' => ["Route::middleware('verified')->group(function () {\n    {$route};\n});", true],
+            'auth as the last call' => ["Route::middleware('verified')->middleware('auth')->group(function () {\n    {$route};\n});", false],
+            'auth in one call listing both' => ["Route::middleware(['auth', 'verified'])->group(function () {\n    {$route};\n});", false],
+            // Laravel merges middleware down nested groups.
+            'outer auth group around an inner replacing chain' => ["Route::middleware('auth')->group(function () {\n    Route::middleware('signed')->middleware('verified')->group(function () {\n        {$route};\n    });\n});", false],
+            // Route::middleware() on a route adds to its middleware.
+            'route-level calls add up' => ["{$route}->middleware('verified')->middleware('auth');", false],
+        ];
     }
 
     public function test_detects_mixed_routes_in_and_outside_protected_group(): void

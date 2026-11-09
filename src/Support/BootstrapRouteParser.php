@@ -733,8 +733,8 @@ class BootstrapRouteParser
 
     /**
      * The route files groups in $filePath load that $judge says their groups apply to them:
-     * a group enclosing the load names a matching middleware on its chain,
-     * ->middleware(...), or in its 'middleware' attribute. Laravel merges the middleware
+     * a group enclosing the load names a matching middleware in the last ->middleware(...)
+     * call on its chain, or in its 'middleware' attribute. Laravel merges the middleware
      * down nested groups. A group that excludes a matching middleware through
      * ->withoutMiddleware(...) or its 'excluded_middleware' attribute drops the file.
      *
@@ -762,7 +762,8 @@ class BootstrapRouteParser
 
     /**
      * The middleware a group call lists through its chain's ->$chainMethod(...) calls
-     * (lowercase) and under $attributeKey in its attribute array.
+     * (lowercase), read as {@see self::chainEntries()} reads them, and under $attributeKey
+     * in its attribute array.
      *
      * @return array<Node\Expr>
      */
@@ -1593,9 +1594,12 @@ class BootstrapRouteParser
     }
 
     /**
-     * The middleware every ->$method(...) call (lowercase) in a method-call chain lists,
-     * such as ->middleware('web'), ->middleware('auth', 'web') or
-     * ->withoutMiddleware(['web']), which reads only its first argument.
+     * The middleware the ->$method(...) calls (lowercase) in a group's registrar chain
+     * apply, such as ->middleware('web'), ->middleware('auth', 'web') or
+     * ->withoutMiddleware(['web']), which reads only its first argument. Every
+     * ->withoutMiddleware() call counts, as RouteRegistrar merges them; only the last
+     * ->middleware() call does, as each middleware() call replaces the last. Walking the
+     * chain inward, that is the first one met.
      *
      * @return array<Node\Expr>
      */
@@ -1604,7 +1608,10 @@ class BootstrapRouteParser
         $entries = [];
         while ($node instanceof MethodCall || $node instanceof StaticCall) {
             if ($node->name instanceof Identifier && $node->name->toLowerString() === $method) {
-                array_push($entries, ...($method === 'withoutmiddleware' ? $this->excludedEntries($node) : $this->middlewareEntries($node)));
+                if ($method !== 'withoutmiddleware') {
+                    return $this->middlewareEntries($node);
+                }
+                array_push($entries, ...$this->excludedEntries($node));
             }
             if (! $node instanceof MethodCall) {
                 break;

@@ -1586,6 +1586,123 @@ PHP;
         }
     }
 
+    // ==================== Chained middleware() calls before group() ====================
+
+    /**
+     * @dataProvider lastChainedMiddlewareProvider
+     */
+    #[DataProvider('lastChainedMiddlewareProvider')]
+    public function test_group_registered_route_files_read_only_the_last_chained_middleware_call(string $source, string $reader, string $chain, bool $expected): void
+    {
+        $registration = "{$chain}->group(base_path('routes/portal.php'));";
+        $file = $source === 'bootstrap' ? 'bootstrap/app.php' : 'app/Providers/PortalRouteProvider.php';
+        $contents = $source === 'bootstrap'
+            ? $this->bootstrapRegistering('', $registration)
+            : <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider as ServiceProvider;
+use Illuminate\\Support\\Facades\\Route;
+
+class PortalRouteProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        \$this->routes(function () {
+            {$registration}
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            $file => $contents,
+            'routes/portal.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $files = match ($reader) {
+                'web' => $parser->getWebProtectedRouteFiles(),
+                'api' => $parser->getApiRegisteredRouteFiles(),
+                default => $parser->getThrottleProtectedRouteFiles(),
+            };
+
+            $this->assertSame($expected, $this->endsWithMatch($files, '/routes/portal.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, string, bool}>
+     */
+    public static function lastChainedMiddlewareProvider(): array
+    {
+        return [
+            // RouteRegistrar::attribute() replaces 'middleware' on each call: the last one applies.
+            'bootstrap web replaced by a later call' => ['bootstrap', 'web', "Route::middleware('web')->middleware('verified')", false],
+            'bootstrap api replaced by a later call' => ['bootstrap', 'api', "Route::middleware('api')->middleware('auth:token')", false],
+            'provider web replaced by a later call' => ['provider', 'web', "Route::middleware('web')->middleware('verified')", false],
+            'provider api replaced by a later call' => ['provider', 'api', "Route::middleware('api')->middleware('auth:token')", false],
+            'bootstrap throttle replaced by a later call' => ['bootstrap', 'throttle', "Route::middleware('throttle:30,1')->middleware('verified')", false],
+            'provider throttle replaced by a later call' => ['provider', 'throttle', "Route::middleware('throttle:30,1')->middleware('verified')", false],
+            'web replaced across another registrar call' => ['bootstrap', 'web', "Route::middleware('web')->prefix('portal')->middleware('verified')", false],
+            'bootstrap web as the last call' => ['bootstrap', 'web', "Route::middleware('verified')->middleware('web')", true],
+            'provider web as the last call' => ['provider', 'web', "Route::middleware('verified')->middleware('web')", true],
+            'bootstrap api as the last call' => ['bootstrap', 'api', "Route::middleware('auth:token')->middleware('api')", true],
+            'bootstrap throttle as the last call' => ['bootstrap', 'throttle', "Route::middleware('verified')->middleware('throttle:30,1')", true],
+            'web in one call listing both' => ['bootstrap', 'web', "Route::middleware(['web', 'verified'])", true],
+            'a single throttle call' => ['provider', 'throttle', "Route::middleware('throttle:30,1')", true],
+            // withoutMiddleware() calls merge, so an earlier exclusion still drops the file.
+            'web excluded by an earlier of several exclusions' => ['bootstrap', 'web', "Route::withoutMiddleware('web')->withoutMiddleware('verified')->middleware('web')", false],
+            'throttle excluded by an earlier of several exclusions' => ['bootstrap', 'throttle', "Route::withoutMiddleware('throttle:30,1')->withoutMiddleware('verified')->middleware('throttle:30,1')", false],
+        ];
+    }
+
+    /**
+     * @dataProvider lastChainedClosureMiddlewareProvider
+     */
+    #[DataProvider('lastChainedClosureMiddlewareProvider')]
+    public function test_throttled_group_ranges_read_only_the_last_chained_middleware_call(string $chain, bool $throttled): void
+    {
+        $routes = <<<PHP
+<?php
+
+{$chain}->group(function () {
+    Route::post('/session', [SessionController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame(
+                $throttled ? [['start' => 3, 'end' => 5]] : [],
+                $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
+            );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function lastChainedClosureMiddlewareProvider(): array
+    {
+        return [
+            'throttle replaced by a later call' => ["Route::middleware('throttle:8,1')->middleware('verified')", false],
+            'throttle as the last call' => ["Route::middleware('verified')->middleware('throttle:8,1')", true],
+            'throttle in one call listing both' => ["Route::middleware(['throttle:8,1', 'verified'])", true],
+            'throttle excluded by an earlier of several exclusions' => ["Route::withoutMiddleware('throttle:8,1')->withoutMiddleware('verified')->middleware('throttle:8,1')", false],
+        ];
+    }
+
     public function test_route_file_loads_list_every_load_with_the_groups_around_it(): void
     {
         $partner = <<<'PHP'

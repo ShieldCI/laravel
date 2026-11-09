@@ -3295,6 +3295,90 @@ PHP;
         $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
     }
 
+    /**
+     * @dataProvider lastRegistrarMiddlewareRouteProvider
+     */
+    #[DataProvider('lastRegistrarMiddlewareRouteProvider')]
+    public function test_only_the_last_registrar_middleware_call_throttles_a_route_file(string $routes, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\n{$routes}\n"]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function lastRegistrarMiddlewareRouteProvider(): array
+    {
+        $route = "Route::post('/session/login', [SessionController::class, 'store'])";
+
+        return [
+            // RouteRegistrar::attribute() replaces 'middleware' on each call: the last one applies.
+            'closure group throttle replaced by a later call' => ["Route::middleware('throttle:4,1')->middleware('verified')->group(function () {\n    {$route};\n});", true],
+            'registrar route throttle replaced by a later call' => ["Route::middleware('throttle:4,1')->middleware('verified')->post('/session/login', [SessionController::class, 'store']);", true],
+            'closure group without a throttle' => ["Route::middleware('verified')->group(function () {\n    {$route};\n});", true],
+            'closure group throttle as the last call' => ["Route::middleware('verified')->middleware('throttle:4,1')->group(function () {\n    {$route};\n});", false],
+            'registrar route throttle as the last call' => ["Route::middleware('verified')->middleware('throttle:4,1')->post('/session/login', [SessionController::class, 'store']);", false],
+            // Route::middleware() on a route adds to its middleware.
+            'route-level calls add up' => ["{$route}->middleware('throttle:4,1')->middleware('verified');", false],
+            'registrar throttle then a route-level call' => ["Route::middleware('throttle:4,1')->post('/session/login', [SessionController::class, 'store'])->middleware('verified');", false],
+            // withoutMiddleware() calls merge, so an earlier exclusion still holds.
+            'closure group throttle excluded by an earlier of several exclusions' => ["Route::middleware('throttle:4,1')->group(function () {\n    Route::withoutMiddleware('throttle:4,1')->withoutMiddleware('verified')->group(function () {\n        {$route};\n    });\n});", true],
+        ];
+    }
+
+    /**
+     * @dataProvider lastRegistrarMiddlewareRegistrationProvider
+     */
+    #[DataProvider('lastRegistrarMiddlewareRegistrationProvider')]
+    public function test_only_the_last_registrar_middleware_call_throttles_a_registered_file(string $chain, bool $reported): void
+    {
+        $bootstrap = <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$chain}->group(base_path('routes/portal.php'));
+        },
+    )
+    ->create();
+PHP;
+
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $bootstrap,
+            'routes/portal.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        if ($reported) {
+            $this->assertFailed($result);
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function lastRegistrarMiddlewareRegistrationProvider(): array
+    {
+        return [
+            'throttle replaced by a later call' => ["Route::middleware('throttle:4,1')->middleware('verified')", true],
+            'no throttle' => ["Route::middleware('verified')", true],
+            'throttle as the last call' => ["Route::middleware('verified')->middleware('throttle:4,1')", false],
+            'throttle in one call listing both' => ["Route::middleware(['throttle:4,1', 'verified'])", false],
+            'throttle excluded by an earlier of several exclusions' => ["Route::withoutMiddleware('throttle:4,1')->withoutMiddleware('verified')->middleware('throttle:4,1')", true],
+        ];
+    }
+
     public function test_a_file_registered_twice_is_reported_when_one_registration_leaves_it_unthrottled(): void
     {
         $bootstrap = <<<'PHP'

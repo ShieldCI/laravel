@@ -1073,17 +1073,18 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * What a method chain sends its routes through: the middleware its
-     * ->middleware(...) / Route::middleware(...) calls apply and its
-     * ->withoutMiddleware(...) calls exclude, as resolved names, and the controller a
-     * ->controller(X::class) / Route::controller(X::class) call names, whose routes
-     * give only a method.
+     * What a registrar chain, the calls before a group() or a route verb, sends its routes
+     * through: the middleware its last ->middleware(...) / Route::middleware(...) call
+     * applies, as each middleware() call replaces the last, and the middleware every
+     * ->withoutMiddleware(...) call excludes, as RouteRegistrar merges those, as resolved
+     * names, and the controller a ->controller(X::class) / Route::controller(X::class)
+     * call names, whose routes give only a method.
      *
      * @return array{0: list<string>, 1: list<string>, 2: ?string}
      */
     private function chainMiddleware(Node\Expr $node): array
     {
-        $middleware = [];
+        $middleware = null;
         $excluded = [];
         $controller = null;
         while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
@@ -1091,7 +1092,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
                 $method = $node->name->toLowerString();
                 if ($method === 'middleware') {
-                    array_push($middleware, ...$this->middlewareArgumentNames($node));
+                    // Walking inward, the first call met is the last one written
+                    $middleware ??= $this->middlewareArgumentNames($node);
                 } elseif ($method === 'withoutmiddleware') {
                     array_push($excluded, ...$this->excludedMiddlewareNames($node));
                 } elseif ($method === 'controller') {
@@ -1105,7 +1107,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             $node = $node->var;
         }
 
-        return [$middleware, $excluded, $controller];
+        return [$middleware ?? [], $excluded, $controller];
     }
 
     /**

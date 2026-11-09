@@ -2026,8 +2026,10 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      *   → parses the config array's 'middleware' key.
      *
      * For MethodCall ->group() chains (e.g. Route::middleware('auth')->group(fn)):
-     *   → walks the chain collecting ->middleware() and ->withoutMiddleware() calls,
-     *     and also handles Route::middleware() / Route::withoutMiddleware() as the root.
+     *   → walks the chain collecting every ->withoutMiddleware() call, as RouteRegistrar
+     *     merges them, and only the last ->middleware() call, as each middleware() call
+     *     replaces the last (the first one found walking outward-in), and also handles
+     *     Route::middleware() / Route::withoutMiddleware() as the root.
      *
      * @return array{add: list<string>, remove: list<string>}
      */
@@ -2061,12 +2063,13 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         if ($node instanceof Node\Expr\MethodCall) {
             // Walk the chain: [MethodCall ->group], [MethodCall ->middleware], ..., StaticCall Route::X
             $current = $node->var;
+            $applied = null;
 
             while ($current instanceof Node\Expr\MethodCall) {
                 if ($current->name instanceof Node\Identifier) {
                     $name = $current->name->toString();
                     if ($name === 'middleware') {
-                        $add = array_merge($add, $this->extractMiddlewareArgs($current->args));
+                        $applied ??= $this->extractMiddlewareArgs($current->args);
                     } elseif ($name === 'withoutMiddleware') {
                         $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
                     }
@@ -2079,11 +2082,13 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                 && $current->name instanceof Node\Identifier) {
                 $name = $current->name->toString();
                 if ($name === 'middleware') {
-                    $add = array_merge($add, $this->extractMiddlewareArgs($current->args));
+                    $applied ??= $this->extractMiddlewareArgs($current->args);
                 } elseif ($name === 'withoutMiddleware') {
                     $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
                 }
             }
+
+            $add = $applied ?? [];
         }
 
         return ['add' => $add, 'remove' => $remove];

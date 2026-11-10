@@ -1105,7 +1105,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * middleware() call replaces the last, and the middleware every ->withoutMiddleware(...)
      * call excludes, as RouteRegistrar merges those, as resolved names, and the controller a
      * ->controller(X::class) / Route::controller(X::class) call names, whose routes give
-     * only a method. The fourth says whether that middleware call names one this cannot
+     * only a method. An ->attribute(...) call is read as the call it stands for (see
+     * BootstrapRouteParser::attributeStandIn()). The fourth says whether that middleware call names one this cannot
      * read, or, with no middleware call, the chain starts at a variable whose value this
      * cannot read.
      *
@@ -1119,17 +1120,19 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         $controller = null;
         $node = self::heldValue($node);
         while ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
-            $first = $node->args[0] ?? null;
-            if ($node->name instanceof Node\Identifier && $first instanceof Node\Arg) {
-                $method = $node->name->toLowerString();
+            // ->attribute('middleware', ...) reads as the call it stands for
+            $call = $bootstrapParser->attributeStandIn($node);
+            $first = $call->args[0] ?? null;
+            if ($call->name instanceof Node\Identifier && $first instanceof Node\Arg) {
+                $method = $call->name->toLowerString();
                 if ($method === 'middleware') {
                     // Walking inward, the first call met is the last one written
                     if ($middleware === null) {
-                        $middleware = $this->middlewareArgumentNames($node, $bootstrapParser);
-                        $unread = array_filter($bootstrapParser->middlewareEntries($node), $this->middlewareUnread(...)) !== [];
+                        $middleware = $this->middlewareArgumentNames($call, $bootstrapParser);
+                        $unread = array_filter($bootstrapParser->middlewareEntries($call), $this->middlewareUnread(...)) !== [];
                     }
                 } elseif ($method === 'withoutmiddleware') {
-                    array_push($excluded, ...$this->excludedMiddlewareNames($node));
+                    array_push($excluded, ...$this->excludedMiddlewareNames($call));
                 } elseif ($method === 'controller') {
                     $controller = $this->middlewareClassName($first->value);
                 }

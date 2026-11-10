@@ -77,6 +77,13 @@ class BootstrapRouteParser
     private array $walks = [];
 
     /**
+     * The call each ->attribute(...) call stands for (see {@see self::attributeStandIn()}).
+     *
+     * @var \WeakMap<MethodCall|StaticCall, MethodCall|StaticCall>
+     */
+    private \WeakMap $standIns;
+
+    /**
      * The judge, $nameThrottles, says whether one middleware name throttles, as
      * {@see MiddlewareThrottleDetector::__construct()} describes. Without one, only the
      * framework's throttle classes and the 'throttle' alias Laravel registers count.
@@ -89,6 +96,7 @@ class BootstrapRouteParser
         ?Closure $nameThrottles = null,
     ) {
         $this->throttles = new MiddlewareThrottleDetector($basePath, $parser, $nameThrottles);
+        $this->standIns = new \WeakMap;
     }
 
     /**
@@ -821,6 +829,104 @@ class BootstrapRouteParser
     }
 
     /**
+     * The calls of the chain a call ends, root first, as they set the attributes of the
+     * registrar its group() registers routes with: the chain as written, ending with the call,
+     * continued, where a link is made on a variable holding a registrar, through the calls that
+     * built that registrar and set its attributes, as the walk of the tree reads the variable
+     * (see {@see self::HELD_VALUE}), less the group() calls earlier statements made, which
+     * registered their own routes. The chain is continued that way only when it then starts at
+     * the router (see {@see self::isRouteRoot()}), and then ends at the last group() written in
+     * it, as a call after that changes the registrar only for later groups. Each ->attribute(...) call is read as the
+     * call it stands for (see {@see self::attributeStandIn()}). A variable is read only in a
+     * tree this parser has walked: a file its other methods read, or a tree given to
+     * {@see self::routerGroupRoutes()} or {@see self::routerGroupCalls()}.
+     *
+     * @return non-empty-list<MethodCall|StaticCall>
+     *
+     * @internal An implementation detail of authentication-authorization and csrf-protection, outside this package's backward-compatibility promise.
+     */
+    public function groupChain(MethodCall|StaticCall $call): array
+    {
+        $written = [$call];
+        $node = $call;
+        while ($node instanceof MethodCall && ($node->var instanceof MethodCall || $node->var instanceof StaticCall)) {
+            $node = $node->var;
+            array_unshift($written, $node);
+        }
+
+        $before = [];
+        $held = false;
+        $node = $written[0];
+        while ($node instanceof MethodCall) {
+            $value = self::heldValue($node->var);
+            $held = $held || $value !== $node->var;
+            if (! $value instanceof MethodCall && ! $value instanceof StaticCall) {
+                break;
+            }
+            $node = $value;
+            // A group() an earlier statement made registered its own routes
+            if (! $node->name instanceof Identifier || $node->name->toLowerString() !== 'group') {
+                array_unshift($before, $node);
+            }
+        }
+        $root = $node instanceof MethodCall ? self::heldValue($node->var) : $node->class;
+        if (! $held || ! $this->isRouteRoot($root, [])) {
+            return array_map($this->attributeStandIn(...), $written);
+        }
+
+        // The group() the call registers runs with the attributes set before it; a call after
+        // it changes the registrar for later groups only
+        $last = count($written) - 1;
+        foreach ($written as $index => $link) {
+            if ($link->name instanceof Identifier && $link->name->toLowerString() === 'group') {
+                $last = $index;
+            }
+        }
+
+        return array_map($this->attributeStandIn(...), [...$before, ...array_slice($written, 0, $last + 1)]);
+    }
+
+    /**
+     * The call an ->attribute($key, $value) call stands for, as RouteRegistrar::attribute()
+     * sets the attribute the method of that name does: ->$key($value), so
+     * ->attribute('middleware', ['auth']) reads as ->middleware(['auth']). The value is the
+     * second argument, or the one named value:; any further argument is ignored, as PHP
+     * ignores it. A call whose key is not a literal string, or whose arguments are unpacked,
+     * stands for itself and is read as setting nothing. So does any other call. The same
+     * stand-in is returned for a call each time.
+     *
+     * @internal An implementation detail of csrf-protection, login-throttling and of this class itself, outside this package's backward-compatibility promise.
+     */
+    public function attributeStandIn(MethodCall|StaticCall $call): MethodCall|StaticCall
+    {
+        if (! $call->name instanceof Identifier || $call->name->toLowerString() !== 'attribute') {
+            return $call;
+        }
+        if (isset($this->standIns[$call])) {
+            return $this->standIns[$call];
+        }
+
+        $arguments = [];
+        foreach ($call->args as $position => $arg) {
+            if (! $arg instanceof Node\Arg || $arg->unpack) {
+                return $call;
+            }
+            $arguments[$arg->name !== null ? $arg->name->toString() : [0 => 'key', 1 => 'value'][$position] ?? ''] ??= $arg->value;
+        }
+
+        $key = $arguments['key'] ?? null;
+        if (! $key instanceof String_) {
+            return $call;
+        }
+        $args = isset($arguments['value']) ? [new Node\Arg($arguments['value'])] : [];
+        $identifier = new Identifier($key->value, $call->name->getAttributes());
+
+        return $this->standIns[$call] = $call instanceof MethodCall
+            ? new MethodCall($call->var, $identifier, $args, $call->getAttributes())
+            : new StaticCall($call->class, $identifier, $args, $call->getAttributes());
+    }
+
+    /**
      * Route files the groups in $source load, each with the group calls it inherits
      * middleware from, outermost first: a path argument, ->group(base_path('...')) or
      * ->group(__DIR__.'/...'), which Router::loadRoutes() requires, each such path in a
@@ -885,7 +991,8 @@ class BootstrapRouteParser
         $paths = [];
         $values = [];
         $ast = $this->resolveNamesForMatching($ast);
-        $walk['bindings'] = $this->touchesGlobals($ast) ? [] : $this->pathBindings($this->scopeStatements($ast))['bindings'];
+        // A tree handed in is a route file's (see isRouteFile())
+        $walk['bindings'] = $this->pathBindings($this->scopeStatements($ast), [], false)['bindings'];
         foreach ($ast as $node) {
             $this->walkRouteNode($node, [], $routers, $paths, $values, null, $walk);
         }
@@ -894,7 +1001,21 @@ class BootstrapRouteParser
     }
 
     /**
-     * One walk of a file, with class names resolved for matching, read once per file.
+     * Whether a file is a route file, one under routes/: Laravel requires it inside
+     * RouteFileRegistrar::register(), so its variables are that method's locals, which neither
+     * \$GLOBALS nor a global statement reaches, as they reach those of bootstrap/app.php.
+     */
+    private function isRouteFile(string $path): bool
+    {
+        $routes = realpath($this->basePath.'/routes');
+        $real = realpath($path);
+
+        return $routes !== false && $real !== false && str_starts_with($real, $routes.DIRECTORY_SEPARATOR);
+    }
+
+    /**
+     * One walk of a file, with class names resolved for matching, read once per file. A
+     * route file's own variables are no globals (see {@see self::isRouteFile()}).
      *
      * @return RouteFileWalk
      */
@@ -908,7 +1029,8 @@ class BootstrapRouteParser
             if (file_exists($path)) {
                 $ast = $this->resolveNamesForMatching($this->parser->parseFile($path));
                 $this->annotateComputedPaths($ast);
-                $walk['bindings'] = $this->touchesGlobals($ast) ? [] : $this->pathBindings($this->scopeStatements($ast))['bindings'];
+                $globals = ! $this->isRouteFile($path);
+                $walk['bindings'] = $globals && $this->touchesGlobals($ast) ? [] : $this->pathBindings($this->scopeStatements($ast), [], $globals, true)['bindings'];
                 foreach ($ast as $node) {
                     $this->walkRouteNode($node, [], $routers, $paths, $values, dirname($path), $walk);
                 }
@@ -977,7 +1099,7 @@ class BootstrapRouteParser
         // The value is read before the variable is written
         $bound = null;
         if ($node instanceof Node\Stmt\Expression && isset($walk['bindings'][spl_object_id($node)])) {
-            $value = $node->expr instanceof Node\Expr\Assign ? $node->expr->expr : $node->expr;
+            $value = $node->expr instanceof Node\Expr\Assign ? $node->expr->expr : ($this->registrarUpdate($node->expr)[1] ?? $node->expr);
             $bound = [$walk['bindings'][spl_object_id($node)], $this->assignedPaths($value, $paths), $value];
         }
 
@@ -1273,12 +1395,15 @@ class BootstrapRouteParser
      *
      * @param  array<Node>  $statements
      * @param  array<string, true>  $references  Variables that are references on entry, which a callee may write
+     * @param  bool  $globals  Whether \$GLOBALS or a function declared in the scope may reach its variables as globals, as they may a file's own unless the file is a route file
+     * @param  bool  $fileScope  Whether the scope is a file's own, whose variables \$GLOBALS anywhere in it may reach
      * @return array{bindings: array<int, string>, untracked: array<string, true>, disabled: bool}
      */
-    private function pathBindings(array $statements, array $references = []): array
+    private function pathBindings(array $statements, array $references = [], bool $globals = true, bool $fileScope = false): array
     {
         $candidates = [];
         $assigned = [];
+        $updates = [];
         $direct = [];
         $holdsRegistrar = [];
         foreach ($statements as $statement) {
@@ -1289,13 +1414,14 @@ class BootstrapRouteParser
                 $assigned[spl_object_id($statement)] = $statement->expr->expr;
                 $direct[spl_object_id($statement->expr)] = true;
                 $holdsRegistrar[$name] = $this->registrarChain($statement->expr->expr);
-            } elseif ($statement instanceof Node\Stmt\Expression && ($call = $this->registrarUpdate($statement->expr)) !== null
-                && $call->var instanceof Node\Expr\Variable && is_string($call->var->name) && ($holdsRegistrar[$call->var->name] ?? false)) {
+            } elseif ($statement instanceof Node\Stmt\Expression && ($update = $this->registrarUpdate($statement->expr)) !== null
+                && $update[0]->var instanceof Node\Expr\Variable && is_string($update[0]->var->name) && ($holdsRegistrar[$update[0]->var->name] ?? false)) {
                 // $r->middleware(...); changes the registrar $r holds, as if it were
                 // $r = $r->middleware(...);
-                $candidates[spl_object_id($statement)] = $call->var->name;
-                $assigned[spl_object_id($statement)] = $statement->expr;
-                $direct[spl_object_id($call)] = true;
+                $candidates[spl_object_id($statement)] = $update[0]->var->name;
+                $assigned[spl_object_id($statement)] = $update[1];
+                $updates[spl_object_id($statement)] = true;
+                $direct[spl_object_id($update[0])] = true;
             }
         }
 
@@ -1306,13 +1432,21 @@ class BootstrapRouteParser
         $untracked = [];
         do {
             $routers = $this->routerVariables($candidates, $assigned, $untracked);
-            $untracked = $this->untrackedVariables($statements, $direct, $references, $routers);
+            // A variable assigned nothing but the router itself: each call on it that sets an
+            // attribute makes a fresh registrar (Router::__call()), so none changes it
+            $itself = $routers;
+            foreach ($candidates as $id => $name) {
+                if (isset($updates[$id]) || ! $this->isRouterItself($assigned[$id], $routers)) {
+                    unset($itself[$name]);
+                }
+            }
+            $untracked = $this->untrackedVariables($statements, $direct, $references, $routers, $globals, $itself);
             if ($untracked === null) {
                 return ['bindings' => [], 'untracked' => [], 'disabled' => true];
             }
         } while (array_intersect_key($routers, $untracked) !== []);
         if ($routers !== []) {
-            $untracked += $this->aliasedVariables($statements, $routers);
+            $untracked += $this->aliasedVariables($statements, $routers, $globals && $fileScope);
         }
 
         return ['bindings' => array_diff($candidates, array_keys($untracked)), 'untracked' => $untracked, 'disabled' => false];
@@ -1346,34 +1480,101 @@ class BootstrapRouteParser
     /**
      * Which of $names, variables holding a registrar or a route, an object other code can
      * change, the scope hands on: anywhere it reads one other than to call a method on it
-     * or to assign it, such as $b = $a, a closure's use ($a) or a list holding it.
+     * or to assign it, such as $b = $a, a closure's use ($a) or a list holding it, or a chain
+     * on it whose value is the registrar again, such as $b = $a->group(...), unless a
+     * statement drops that value. That chain still reads the registrar, so it hands the
+     * variable on only when the variable is read again after it, in a later statement or
+     * elsewhere in the same one. A variable variable, compact() or get_defined_vars() may
+     * read any of them, and so may \$GLOBALS or a global statement anywhere in a file whose
+     * own scope this is, when $globals says its variables are globals.
      *
      * @param  array<Node>  $statements
      * @param  array<string, true>  $names
      * @return array<string, true>
      */
-    private function aliasedVariables(array $statements, array $names): array
+    private function aliasedVariables(array $statements, array $names, bool $globals = false): array
     {
+        if ($globals && $this->namesGlobals($statements)) {
+            return $names;
+        }
+
         $receivers = [];
         $aliased = [];
-        $pending = $statements;
-        while ($pending !== []) {
-            $node = array_pop($pending);
-            if ($node instanceof MethodCall || ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable)) {
-                $receivers[spl_object_id($node->var)] = true;
-            }
-            if ($node instanceof Node\Expr\Variable && is_string($node->name) && isset($names[$node->name]) && ! isset($receivers[spl_object_id($node)])) {
-                $aliased[$node->name] = true;
-            }
+        $dropped = [];
+        $links = [];
+        // Per statement of the scope, the chains on each name whose value escapes and every read of each name
+        $escapes = [];
+        $reads = [];
+        foreach ($statements as $index => $statement) {
+            $pending = [$statement];
+            while ($pending !== []) {
+                $node = array_pop($pending);
+                if (($node instanceof Node\Expr\Variable && ! is_string($node->name))
+                    || ($node instanceof FuncCall && $this->isFunction($node, ['compact', 'get_defined_vars']))) {
+                    return $names;
+                }
+                if ($node instanceof Node\Stmt\Expression) {
+                    $dropped[spl_object_id($node->expr)] = true;
+                }
+                if ($node instanceof MethodCall && ! isset($links[spl_object_id($node)])) {
+                    // The outermost call of a chain: any call but group() and those that set an
+                    // attribute returns something else than the registrar it is made on
+                    $root = $node;
+                    $keeps = true;
+                    while ($root instanceof MethodCall) {
+                        $links[spl_object_id($root)] = true;
+                        $keeps = $keeps && ($this->setsAttributeOn($root) || ($root->name instanceof Identifier && $root->name->toLowerString() === 'group'));
+                        $root = $root->var;
+                    }
+                    if ($keeps && ! isset($dropped[spl_object_id($node)]) && $root instanceof Node\Expr\Variable && is_string($root->name) && isset($names[$root->name])) {
+                        $escapes[$root->name][$index] = ($escapes[$root->name][$index] ?? 0) + 1;
+                    }
+                }
+                if ($node instanceof MethodCall || ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable)) {
+                    $receivers[spl_object_id($node->var)] = true;
+                }
+                if ($node instanceof Node\Expr\Variable && is_string($node->name) && isset($names[$node->name])) {
+                    $reads[$node->name][$index] = ($reads[$node->name][$index] ?? 0) + 1;
+                    if (! isset($receivers[spl_object_id($node)])) {
+                        $aliased[$node->name] = true;
+                    }
+                }
 
-            if ($node instanceof Node\Expr\Closure) {
-                array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
-            } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
-                array_push($pending, ...$this->childNodes($node));
+                if ($node instanceof Node\Expr\Closure) {
+                    array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
+                } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
+                    array_push($pending, ...$this->childNodes($node));
+                }
+            }
+        }
+
+        // An escaped registrar may change before any later read, or before another read in the
+        // same statement, which may run again; the chain it escapes from reads it first
+        foreach ($escapes as $name => $indexes) {
+            foreach ($indexes as $index => $count) {
+                foreach ($reads[$name] as $at => $read) {
+                    if ($at > $index || ($at === $index && $read > $count)) {
+                        $aliased[$name] = true;
+                    }
+                }
             }
         }
 
         return $aliased;
+    }
+
+    /**
+     * Whether an expression is the router itself, not a registrar or a route it hands back:
+     * a root {@see self::isRouteRoot()} knows, such as app('router') or a variable holding
+     * the router, or Route::getFacadeRoot().
+     *
+     * @param  array<string, true>  $routers
+     */
+    private function isRouterItself(Node\Expr $expr, array $routers): bool
+    {
+        return $this->isRouteRoot($expr, $routers)
+            || ($expr instanceof StaticCall && $expr->class instanceof Node\Name && strcasecmp($this->resolvedLast($expr->class), 'Route') === 0
+                && $expr->name instanceof Identifier && $expr->name->toLowerString() === 'getfacaderoot');
     }
 
     /**
@@ -1404,35 +1605,50 @@ class BootstrapRouteParser
     }
 
     /**
-     * The innermost call of a statement that only sets attributes of a registrar a variable
-     * holds, such as $r->middleware('auth')->prefix('x'), or null when a link of the chain
-     * does anything else.
+     * The calls of a statement's chain on a variable that set attributes of the registrar it
+     * holds: the innermost call, made on the variable, and the last call before the chain
+     * leaves the registrar, such as $r->middleware('auth')->prefix('x'), whose value is then
+     * the registrar. A group() returns the registrar too, so
+     * $r->middleware('auth')->group(...) sets the attribute and registers routes with it, and
+     * a route verb leaves it, so in $r->middleware('auth')->get(...)->name('x') only the
+     * middleware() call reaches the registrar. Null when no call sets an attribute before the
+     * chain leaves the registrar, or the chain does not start at a variable.
+     *
+     * @return array{MethodCall, MethodCall}|null
      */
-    private function registrarUpdate(Node\Expr $expr): ?MethodCall
+    private function registrarUpdate(Node\Expr $expr): ?array
     {
-        while ($this->setsRegistrarAttribute($expr)) {
-            if ($expr->var instanceof Node\Expr\Variable) {
-                return $expr;
-            }
+        $links = [];
+        while ($expr instanceof MethodCall) {
+            array_unshift($links, $expr);
             $expr = $expr->var;
         }
+        if ($links === [] || ! $expr instanceof Node\Expr\Variable) {
+            return null;
+        }
 
-        return null;
+        $end = null;
+        foreach ($links as $link) {
+            if ($this->setsAttributeOn($link)) {
+                $end = $link;
+            } elseif (! $link->name instanceof Identifier || $link->name->toLowerString() !== 'group') {
+                break;
+            }
+        }
+
+        return $end === null ? null : [$links[0], $end];
     }
 
     /**
-     * Whether a node is a call that sets a registrar attribute on what it is called on (see
-     * {@see self::REGISTRAR_ATTRIBUTES}), so on a variable holding a registrar it changes
-     * the registrar. $this is never a registrar.
-     *
-     * @phpstan-assert-if-true MethodCall $node
+     * Whether a method call sets a registrar attribute on what it is called on (see
+     * {@see self::REGISTRAR_ATTRIBUTES}), or attribute(), which sets one by name, so on a
+     * variable holding a registrar it changes the registrar. $this is never a registrar.
      */
-    private function setsRegistrarAttribute(Node $node): bool
+    private function setsAttributeOn(MethodCall $call): bool
     {
-        return $node instanceof MethodCall
-            && $node->name instanceof Identifier
-            && in_array($node->name->toLowerString(), self::REGISTRAR_ATTRIBUTES, true)
-            && ! ($node->var instanceof Node\Expr\Variable && $node->var->name === 'this');
+        return $call->name instanceof Identifier
+            && (in_array($call->name->toLowerString(), self::REGISTRAR_ATTRIBUTES, true) || $call->name->toLowerString() === 'attribute')
+            && ! ($call->var instanceof Node\Expr\Variable && $call->var->name === 'this');
     }
 
     /**
@@ -1459,9 +1675,11 @@ class BootstrapRouteParser
      * @param  array<int, true>  $direct  The direct assignments, by spl_object_id()
      * @param  array<string, true>  $references
      * @param  array<string, true>  $routers  Variables that hold the router
+     * @param  bool  $globals  Whether \$GLOBALS or a function declared in the scope may reach its variables
+     * @param  array<string, true>  $itself  Variables that hold the router itself, which no call on them changes
      * @return array<string, true>|null
      */
-    private function untrackedVariables(array $statements, array $direct, array $references, array $routers): ?array
+    private function untrackedVariables(array $statements, array $direct, array $references, array $routers, bool $globals, array $itself = []): ?array
     {
         $untracked = $references;
         $pending = $statements;
@@ -1472,17 +1690,18 @@ class BootstrapRouteParser
                 || ($node instanceof Node\Stmt\Foreach_ && $node->byRef)
                 || ($node instanceof Node\Expr\ArrayItem && $node->byRef)
                 || ($node instanceof Node\Expr\Closure && array_filter($node->uses, fn (Node\ClosureUse $use): bool => $use->byRef) !== [])
-                || ($node instanceof Node\Stmt\Function_ && $this->readsGlobals($node))
+                || ($node instanceof Node\Stmt\Function_ && $globals && $this->readsGlobals($node))
                 || ($node instanceof FuncCall && ($this->isFunction($node, ['extract']) || ($this->isFunction($node, ['parse_str']) && count($node->args) === 1)))) {
                 return null;
             }
 
             $written = $this->writtenVariables($node, $routers);
-            if (($node instanceof Node\Expr\Assign || $this->mayChangeReceiver($node)) && $node->var instanceof Node\Expr\Variable && ! isset($direct[spl_object_id($node)])) {
+            if (($node instanceof Node\Expr\Assign || $this->mayChangeReceiver($node)) && $node->var instanceof Node\Expr\Variable && ! isset($direct[spl_object_id($node)])
+                && ($node instanceof Node\Expr\Assign || ! is_string($node->var->name) || ! isset($itself[$node->var->name]))) {
                 $written[] = $node->var;
             }
             foreach ($written as $variable) {
-                if (! is_string($variable->name) || $variable->name === 'GLOBALS') {
+                if (! is_string($variable->name) || ($globals && $variable->name === 'GLOBALS')) {
                     return null;
                 }
                 $untracked[$variable->name] = true;
@@ -1541,6 +1760,26 @@ class BootstrapRouteParser
                 if ($variable->name === 'GLOBALS') {
                     return true;
                 }
+            }
+            array_push($pending, ...$this->childNodes($node));
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether anything among some nodes, at any depth, holds a global statement or names
+     * \$GLOBALS.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function namesGlobals(array $ast): bool
+    {
+        $pending = $ast;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Stmt\Global_ || ($node instanceof Node\Expr\Variable && $node->name === 'GLOBALS')) {
+                return true;
             }
             array_push($pending, ...$this->childNodes($node));
         }
@@ -1984,11 +2223,12 @@ class BootstrapRouteParser
         $entries = [];
         $node = $node instanceof Node\Expr ? self::heldValue($node) : $node;
         while ($node instanceof MethodCall || $node instanceof StaticCall) {
-            if ($node->name instanceof Identifier && $node->name->toLowerString() === $method) {
+            $call = $this->attributeStandIn($node);
+            if ($call->name instanceof Identifier && $call->name->toLowerString() === $method) {
                 if ($method !== 'withoutmiddleware') {
-                    return self::heldEntries($this->middlewareEntries($node));
+                    return self::heldEntries($this->middlewareEntries($call));
                 }
-                array_push($entries, ...self::heldEntries($this->excludedEntries($node)));
+                array_push($entries, ...self::heldEntries($this->excludedEntries($call)));
             }
             if (! $node instanceof MethodCall) {
                 break;

@@ -1728,6 +1728,301 @@ PHP;
         ];
     }
 
+    // ==================== Registrars held in a variable ====================
+
+    /**
+     * @dataProvider registrarVariableProvider
+     */
+    #[DataProvider('registrarVariableProvider')]
+    public function test_a_registrar_held_in_a_variable_applies_its_middleware_to_the_files_its_groups_register(string $source, string $reader, string $registration, bool $expected): void
+    {
+        $file = $source === 'bootstrap' ? 'bootstrap/app.php' : 'app/Providers/MembersRouteProvider.php';
+        $contents = $source === 'bootstrap'
+            ? $this->bootstrapRegistering('', $registration)
+            : <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider as ServiceProvider;
+use Illuminate\\Support\\Facades\\Route;
+
+class MembersRouteProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        \$this->routes(function () {
+            {$registration}
+        });
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDir([
+            $file => $contents,
+            'routes/members.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $files = match ($reader) {
+                'web' => $parser->getWebProtectedRouteFiles(),
+                'api' => $parser->getApiRegisteredRouteFiles(),
+                default => $parser->getThrottleProtectedRouteFiles(),
+            };
+
+            $this->assertSame($expected, $this->endsWithMatch($files, '/routes/members.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, string, bool}>
+     */
+    public static function registrarVariableProvider(): array
+    {
+        $group = "->group(base_path('routes/members.php'));";
+
+        return [
+            // Route::middleware() returns one RouteRegistrar, and each call on it sets its attributes
+            'bootstrap web' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members{$group}", true],
+            'provider web' => ['provider', 'web', "\$members = Route::middleware('web');\n\$members{$group}", true],
+            'bootstrap api' => ['bootstrap', 'api', "\$members = Route::middleware('api');\n\$members{$group}", true],
+            'provider api' => ['provider', 'api', "\$members = Route::middleware('api');\n\$members{$group}", true],
+            'bootstrap throttle' => ['bootstrap', 'throttle', "\$members = Route::middleware('throttle:30,1');\n\$members{$group}", true],
+            'provider throttle' => ['provider', 'throttle', "\$members = Route::middleware('throttle:30,1');\n\$members{$group}", true],
+            'built on a router variable' => ['bootstrap', 'web', "\$router = app('router');\n\$members = \$router->middleware('web');\n\$members{$group}", true],
+            'middleware set by a later statement' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->middleware('web');\n\$members{$group}", true],
+            'middleware kept through another call on the group chain' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->prefix('members'){$group}", true],
+            'middleware set by an earlier group statement' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->middleware('web')->group(function () {});\n\$members{$group}", true],
+            'middleware set before a route the statement registers' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->middleware('web')->get('/ping', fn () => 'pong')->middleware('auth');\n\$members{$group}", true],
+            'assigned a chain of calls' => ['bootstrap', 'web', "\$members = Route::getFacadeRoot()->prefix('members')->middleware('web');\n\$members{$group}", true],
+            'attribute named in an expression' => ['bootstrap', 'web', "\$members = Route::{'middleware'}('web');\n\$members{$group}", false],
+            'attribute named in an expression on a later statement' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->{'middleware'}('web');\n\$members{$group}", false],
+            'middleware replaced by a later statement' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->middleware('auth');\n\$members{$group}", false],
+            'middleware replaced on the group chain' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->middleware('auth'){$group}", false],
+            'middleware excluded by a later statement' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->withoutMiddleware('web');\n\$members{$group}", false],
+            'throttle replaced by a later statement' => ['provider', 'throttle', "\$members = Route::middleware('throttle:30,1');\n\$members->middleware('verified');\n\$members{$group}", false],
+            // Each call on the router itself makes a fresh registrar
+            'router variable call as its own statement' => ['bootstrap', 'web', "\$router = app('router');\n\$router->middleware('web');\n\$router->prefix('members'){$group}", false],
+            'facade root call as its own statement' => ['bootstrap', 'web', "\$routes = Route::getFacadeRoot();\n\$routes->middleware('web');\n\$routes->prefix('members'){$group}", false],
+            'router variable chain' => ['bootstrap', 'web', "\$router = app('router');\n\$router->middleware('web'){$group}", true],
+            'fluent chain' => ['bootstrap', 'web', "Route::middleware('web'){$group}", true],
+            // A registrar written anywhere but a plain statement of its own scope is not read
+            'middleware set in a branch' => ['bootstrap', 'web', "\$members = Route::prefix('members');\nif (app()->isLocal()) {\n    \$members->middleware('web');\n}\n\$members{$group}", false],
+            'reassigned in a branch' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nif (app()->isLocal()) {\n    \$members = Route::middleware('auth');\n}\n\$members{$group}", false],
+            'middleware set inside an expression' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$copy = \$members->middleware('web');\n\$members{$group}", false],
+            'passed to a call' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nconfigure_members(\$members);\n\$members{$group}", false],
+            'captured by a closure' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$narrow = function () use (\$members) {\n    \$members->middleware('auth');\n};\n\$narrow();\n\$members{$group}", false],
+            'aliased' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$alias = \$members;\n\$alias{$group}", false],
+            'set after an earlier group' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->group(function () {})->middleware('web');\n\$members{$group}", true],
+            'returned by group()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nreturn \$members{$group}", true],
+            'aliased through group()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$copy = \$members->group(function () {});\n\$copy->middleware('auth');\n\$members{$group}", false],
+            'passed through group() to a call' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nnarrow_members(\$members->group(function () {}));\n\$members{$group}", false],
+            'variable variable' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$name = 'members';\n\$\$name->middleware('auth');\n\$members{$group}", false],
+            'aliased through a variable variable' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$name = 'members';\n\$alias = \$\$name;\n\$alias->middleware('auth');\n\$members{$group}", false],
+            'a function declared beside it' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nfunction members_label(): string\n{\n    return 'members';\n}\n\$members{$group}", true],
+            // attribute() given a key that is not written out, or unpacked arguments, is not read
+            'attribute() given unpacked arguments' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$pair = ['middleware', ['auth']];\n\$members->attribute(...\$pair);\n\$members{$group}", true],
+            'fluent attribute() given a key in a variable' => ['bootstrap', 'web', "\$key = 'prefix';\nRoute::middleware('web')->attribute(\$key, 'members'){$group}", true],
+            'variable named in braces' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\${'members'}->middleware('auth');\n\$members{$group}", false],
+            // attribute() sets what the method of the same name does
+            'middleware replaced through attribute()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->attribute('middleware', ['auth']);\n\$members{$group}", false],
+            'middleware set through attribute()' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->attribute('middleware', ['web']);\n\$members{$group}", true],
+            'middleware excluded through attribute()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$members->attribute('withoutMiddleware', 'web');\n\$members{$group}", false],
+            'attribute key in a variable' => ['bootstrap', 'web', "\$members = Route::middleware('web');\n\$key = 'middleware';\n\$members->attribute(\$key, ['auth']);\n\$members{$group}", true],
+            // RouteRegistrar::attribute() takes its value from the second argument only
+            'fluent attribute() given extra arguments' => ['bootstrap', 'web', "Route::prefix('members')->attribute('middleware', 'api', 'web'){$group}", false],
+            'attribute() given extra arguments' => ['bootstrap', 'web', "\$members = Route::prefix('members');\n\$members->attribute('middleware', 'api', 'web');\n\$members{$group}", false],
+            // compact() and get_defined_vars() hand the registrar on
+            'handed on by compact()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\ncompact('members')['members']->middleware('auth');\n\$members{$group}", false],
+            'handed on by get_defined_vars()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nget_defined_vars()['members']->middleware('auth');\n\$members{$group}", false],
+            'overwritten by extract()' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nextract(\$overrides);\n\$members{$group}", false],
+            // A group on it in a nested block only reads it
+            'group in a branch' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nif (file_exists(base_path('routes/members.php'))) {\n    \$members{$group}\n}", true],
+            'group in a loop' => ['bootstrap', 'web', "\$members = Route::middleware('web');\nforeach ([1] as \$pass) {\n    \$members{$group}\n}", true],
+            'group in a try block' => ['bootstrap', 'web', "\$members = Route::middleware('web');\ntry {\n    \$members{$group}\n} finally {\n}", true],
+            'fluent middleware replaced through attribute()' => ['bootstrap', 'web', "Route::middleware('web')->attribute('middleware', ['auth']){$group}", false],
+            'fluent middleware set through attribute()' => ['bootstrap', 'web', "Route::prefix('members')->attribute('middleware', 'web'){$group}", true],
+            'fluent throttle replaced through attribute()' => ['provider', 'throttle', "Route::middleware('throttle:30,1')->attribute('middleware', 'verified'){$group}", false],
+        ];
+    }
+
+    /**
+     * @dataProvider registrarVariableClosureProvider
+     */
+    #[DataProvider('registrarVariableClosureProvider')]
+    public function test_throttled_group_ranges_read_a_registrar_held_in_a_variable(string $registrar, bool $throttled): void
+    {
+        $routes = <<<PHP
+<?php
+
+{$registrar}
+\$members->group(function () {
+    Route::post('/session', [SessionController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+        $start = substr_count($routes, "\n", 0, (int) strpos($routes, '$members->group')) + 1;
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame(
+                $throttled ? [['start' => $start, 'end' => $start + 2]] : [],
+                $parser->getThrottledGroupLineRanges($tempDir.'/routes/web.php'),
+            );
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableClosureProvider(): array
+    {
+        return [
+            'throttle on the registrar' => ["\$members = Route::middleware('throttle:8,1');", true],
+            'throttle set by a later statement' => ["\$members = Route::prefix('members');\n\$members->middleware('throttle:8,1');", true],
+            'throttle replaced by a later statement' => ["\$members = Route::middleware('throttle:8,1');\n\$members->middleware('verified');", false],
+            'throttle excluded by a later statement' => ["\$members = Route::middleware('throttle:8,1');\n\$members->withoutMiddleware('throttle:8,1');", false],
+            'throttle set in a branch' => ["\$members = Route::prefix('members');\nif (app()->isLocal()) {\n    \$members->middleware('throttle:8,1');\n}", false],
+            // A route file runs inside RouteFileRegistrar::register(), so its variables are locals
+            // neither \$GLOBALS nor a global statement reaches
+            'throttle beside \$GLOBALS' => ["\$members = Route::middleware('throttle:8,1');\n\$GLOBALS['members']->middleware('verified');", true],
+            'throttle beside \$GLOBALS in a function' => ["\$members = Route::middleware('throttle:8,1');\nfunction narrow_members(): void\n{\n    \$GLOBALS['members']->middleware('verified');\n}\nnarrow_members();", true],
+            'throttle beside a global statement' => ["\$members = Route::middleware('throttle:8,1');\nfunction narrow_members(): void\n{\n    global \$members;\n    \$members->middleware('verified');\n}\nnarrow_members();", true],
+        ];
+    }
+
+    /**
+     * @dataProvider providerRouterVariableProvider
+     */
+    #[DataProvider('providerRouterVariableProvider')]
+    public function test_a_router_variable_in_a_provider_applies_its_middleware(string $router, string $reader, string $middleware): void
+    {
+        $tempDir = $this->createTempDir([
+            'app/Providers/MembersRouteProvider.php' => <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Support\\ServiceProvider;
+
+class MembersRouteProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        \$router = {$router};
+        \$router->middleware('{$middleware}')->group(base_path('routes/members.php'));
+    }
+}
+PHP,
+            'routes/members.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $files = match ($reader) {
+                'web' => $parser->getWebProtectedRouteFiles(),
+                'api' => $parser->getApiRegisteredRouteFiles(),
+                default => $parser->getThrottleProtectedRouteFiles(),
+            };
+
+            $this->assertTrue($this->endsWithMatch($files, '/routes/members.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function providerRouterVariableProvider(): array
+    {
+        // \$router names the router by its name, whatever it is assigned
+        return [
+            'a getter' => ['$this->getRouter()', 'web', 'web'],
+            'a getter, api' => ['$this->getRouter()', 'api', 'api'],
+            'a getter, throttle' => ['$this->getRouter()', 'throttle', 'throttle:30,1'],
+            'another container' => ["\$application->make('router')", 'web', 'web'],
+            'a null-coalesced property' => ["\$this->router ?? app('router')", 'web', 'web'],
+        ];
+    }
+
+    /**
+     * @dataProvider bootstrapFileScopeRegistrarProvider
+     */
+    #[DataProvider('bootstrapFileScopeRegistrarProvider')]
+    public function test_a_registrar_in_bootstrap_file_scope_is_unread_beside_globals(string $statement, bool $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\n\$members = Route::middleware('web');\n{$statement}\n\$members->group(base_path('routes/members.php'));\n\nreturn Application::configure(basePath: dirname(__DIR__))->create();\n",
+            'routes/members.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame($expected, $this->endsWithMatch($parser->getWebProtectedRouteFiles(), '/routes/members.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function bootstrapFileScopeRegistrarProvider(): array
+    {
+        return [
+            // public/index.php requires bootstrap/app.php at its file scope, so its variables are globals
+            'beside \$GLOBALS' => ["\$GLOBALS['members']->middleware('auth');", false],
+            'beside a global statement' => ["function narrow_members(): void\n{\n    global \$members;\n    \$members->middleware('auth');\n}", false],
+            'alone' => ['', true],
+        ];
+    }
+
+    /**
+     * @dataProvider routerVariablePathProvider
+     */
+    #[DataProvider('routerVariablePathProvider')]
+    public function test_a_group_on_a_router_variable_reads_a_path_variable(string $registration, bool $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/members.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame($expected, $this->endsWithMatch($parser->getWebProtectedRouteFiles(), '/routes/members.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function routerVariablePathProvider(): array
+    {
+        $file = "\$file = base_path('routes/members.php');";
+
+        return [
+            'facade root' => ["\$routes = Route::getFacadeRoot();\n{$file}\n\$routes->middleware('web')->group(\$file);", true],
+            'container router' => ["\$routes = app('router');\n{$file}\n\$routes->middleware('web')->group(\$file);", true],
+            'registrar variable' => ["\$members = Route::middleware('web');\n{$file}\n\$members->group(\$file);", true],
+            // Any other object's group() may take the variable by reference
+            'another object given the path first' => ["\$sections = new SectionLoader;\n{$file}\n\$sections->group(\$file);\nRoute::middleware('web')->group(\$file);", false],
+            'variable assigned something else too' => ["\$routes = app('router');\nif (app()->isLocal()) {\n    \$routes = new SectionLoader;\n}\n{$file}\n\$routes->group(\$file);\nRoute::middleware('web')->group(\$file);", false],
+        ];
+    }
+
     public function test_route_file_loads_list_every_load_with_the_groups_around_it(): void
     {
         $partner = <<<'PHP'

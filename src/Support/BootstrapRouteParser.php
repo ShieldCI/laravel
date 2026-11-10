@@ -590,11 +590,9 @@ class BootstrapRouteParser
         $found = [];
         $position = ['web' => 1, 'api' => 2][$argName] ?? null;
 
+        /** @var array<MethodCall> $calls findMethodCalls() matches only method calls */
         $calls = $this->parser->findMethodCalls($ast, 'withRouting');
         foreach ($calls as $call) {
-            if (! ($call instanceof MethodCall)) {
-                continue;
-            }
             foreach ($call->args as $index => $arg) {
                 if (! ($arg instanceof Node\Arg)) {
                     continue;

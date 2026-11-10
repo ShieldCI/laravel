@@ -875,6 +875,30 @@ PHP;
         }
     }
 
+    public function test_with_routing_taken_as_a_first_class_callable_registers_no_files(): void
+    {
+        $bootstrapApp = <<<'PHP'
+<?php
+
+use Illuminate\Foundation\Application;
+
+$routing = Application::configure(basePath: dirname(__DIR__))->withRouting(...);
+PHP;
+
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $bootstrapApp,
+            'routes/api.php' => '<?php // api routes',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame([], $parser->getApiRegisteredRouteFiles());
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
     public function test_api_list_does_not_include_web_registered_files(): void
     {
         $bootstrapApp = <<<'PHP'
@@ -2487,6 +2511,10 @@ PHP;
             'a reference parameter' => ["\$cb = function (&\$file) { \$file = base_path('routes/admin.php'); swapRoutes(); Route::middleware('web')->group(\$file); }; \$cb(\$x);", 'web', []],
             'held group attributes' => ["\$attrs = ['middleware' => 'web']; Route::group(\$attrs, base_path('routes/admin.php'));", 'web', ['admin.php']],
             'a held middleware name' => ["\$mw = 'web'; Route::middleware(\$mw)->group(base_path('routes/admin.php'));", 'web', ['admin.php']],
+            'a held middleware list' => ["\$mw = ['web']; Route::middleware(\$mw)->group(base_path('routes/admin.php'));", 'web', ['admin.php']],
+            'a held middleware list without web' => ["\$mw = ['auth']; Route::middleware(\$mw)->group(base_path('routes/admin.php'));", 'web', []],
+            'a held exclusion list of another name' => ["\$skip = ['auth']; Route::middleware(['web', 'throttle:5,1'])->withoutMiddleware(\$skip)->group(base_path('routes/admin.php'));", 'throttle', ['admin.php']],
+            'a held exclusion list' => ["\$skip = ['throttle:5,1']; Route::middleware(['web', 'throttle:5,1'])->withoutMiddleware(\$skip)->group(base_path('routes/admin.php'));", 'throttle', []],
             'a held middleware name in held group attributes' => ["\$mw = 'web'; \$attrs = ['middleware' => \$mw]; Route::group(\$attrs, base_path('routes/admin.php'));", 'web', ['admin.php']],
             'passed to a registrar a variable holds' => ["\$file = base_path('routes/admin.php'); \$r = Route::middleware('web'); \$r->group(\$file);", 'registered', ['admin.php']],
             'passed to another call on the router' => ["\$file = base_path('routes/admin.php'); Route::pattern('file', \$file); Route::middleware('web')->group(\$file);", 'web', ['admin.php']],

@@ -3382,6 +3382,122 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider registrarVariableRouteProvider
+     */
+    #[DataProvider('registrarVariableRouteProvider')]
+    public function test_a_registrar_held_in_a_variable_throttles_its_closure_group(string $registrar, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => <<<PHP
+<?php
+
+{$registrar}
+\$guarded->group(function () {
+    Route::post('/session/login', [SessionController::class, 'store']);
+});
+PHP]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableRouteProvider(): array
+    {
+        return [
+            'throttle on the registrar' => ["\$guarded = Route::middleware('throttle:5,1');", false],
+            'throttle set by a later statement' => ["\$guarded = Route::prefix('account');\n\$guarded->middleware('throttle:5,1');", false],
+            'throttle replaced by a later statement' => ["\$guarded = Route::middleware('throttle:5,1');\n\$guarded->middleware('verified');", true],
+            'throttle excluded by a later statement' => ["\$guarded = Route::middleware('throttle:5,1');\n\$guarded->withoutMiddleware('throttle:5,1');", true],
+            'throttle set in a branch' => ["\$guarded = Route::prefix('account');\nif (app()->isLocal()) {\n    \$guarded->middleware('throttle:5,1');\n}", true],
+            'throttle replaced through the registrar group() returns' => ["\$guarded = Route::middleware('throttle:5,1');\n\$copy = \$guarded->group(function () {});\n\$copy->middleware('verified');", true],
+            'throttle replaced through a variable variable' => ["\$guarded = Route::middleware('throttle:5,1');\n\$name = 'guarded';\n\$\$name->middleware('verified');", true],
+            'throttle replaced through attribute()' => ["\$guarded = Route::middleware('throttle:5,1');\n\$guarded->attribute('middleware', ['verified']);", true],
+            'throttle set through attribute()' => ["\$guarded = Route::prefix('account');\n\$guarded->attribute('middleware', 'throttle:5,1');", false],
+            'throttle given as an extra attribute() argument' => ["\$guarded = Route::prefix('account');\n\$guarded->attribute('middleware', 'verified', 'throttle:5,1');", true],
+            'throttle beside an attribute() key in a variable' => ["\$key = 'prefix';\n\$guarded = Route::middleware('throttle:5,1')->attribute(\$key, 'account');", false],
+        ];
+    }
+
+    /**
+     * @dataProvider escapingRegistrarRouteProvider
+     */
+    #[DataProvider('escapingRegistrarRouteProvider')]
+    public function test_a_group_whose_registrar_escapes_reads_it(string $statement): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\n\$guarded = Route::middleware('throttle:5,1');\n{$statement}\n"]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function escapingRegistrarRouteProvider(): array
+    {
+        $group = "\$guarded->group(function () {\n    Route::post('/session/login', [SessionController::class, 'store']);\n})";
+
+        return [
+            'returned' => ["return {$group};"],
+            'in a ternary' => ["\$registered = config('auth.sessions') ? {$group} : null;"],
+        ];
+    }
+
+    public function test_a_registrar_held_in_a_variable_throttles_its_closure_group_in_a_branch(): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => <<<'PHP'
+<?php
+
+$guarded = Route::middleware('throttle:5,1');
+if (config('auth.sessions')) {
+    $guarded->group(function () {
+        Route::post('/session/login', [SessionController::class, 'store']);
+    });
+}
+PHP]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider registrarVariableRegistrationProvider
+     */
+    #[DataProvider('registrarVariableRegistrationProvider')]
+    public function test_a_registrar_held_in_a_variable_throttles_the_file_its_group_registers(string $registration, bool $reported): void
+    {
+        $result = $this->analyzeApp([
+            'bootstrap/app.php' => $this->bootstrapThen($registration),
+            'routes/web.php' => "<?php\n",
+            'routes/portal.php' => "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableRegistrationProvider(): array
+    {
+        $group = "->group(base_path('routes/portal.php'));";
+
+        return [
+            'throttle on the registrar' => ["\$guarded = Route::middleware('throttle:4,1'); \$guarded{$group}", false],
+            'throttle set by a later statement' => ["\$guarded = Route::prefix('portal'); \$guarded->middleware('throttle:4,1'); \$guarded{$group}", false],
+            'throttle replaced by a later statement' => ["\$guarded = Route::middleware('throttle:4,1'); \$guarded->middleware('verified'); \$guarded{$group}", true],
+            'fluent throttle replaced through attribute()' => ["Route::middleware('throttle:4,1')->attribute('middleware', ['verified']){$group}", true],
+        ];
+    }
+
     public function test_a_file_registered_twice_is_reported_when_one_registration_leaves_it_unthrottled(): void
     {
         $bootstrap = <<<'PHP'

@@ -99,6 +99,14 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private array $routeFileBasePrefixes = [];
 
+    /**
+     * Each route file's routes and groups as RouteAuthVisitor collects them, keyed by path,
+     * read once per analysis.
+     *
+     * @var array<string, RouteAuthVisitor>
+     */
+    private array $routeVisitors = [];
+
     public function __construct(
         private AstParser $parser,
         private Config $config
@@ -141,6 +149,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
         // Resolve file-level prefixes the framework applies outside the route files
         $this->routeFileBasePrefixes = $this->resolveRouteFileBasePrefixes();
+        $this->routeVisitors = [];
 
         $issues = [];
 
@@ -502,10 +511,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // so a single-pass NameResolver won't have resolved children's names yet).
         $ast = $this->resolveNamesForMatching($ast);
 
-        $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor($visitor);
-        $traverser->traverse($ast);
+        $visitor = $this->visitRouteFile($file, $ast);
 
         foreach ($visitor->getCollectedRoutes() as $route) {
             $controller = $route['controller'];
@@ -640,10 +646,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // Two-pass: resolve all names first so ClassConstFetch FQCNs are available in enterNode
         $ast = $this->resolveNamesForMatching($ast);
 
-        $visitor = new RouteAuthVisitor($this->routeFileBasePrefixes[basename($file)] ?? '');
-        $traverser = new NodeTraverser;
-        $traverser->addVisitor($visitor);
-        $traverser->traverse($ast);
+        $visitor = $this->visitRouteFile($file, $ast);
 
         // Check route groups (only Route::group([...], fn) static-call style)
         foreach ($visitor->getCollectedGroups() as $group) {
@@ -714,6 +717,59 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 );
             }
         }
+    }
+
+    /**
+     * Collect a route file's routes and groups with RouteAuthVisitor, once per analysis. The
+     * route parser walks the tree first, so the visitor reads as route groups the group calls
+     * the parser finds made on the router, and a group on a variable holding a registrar reads
+     * the calls that built it (see BootstrapRouteParser::routerGroupCalls() and groupChain()).
+     *
+     * @param  array<Node>  $ast  The file's tree, with names resolved
+     */
+    private function visitRouteFile(string $file, array $ast): RouteAuthVisitor
+    {
+        if (isset($this->routeVisitors[$file])) {
+            return $this->routeVisitors[$file];
+        }
+
+        // A file whose groups all start at a Route facade call needs no walk
+        $routeParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
+        $routerGroups = $this->groupsOffTheFacade($ast) ? $routeParser->routerGroupCalls($ast) : [];
+        $visitor = new RouteAuthVisitor($routeParser, $routerGroups, $this->routeFileBasePrefixes[basename($file)] ?? '');
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($visitor);
+        $traverser->traverse($ast);
+
+        return $this->routeVisitors[$file] = $visitor;
+    }
+
+    /**
+     * Whether a tree makes a ->group() call, by any case, on a chain that does not start at a
+     * Route facade call that builds a registrar, such as one on a variable, app('router') or
+     * Route::getFacadeRoot(): only the route parser's walk tells whether its receiver is the
+     * router.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function groupsOffTheFacade(array $ast): bool
+    {
+        foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier
+                || $call->name->toLowerString() !== 'group') {
+                continue;
+            }
+            $root = $call;
+            while ($root instanceof Node\Expr\MethodCall) {
+                $root = $root->var;
+            }
+            if (! $root instanceof Node\Expr\StaticCall || ! $root->class instanceof Node\Name || ! $root->name instanceof Node\Identifier
+                || strcasecmp($root->class->getLast(), 'Route') !== 0 || $root->name->toLowerString() === 'getfacaderoot') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1882,6 +1938,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
  *
  * NameResolver must run before this visitor so that ClassConstFetch nodes carry
  * fully-qualified class names in their 'resolvedName' attribute.
+ *
+ * @internal An implementation detail of authentication-authorization, outside this package's backward-compatibility promise.
  */
 class RouteAuthVisitor extends NodeVisitorAbstract
 {
@@ -1915,10 +1973,18 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     private const ROUTE_VERBS = ['get', 'post', 'put', 'patch', 'delete', 'resource', 'apiresource'];
 
     /**
+     * @param  BootstrapRouteParser  $routeParser  The parser that has walked the route file's tree,
+     *                                             which reads the chain of each group call
+     * @param  array<int, true>  $routerGroups  The group calls the parser finds made on the router,
+     *                                          by spl_object_id() (see BootstrapRouteParser::routerGroupCalls())
      * @param  string  $basePrefix  File-level URI prefix applied by the framework when
      *                              registering the whole route file (e.g. 'api' for routes/api.php).
      */
-    public function __construct(private readonly string $basePrefix = '') {}
+    public function __construct(
+        private readonly BootstrapRouteParser $routeParser,
+        private readonly array $routerGroups,
+        private readonly string $basePrefix = '',
+    ) {}
 
     /**
      * @return list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
@@ -1984,52 +2050,47 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      */
     private function isGroupNode(Node $node): bool
     {
-        // Route::group([...], fn)
+        // Route::group([...], fn); PHP matches method names case-insensitively
         if ($node instanceof Node\Expr\StaticCall
             && $node->name instanceof Node\Identifier
-            && $node->name->toString() === 'group'
+            && $node->name->toLowerString() === 'group'
             && $node->class instanceof Node\Name
             && $this->isRouteFacade($node->class)) {
             return true;
         }
 
-        // Route::middleware(...)->group(fn)  or  Route::withoutMiddleware(...)->group(fn)
+        // Route::middleware(...)->group(fn), Route::withoutMiddleware(...)->group(fn), a
+        // ->group(fn) on a variable holding a registrar such a chain built, or a group the
+        // route parser finds made on the router another way, such as $router->group(...)
         if ($node instanceof Node\Expr\MethodCall
             && $node->name instanceof Node\Identifier
-            && $node->name->toString() === 'group'
-            && $this->chainRootsToRoute($node->var)) {
-            return true;
+            && $node->name->toLowerString() === 'group') {
+            if (isset($this->routerGroups[spl_object_id($node)])) {
+                return true;
+            }
+            $root = $this->routeParser->groupChain($node)[0];
+
+            return $root instanceof Node\Expr\StaticCall
+                && $root->class instanceof Node\Name
+                && $this->isRouteFacade($root->class);
         }
 
         return false;
     }
 
     /**
-     * Walk a MethodCall chain downward until we reach a StaticCall.
-     * Returns true if that StaticCall is on the Route facade.
-     */
-    private function chainRootsToRoute(Node\Expr $node): bool
-    {
-        while ($node instanceof Node\Expr\MethodCall) {
-            $node = $node->var;
-        }
-
-        return $node instanceof Node\Expr\StaticCall
-            && $node->class instanceof Node\Name
-            && $this->isRouteFacade($node->class);
-    }
-
-    /**
      * Extract the middleware this group node adds/removes from its own definition.
      *
-     * For StaticCall Route::group(['middleware' => 'auth'], fn):
+     * For a group given an attribute array, Route::group(['middleware' => 'auth'], fn) or
+     *   $router->group([...], fn):
      *   → parses the config array's 'middleware' key.
      *
      * For MethodCall ->group() chains (e.g. Route::middleware('auth')->group(fn)):
-     *   → walks the chain collecting every ->withoutMiddleware() call, as RouteRegistrar
-     *     merges them, and only the last ->middleware() call, as each middleware() call
-     *     replaces the last (the first one found walking outward-in), and also handles
-     *     Route::middleware() / Route::withoutMiddleware() as the root.
+     *   → walks the chain the route parser reads for the call (see
+     *     BootstrapRouteParser::groupChain()) collecting every ->withoutMiddleware() call,
+     *     as RouteRegistrar merges them, and only the last ->middleware() call, as each
+     *     middleware() call replaces the last (the first one found walking outward-in),
+     *     including Route::middleware() / Route::withoutMiddleware() as the root.
      *
      * @return array{add: list<string>, remove: list<string>}
      */
@@ -2038,8 +2099,8 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         $add = [];
         $remove = [];
 
-        if ($node instanceof Node\Expr\StaticCall) {
-            // Route::group(['middleware' => ...], fn) — look at first arg
+        if ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) {
+            // Route::group(['middleware' => ...], fn) or $router->group([...], fn): look at the first arg
             if (! empty($node->args)) {
                 $firstArg = $node->args[0]->value ?? null;
                 if ($firstArg instanceof Node\Expr\Array_) {
@@ -2056,16 +2117,12 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                     }
                 }
             }
-
-            return ['add' => $add, 'remove' => $remove];
         }
 
         if ($node instanceof Node\Expr\MethodCall) {
-            // Walk the chain: [MethodCall ->group], [MethodCall ->middleware], ..., StaticCall Route::X
-            $current = $node->var;
+            // Walk the chain outward-in: ->middleware, ..., StaticCall Route::X
             $applied = null;
-
-            while ($current instanceof Node\Expr\MethodCall) {
+            foreach ($this->registrarCalls($node) as $current) {
                 if ($current->name instanceof Node\Identifier) {
                     $name = $current->name->toString();
                     if ($name === 'middleware') {
@@ -2074,21 +2131,9 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                         $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
                     }
                 }
-                $current = $current->var;
             }
 
-            // Handle the StaticCall root: Route::middleware(...) or Route::withoutMiddleware(...)
-            if ($current instanceof Node\Expr\StaticCall
-                && $current->name instanceof Node\Identifier) {
-                $name = $current->name->toString();
-                if ($name === 'middleware') {
-                    $applied ??= $this->extractMiddlewareArgs($current->args);
-                } elseif ($name === 'withoutMiddleware') {
-                    $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
-                }
-            }
-
-            $add = $applied ?? [];
+            $add = [...$applied ?? [], ...$add];
         }
 
         return ['add' => $add, 'remove' => $remove];
@@ -2097,20 +2142,21 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     /**
      * Extract the URI prefix this group node contributes, or '' if it sets none.
      *
-     * For StaticCall Route::group(['prefix' => 'admin'], fn):
+     * For a group given an attribute array, Route::group(['prefix' => 'admin'], fn) or
+     *   $router->group([...], fn):
      *   → parses the config array's 'prefix' key.
      *
      * For MethodCall ->group() chains (e.g. Route::prefix('admin')->group(fn)):
-     *   → walks the chain for ->prefix() calls (the first one found walking
-     *     outward-in is the last one called, which wins per Laravel's overwrite
-     *     semantics), then checks a Route::prefix() static root.
+     *   → walks the chain the route parser reads for the call for ->prefix() calls
+     *     (the first one found walking outward-in is the last one called, which wins
+     *     per Laravel's overwrite semantics), down to a Route::prefix() static root.
      *
      * Non-literal prefix arguments yield '' (best-effort, like route URIs).
      */
     private function extractGroupPrefix(Node $node): string
     {
-        if ($node instanceof Node\Expr\StaticCall) {
-            // Route::group(['prefix' => ...], fn) — look at first arg
+        if ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) {
+            // Route::group(['prefix' => ...], fn) or $router->group([...], fn): look at the first arg
             $firstArg = $node->args[0]->value ?? null;
             if ($firstArg instanceof Node\Expr\Array_) {
                 foreach ($firstArg->items as $item) {
@@ -2124,33 +2170,31 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                     }
                 }
             }
-
-            return '';
         }
 
         if ($node instanceof Node\Expr\MethodCall) {
-            // Walk the chain: [MethodCall ->group], [MethodCall ->prefix], ..., StaticCall Route::X
-            $current = $node->var;
-
-            while ($current instanceof Node\Expr\MethodCall) {
+            // Walk the chain outward-in: ->prefix, ..., StaticCall Route::X
+            foreach ($this->registrarCalls($node) as $current) {
                 if ($current->name instanceof Node\Identifier
                     && $current->name->toString() === 'prefix'
                     && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
                     return trim($arg->value, '/');
                 }
-                $current = $current->var;
-            }
-
-            // Handle the StaticCall root: Route::prefix(...)
-            if ($current instanceof Node\Expr\StaticCall
-                && $current->name instanceof Node\Identifier
-                && $current->name->toString() === 'prefix'
-                && ($arg = $current->args[0]->value ?? null) instanceof Node\Scalar\String_) {
-                return trim($arg->value, '/');
             }
         }
 
         return '';
+    }
+
+    /**
+     * The calls before a ->group() call that set its registrar's attributes, outermost first,
+     * as the route parser reads them (see BootstrapRouteParser::groupChain()).
+     *
+     * @return list<Node\Expr\MethodCall|Node\Expr\StaticCall>
+     */
+    private function registrarCalls(Node\Expr\MethodCall $group): array
+    {
+        return array_reverse(array_slice($this->routeParser->groupChain($group), 0, -1));
     }
 
     // -------------------------------------------------------------------------

@@ -1917,8 +1917,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Walk a method-call chain as one unit: read it as a route registration when its root is
-     * the router (see isRouterChainRoot()), then walk its root and each call's arguments, which
-     * may hold further routes.
+     * the router (see isRouterChainRoot()), or when a group in it is made on a variable holding
+     * a registrar, which the route parser then reads starting at the calls that built it (see
+     * BootstrapRouteParser::groupChain()); the chain is read as the parser reads it. Then walk its root and each call's arguments, which may hold
+     * further routes.
      *
      * @param  list<int>  $closures
      * @param  RouteWalk  $walk
@@ -1926,11 +1928,14 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private function walkCallChain(Expr\MethodCall|Expr\StaticCall $call, array $closures, int $scope, array &$walk, BootstrapRouteParser $routeParser): void
     {
         [$chain, $base] = $this->unwindChain($call);
+        $registration = $routeParser->groupChain($call);
 
         // app()->make('router') unwinds with make() as the chain's first call
-        $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isContainerMake($chain[0]) ? 1 : 0;
-        if ($start === 1 || $this->isRouterChainRoot($base, $scope, $walk)) {
-            $this->readRouteChain(array_slice($chain, $start), $closures, $walk, $routeParser);
+        $start = $registration[0] instanceof Expr\MethodCall && $this->isContainerMake($registration[0]) ? 1 : 0;
+        // A chain the route parser continued through a registrar variable starts elsewhere
+        $continued = $registration[0] !== $routeParser->attributeStandIn($chain[0]);
+        if ($start === 1 || $continued || $this->isRouterChainRoot($base, $scope, $walk)) {
+            $this->readRouteChain(array_slice($registration, $start), $closures, $walk, $routeParser);
         }
 
         $children = [$base];
@@ -2124,7 +2129,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The CSRF state the groups a route file is loaded through, outermost first, hand it,
-     * merged as chainCsrfState() reads each.
+     * merged as chainCsrfState() reads the chain the route parser reads for each (see
+     * BootstrapRouteParser::groupChain()).
      *
      * @param  non-empty-list<Expr\MethodCall|Expr\StaticCall>  $groups
      * @return CsrfState
@@ -2133,9 +2139,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     {
         $state = self::NO_CSRF;
         foreach ($groups as $group) {
-            $chain = $this->unwindChain($group)[0];
+            $chain = $routeParser->groupChain($group);
             // app()->make('router') unwinds with make() as the chain's first call
-            $start = $chain !== [] && $chain[0] instanceof Expr\MethodCall && $this->isContainerMake($chain[0]) ? 1 : 0;
+            $start = $chain[0] instanceof Expr\MethodCall && $this->isContainerMake($chain[0]) ? 1 : 0;
             $state = $this->mergeCsrfState($state, $this->chainCsrfState(array_slice($chain, $start), $routeParser));
         }
 

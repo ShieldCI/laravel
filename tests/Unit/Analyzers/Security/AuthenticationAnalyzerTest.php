@@ -1508,6 +1508,102 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider registrarVariableProvider
+     */
+    #[DataProvider('registrarVariableProvider')]
+    public function test_group_middleware_reads_a_registrar_held_in_a_variable(string $registrar, bool $reported): void
+    {
+        $routes = <<<PHP
+<?php
+
+{$registrar}
+\$members->group(function () {
+    Route::post('/backoffice/members', [MemberController::class, 'store']);
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $routes]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        if ($reported) {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableProvider(): array
+    {
+        return [
+            'auth on the registrar' => ["\$members = Route::middleware('auth');", false],
+            'auth set by a later statement' => ["\$members = Route::prefix('backoffice');\n\$members->middleware('auth');", false],
+            'auth replaced by a later statement' => ["\$members = Route::middleware('auth');\n\$members->middleware('verified');", true],
+            'auth excluded by a later statement' => ["\$members = Route::middleware('auth');\n\$members->withoutMiddleware('auth');", true],
+            'auth set in a branch' => ["\$members = Route::prefix('backoffice');\nif (app()->isLocal()) {\n    \$members->middleware('auth');\n}", true],
+            'auth replaced through the registrar group() returns' => ["\$members = Route::middleware('auth');\n\$copy = \$members->group(function () {});\n\$copy->middleware('verified');", true],
+            'auth replaced through a variable variable' => ["\$members = Route::middleware('auth');\n\$name = 'members';\n\$\$name->middleware('verified');", true],
+            'auth replaced through attribute()' => ["\$members = Route::middleware('auth');\n\$members->attribute('middleware', ['verified']);", true],
+            'auth set through attribute()' => ["\$members = Route::prefix('backoffice');\n\$members->attribute('middleware', 'auth');", false],
+            'auth given as an extra attribute() argument' => ["\$members = Route::prefix('backoffice');\n\$members->attribute('middleware', 'verified', 'auth');", true],
+            'auth beside an attribute() key in a variable' => ["\$key = 'prefix';\n\$members = Route::middleware('auth')->attribute(\$key, 'backoffice');", false],
+        ];
+    }
+
+    /**
+     * @dataProvider routerRootGroupProvider
+     */
+    #[DataProvider('routerRootGroupProvider')]
+    public function test_group_middleware_reads_groups_on_any_router_root(string $routes, bool $reported): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => "<?php\n\n{$routes}\n"]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $messages = array_map(fn ($issue) => $issue->message, $analyzer->analyze()->getIssues());
+
+        $this->assertSame($reported, in_array('POST route without authentication middleware', $messages, true));
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function routerRootGroupProvider(): array
+    {
+        $route = "Route::post('/backoffice/members', [MemberController::class, 'store']);";
+
+        return [
+            'router variable chain' => ["\$router = app('router');\n\$router->middleware('auth')->group(function () {\n    {$route}\n});", false],
+            'registrar built on a router variable' => ["\$router = app('router');\n\$members = \$router->middleware('auth');\n\$members->group(function () {\n    {$route}\n});", false],
+            'router a group callback is given' => ["Route::group([], function (\$routes) {\n    \$routes->middleware('auth')->group(function () {\n        {$route}\n    });\n});", false],
+            'router variable group with an attribute array' => ["\$router = app('router');\n\$router->group(['middleware' => 'auth'], function () {\n    {$route}\n});", false],
+            'fluent attribute() call' => ["Route::prefix('backoffice')->attribute('middleware', 'auth')->group(function () {\n    {$route}\n});", false],
+            'group on the container router' => ["app('router')->group(['middleware' => 'auth'], function () {\n    {$route}\n});", false],
+            'group on the container router beside an unrelated group' => ["app('router')->group(['middleware' => 'auth'], function () {\n    {$route}\n});\n\$sections = new SectionLoader;\n\$sections->group(fn () => null);", false],
+            'registrar group in a branch' => ["\$members = Route::middleware('auth');\nif (config('backoffice.enabled')) {\n    \$members->group(function () {\n        {$route}\n    });\n}", false],
+            // PHP method names are case-insensitive
+            'group named in another case' => ["Route::middleware('auth')->Group(function () {\n    {$route}\n});", false],
+            'static group named in another case' => ["Route::Group(['middleware' => 'auth'], function () {\n    {$route}\n});", false],
+            // Only routes registered through the Route facade are collected
+            'registrar variable route beside a require' => ["\$admin = Route::middleware('auth')->prefix('admin');\n\$admin->post('/users', [UserController::class, 'store']);\nrequire __DIR__.'/auth.php';", false],
+            'registrar variable route written in a branch' => ["\$admin = Route::middleware('auth')->prefix('admin');\nif (config('admin.verified')) {\n    \$admin->middleware('verified');\n}\n\$admin->post('/users', [UserController::class, 'store']);", false],
+            'registrar variable route captured by a closure' => ["\$admin = Route::middleware('auth')->prefix('admin');\n\$extend = function () use (\$admin) {\n    return \$admin;\n};\n\$admin->post('/users', [UserController::class, 'store']);", false],
+            'router parameter of a route closure' => ["Route::middleware('auth')->post('/rpc', function (RpcRouter \$router) {\n    \$router->post('ping', [PingController::class, 'store']);\n});", false],
+            // Another object's group() is no route group
+            'unrelated object' => ["\$sections = new SectionLoader;\n\$sections->middleware('auth')->group(function () {\n    {$route}\n});", true],
+            'unrelated object with an attribute array' => ["\$sections = new SectionLoader;\n\$sections->group(['middleware' => 'auth'], function () {\n    {$route}\n});", true],
+        ];
+    }
+
     public function test_detects_mixed_routes_in_and_outside_protected_group(): void
     {
         $routes = <<<'PHP'

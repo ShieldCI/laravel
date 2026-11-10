@@ -6905,6 +6905,258 @@ PHP;
     }
 
     /**
+     * @dataProvider registrarVariableRegistrationProvider
+     */
+    #[DataProvider('registrarVariableRegistrationProvider')]
+    public function test_registrar_held_in_a_variable_on_a_group_in_bootstrap(string $registration, bool $covered): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => <<<PHP
+<?php
+
+use Illuminate\\Foundation\\Application;
+use Illuminate\\Support\\Facades\\Route;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        then: function () {
+            {$registration}
+        },
+    )
+    ->create();
+PHP,
+            'routes/members.php' => "<?php\n\nRoute::post('/profile', [ProfileController::class, 'update']);\n",
+        ]);
+
+        if ($covered) {
+            $this->assertPassed($result);
+        } else {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableRegistrationProvider(): array
+    {
+        $group = "->group(base_path('routes/members.php'));";
+
+        return [
+            'registrar variable' => ["\$members = Route::middleware('web'); \$members{$group}", true],
+            'middleware set by a later statement' => ["\$members = Route::prefix('members'); \$members->middleware('web'); \$members{$group}", true],
+            'middleware kept through another call on the group chain' => ["\$members = Route::middleware('web'); \$members->prefix('members'){$group}", true],
+            'path variable on a registrar variable' => ["\$members = Route::middleware('web'); \$file = base_path('routes/members.php'); \$members->group(\$file);", true],
+            'path variable on the facade root' => ["\$routes = Route::getFacadeRoot(); \$file = base_path('routes/members.php'); \$routes->middleware('web')->group(\$file);", true],
+            'middleware replaced by a later statement' => ["\$members = Route::middleware('web'); \$members->middleware('auth'); \$members{$group}", false],
+            'router variable call as its own statement' => ["\$router = app('router'); \$router->middleware('web'); \$router->prefix('members'){$group}", false],
+        ];
+    }
+
+    /**
+     * @dataProvider registrarVariableClosureProvider
+     */
+    #[DataProvider('registrarVariableClosureProvider')]
+    public function test_registrar_held_in_a_variable_on_a_closure_group_in_a_route_file(string $registrar, bool $covered): void
+    {
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+{$registrar}
+\$members->group(function () {
+    Route::post('/profile', [ProfileController::class, 'update']);
+});
+PHP);
+
+        if ($covered) {
+            $this->assertPassed($result);
+        } else {
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarVariableClosureProvider(): array
+    {
+        return [
+            'web on the registrar' => ["\$members = Route::middleware('web');", true],
+            'web set by a later statement' => ["\$members = Route::prefix('members');\n\$members->middleware('web');", true],
+            'web replaced by a later statement' => ["\$members = Route::middleware('web');\n\$members->middleware('auth');", false],
+            'web set in a branch' => ["\$members = Route::prefix('members');\nif (app()->isLocal()) {\n    \$members->middleware('web');\n}", false],
+            'web replaced through the registrar group() returns' => ["\$members = Route::middleware('web');\n\$copy = \$members->group(function () {});\n\$copy->middleware('auth');", false],
+            'web replaced through a variable variable' => ["\$members = Route::middleware('web');\n\$name = 'members';\n\$\$name->middleware('auth');", false],
+            'web replaced through attribute()' => ["\$members = Route::middleware('web');\n\$members->attribute('middleware', ['auth']);", false],
+            'web set through attribute()' => ["\$members = Route::prefix('members');\n\$members->attribute('middleware', 'web');", true],
+            'web given as an extra attribute() argument' => ["\$members = Route::prefix('members');\n\$members->attribute('middleware', 'verified', 'web');", false],
+            'web beside a global statement' => ["\$members = Route::middleware('web');\nfunction members_config(): array\n{\n    global \$config;\n\n    return \$config;\n}", true],
+            'web beside \$GLOBALS' => ["\$members = Route::middleware('web');\n\$GLOBALS['members_loaded'] = true;", true],
+        ];
+    }
+
+    /**
+     * @dataProvider guardedRegistrarGroupProvider
+     */
+    #[DataProvider('guardedRegistrarGroupProvider')]
+    public function test_registrar_variable_group_in_a_nested_block(string $open, string $close): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\n\$members = Route::middleware('web');\n{$open}\n\$members->group(function () {\n    Route::post('/profile', [ProfileController::class, 'update']);\n});\n{$close}\n"));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function guardedRegistrarGroupProvider(): array
+    {
+        return [
+            'branch' => ["if (config('members.enabled')) {", '}'],
+            'loop' => ['foreach ([1] as $pass) {', '}'],
+            'try block' => ['try {', "} finally {\n}"],
+        ];
+    }
+
+    public function test_fluent_attribute_with_a_key_in_a_variable_keeps_web(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\n\$key = 'prefix';\nRoute::middleware('web')->attribute(\$key, 'members')->group(function () {\n    Route::post('/profile', [ProfileController::class, 'update']);\n});\n"));
+    }
+
+    /**
+     * @dataProvider providerRouterVariableProvider
+     */
+    #[DataProvider('providerRouterVariableProvider')]
+    public function test_router_variable_in_a_provider_covers_its_group_file(string $router): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'app/Providers/MembersRouteProvider.php' => <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Support\\ServiceProvider;
+
+class MembersRouteProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        \$router = {$router};
+        \$router->middleware('web')->group(base_path('routes/members.php'));
+    }
+}
+PHP,
+            'routes/members.php' => "<?php\n\nRoute::post('/profile', [ProfileController::class, 'update']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function providerRouterVariableProvider(): array
+    {
+        // \$router names the router by its name, whatever it is assigned
+        return [
+            'a getter' => ['$this->getRouter()'],
+            'another container' => ["\$application->make('router')"],
+            'a null-coalesced property' => ["\$this->router ?? app('router')"],
+        ];
+    }
+
+    public function test_a_group_on_a_registrar_variable_reads_only_the_calls_before_it(): void
+    {
+        $analyzer = new CsrfAnalyzer($this->parser);
+        $analyzer->setBasePath($this->createTempDirectory([
+            'bootstrap/app.php' => $this->bootstrapWithThen("Route::prefix('c')->group(base_path('routes/custom.php'));"),
+            'routes/web.php' => '<?php',
+            'routes/custom.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n\$r = Route::prefix('m');\n\$r->group(function () {\n    Route::post('/a', [A::class, 'store']);\n})->middleware('web');\n\$r->group(function () {\n    Route::post('/b', [B::class, 'store']);\n});\n",
+        ]));
+        $analyzer->setPaths(['bootstrap', 'routes']);
+
+        $this->assertSame([7], array_map(fn ($issue) => $issue->location?->line, $analyzer->analyze()->getIssues()));
+    }
+
+    public function test_a_file_group_on_a_registrar_variable_reads_only_the_calls_before_it(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => $this->bootstrapWithThen("Route::prefix('c')->group(base_path('routes/custom.php'));"),
+            'routes/web.php' => '<?php',
+            'routes/custom.php' => "<?php\n\n\$r = Route::prefix('m');\n\$r->group(base_path('routes/a.php'))->middleware('web');\n\$r->group(base_path('routes/b.php'));\n",
+            'routes/a.php' => "<?php\n\nRoute::post('/a', [A::class, 'store']);\n",
+            'routes/b.php' => "<?php\n\nRoute::post('/b', [B::class, 'store']);\n",
+        ]);
+
+        $this->assertSame(['a.php:3'], array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues()));
+    }
+
+    /**
+     * @dataProvider escapingRegistrarGroupProvider
+     */
+    #[DataProvider('escapingRegistrarGroupProvider')]
+    public function test_a_group_whose_registrar_escapes_reads_it(string $files): void
+    {
+        $result = $this->analyzeRouteFiles([
+            ...($files === 'provider' ? ['app/Providers/PortalRouteProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class PortalRouteProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        $this->portal();
+    }
+
+    private function portal(): mixed
+    {
+        $r = Route::middleware('web');
+
+        return $r->group(base_path('routes/portal.php'));
+    }
+}
+PHP] : ['bootstrap/app.php' => $this->bootstrapWithThen("\$r = Route::middleware('web');\nreturn \$r->group(base_path('routes/portal.php'));")]),
+            'routes/portal.php' => "<?php\n\nRoute::post('/profile', [ProfileController::class, 'update']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function escapingRegistrarGroupProvider(): array
+    {
+        return [
+            'bootstrap' => ['bootstrap'],
+            'provider' => ['provider'],
+        ];
+    }
+
+    private function bootstrapWithThen(string $registration): string
+    {
+        return "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            {$registration}\n        },\n    )\n    ->create();\n";
+    }
+
+    public function test_registrar_variable_group_inside_a_longer_chain(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\$m = Route::middleware('web');\n\$m->group(function () {\n    Route::post('/profile', [ProfileController::class, 'update']);\n})->middleware('auth');\n"));
+    }
+
+    public function test_fluent_middleware_replaced_through_attribute_is_not_web(): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\nRoute::middleware('web')->attribute('middleware', ['auth'])->group(function () {\n    Route::post('/profile', [ProfileController::class, 'update']);\n});\n");
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
      * @dataProvider providerRouteVariableProvider
      */
     #[DataProvider('providerRouteVariableProvider')]

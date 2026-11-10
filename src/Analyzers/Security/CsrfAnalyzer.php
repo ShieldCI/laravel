@@ -131,13 +131,21 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private const ROUTER_CLASSES = ['Illuminate\Routing\Router', 'Illuminate\Contracts\Routing\Registrar'];
 
     /**
-     * The CSRF middleware the web group holds, as modelled from bootstrap/app.php, or null when it
-     * is not modelled: the application has a Kernel or no bootstrap/app.php, withMiddleware() is
-     * not given a closure, or a group, append, remove or replace list cannot be read.
+     * The CSRF middleware the web group holds, as modelled from app/Http/Kernel.php (see
+     * kernelWebGroupCsrf()) or bootstrap/app.php, or null when it is not modelled: the
+     * application has neither file, the Kernel's web group cannot be settled, withMiddleware()
+     * is not given a closure, or a group, append, remove or replace list cannot be read.
      *
      * @var list<string>|null
      */
     private ?array $webGroupCsrf = null;
+
+    /**
+     * Whether the Kernel's global $middleware runs CSRF middleware, as read from a Kernel the
+     * application uses and nothing may change. withoutMiddleware() and excluded_middleware filter
+     * route middleware only, so no route exclusion removes that check.
+     */
+    private bool $globalCsrf = false;
 
     public function __construct(
         private AstParser $parser
@@ -181,6 +189,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
         $this->webGroupCsrf = null;
+        $this->globalCsrf = false;
 
         // Check Blade templates for forms without @csrf
         $bladeFiles = $this->getBladeFiles();
@@ -664,6 +673,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * Null when the property defaults cannot settle it: the file has no single Kernel class, a
      * list on that path cannot be read, a parent, trait or method may change the middleware, or
      * an alias or another group may run CSRF on whichever routes apply it.
+     *
+     * Also models what the route checks match exclusions against, when the same reading settles
+     * it and bootstrap/app.php does not replace the Kernel (see bootstrapConfiguresApplication()):
+     * $globalCsrf when the global $middleware runs CSRF, and otherwise the web group's CSRF
+     * middleware in $webGroupCsrf (see kernelWebGroupCsrf()).
      */
     private function kernelRunsCsrfOnWebRoutes(string $kernelFile): ?bool
     {
@@ -702,16 +716,27 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $global = $defaults['middleware'] ?? $inherited;
         $globalRuns = $global !== null ? $this->kernelListRunsCsrf($global, [], [], true) : null;
+        $globalEntries = $global !== null ? $this->kernelListEntries($global, [], [], true) : null;
 
-        $webRuns = isset($groups['web']) || $groupsComplete
-            ? $this->kernelListRunsCsrf($groups['web'] ?? null, $groups, $aliases, $complete, ['web' => true])
+        $webEntries = isset($groups['web']) || $groupsComplete
+            ? $this->kernelListEntries($groups['web'] ?? null, $groups, $aliases, $complete, ['web' => true])
             : null;
+        $webRuns = $webEntries !== null ? $this->kernelEntriesRunCsrf($webEntries) : null;
+
+        // A custom parent or a method may change the middleware, and Application::configure() binds the framework's Kernel
+        $mayChange = $this->kernelMayChangeMiddleware($class);
+        if (! $isCustomParent && ! $mayChange && ! $this->bootstrapConfiguresApplication()) {
+            $globalRunsCsrf = $this->kernelGlobalRunsCsrf($globalEntries);
+            $this->globalCsrf = $globalRunsCsrf === true;
+            // A literal 'web' key in a map that may hold more keys may be overridden by one of them
+            $this->webGroupCsrf = $globalRunsCsrf === false && $groupsComplete ? $this->kernelWebGroupCsrf($webEntries) : null;
+        }
 
         if ($globalRuns === true || $webRuns === true) {
             return true;
         }
 
-        if ($globalRuns === null || $webRuns === null || $this->kernelMayChangeMiddleware($class)) {
+        if ($globalRuns === null || $webRuns === null || $mayChange) {
             return null;
         }
 
@@ -747,9 +772,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a Kernel middleware list runs CSRF middleware. As Laravel resolves an entry, a group
-     * name comes first, then an alias, and only then a class name; a group is never followed back
-     * into itself. Null when none does but an entry, or the list itself, cannot be settled.
+     * Whether a Kernel middleware list runs CSRF middleware (see kernelListEntries()). Null when
+     * none does but an entry, or the list itself, cannot be settled.
      *
      * @param  array<string, Expr>  $groups
      * @param  array<string, Expr>  $aliases
@@ -758,28 +782,87 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function kernelListRunsCsrf(?Expr $list, array $groups, array $aliases, bool $complete, array $seen = []): ?bool
     {
-        $entries = $this->middlewareList($list);
-        $runsCsrf = $entries === null ? null : false;
+        $entries = $this->kernelListEntries($list, $groups, $aliases, $complete, $seen);
 
-        foreach ($entries ?? [] as $entry) {
-            if ($entry === null) {
-                $runsCsrf = null;
+        return $entries !== null ? $this->kernelEntriesRunCsrf($entries) : null;
+    }
+
+    /**
+     * The middleware a Kernel list finally holds, resolved as Laravel resolves an entry: a group
+     * name comes first, then an alias, and only then a class name; a group is never followed back
+     * into itself. Each entry is the class name with any :parameters, as an alias passes them on
+     * to its target, except empty or '0' ones (see groupEntry()), or null when it cannot be
+     * read, with whether the maps it was resolved against are complete, so that a name they lack
+     * is a class rather than possibly a group or alias they do not show. An alias names a class,
+     * so its target is read without the groups and aliases. Null when the list itself cannot be
+     * read.
+     *
+     * @param  array<string, Expr>  $groups
+     * @param  array<string, Expr>  $aliases
+     * @param  bool  $complete  Whether $groups and $aliases hold every key the Kernel registers
+     * @param  array<string, true>  $seen
+     * @return list<array{string|null, bool}>|null
+     */
+    private function kernelListEntries(?Expr $list, array $groups, array $aliases, bool $complete, array $seen = []): ?array
+    {
+        $names = $this->middlewareList($list);
+        if ($names === null) {
+            return null;
+        }
+
+        $entries = [];
+
+        foreach ($names as $name) {
+            if ($name === null) {
+                $entries[] = [null, $complete];
 
                 continue;
             }
 
-            $alias = explode(':', $entry, 2)[0];
+            [$alias, $parameters] = array_pad(explode(':', $name, 2), 2, null);
+            $parameters = $parameters !== null && $parameters !== '' && $parameters !== '0' ? $parameters : null;
 
-            if (isset($groups[$entry])) {
-                $entryRunsCsrf = isset($seen[$entry])
-                    ? false
-                    : $this->kernelListRunsCsrf($groups[$entry], $groups, $aliases, $complete, $seen + [$entry => true]);
+            if (isset($groups[$name])) {
+                $nested = isset($seen[$name])
+                    ? []
+                    : $this->kernelListEntries($groups[$name], $groups, $aliases, $complete, $seen + [$name => true]);
+                array_push($entries, ...($nested ?? [[null, $complete]]));
             } elseif (isset($aliases[$alias])) {
-                // An alias names a class, so its target is read without the groups and aliases
-                $entryRunsCsrf = $this->kernelListRunsCsrf($aliases[$alias], [], [], true);
+                foreach ($this->kernelListEntries($aliases[$alias], [], [], true) ?? [[null, true]] as [$target]) {
+                    $entries[] = [$target !== null && $parameters !== null ? "{$target}:{$parameters}" : $target, true];
+                }
             } else {
-                $entryRunsCsrf = $this->kernelClassRunsCsrf($alias, $complete);
+                $entries[] = [$this->groupEntry($name), $complete];
             }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * A middleware group entry as Laravel resolves it:
+     * MiddlewareNameResolver::parseMiddlewareGroup() drops empty or '0' parameters, so 'Class:'
+     * and 'Class:0' run as the class itself.
+     */
+    private function groupEntry(string $name): string
+    {
+        $parts = explode(':', $name, 2);
+
+        return in_array($parts[1] ?? null, [null, '', '0'], true) ? $parts[0] : $name;
+    }
+
+    /**
+     * Whether resolved Kernel entries run CSRF middleware: true when one does, null when none
+     * does but one cannot be settled.
+     *
+     * @param  list<array{string|null, bool}>  $entries
+     */
+    private function kernelEntriesRunCsrf(array $entries): ?bool
+    {
+        $runsCsrf = false;
+
+        foreach ($entries as [$name, $complete]) {
+            $entryRunsCsrf = $name !== null ? $this->kernelClassRunsCsrf(explode(':', $name, 2)[0], $complete) : null;
 
             if ($entryRunsCsrf === true) {
                 return true;
@@ -791,6 +874,177 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         return $runsCsrf;
+    }
+
+    /**
+     * The CSRF middleware the Kernel's web group holds, from its resolved entries, or null when
+     * the group cannot be settled: the list or an entry cannot be read, an entry other than a
+     * CSRF class may be a group or alias the incomplete maps do not show, an application class
+     * may be CSRF middleware (see kernelEntryIsCsrf()), or the group holds none, which leaves
+     * the version fallback to judge an exclusion as before. An entry with :parameters is kept
+     * with them, as only an exclusion of the same string removes it (see csrfAncestors()).
+     *
+     * @param  list<array{string|null, bool}>|null  $entries
+     * @return list<string>|null
+     */
+    private function kernelWebGroupCsrf(?array $entries): ?array
+    {
+        if ($entries === null) {
+            return null;
+        }
+
+        $csrf = [];
+
+        foreach ($entries as [$name, $complete]) {
+            if ($name === null) {
+                return null;
+            }
+
+            $class = explode(':', $name, 2)[0];
+            if (! $complete && $this->kernelClassRunsCsrf($class, false) !== true) {
+                return null;
+            }
+
+            $isCsrf = $this->kernelEntryIsCsrf($class);
+            if ($isCsrf === null) {
+                return null;
+            }
+
+            if ($isCsrf) {
+                $csrf[] = $name;
+            }
+        }
+
+        return $csrf !== [] ? $csrf : null;
+    }
+
+    /**
+     * Whether the Kernel's global $middleware runs CSRF middleware: true when an entry is the
+     * framework's CSRF middleware or its parents read from app/ reach it, null when none is but
+     * the list or an entry is unknown. Unlike a web group entry (see kernelEntryIsCsrf()), a
+     * CSRF name alone proves nothing here, as $globalCsrf credits every route with the check,
+     * so an entry counted only by its name, such as a vendor SkipVerifyCsrfToken helper, is
+     * unknown.
+     *
+     * @param  list<array{string|null, bool}>|null  $entries
+     */
+    private function kernelGlobalRunsCsrf(?array $entries): ?bool
+    {
+        $runsCsrf = $entries === null ? null : false;
+
+        foreach ($entries ?? [] as [$name]) {
+            $class = $name !== null ? explode(':', $name, 2)[0] : null;
+            $entryRunsCsrf = match ($class !== null ? $this->csrfChain($class) : 'unknown') {
+                'framework' => true,
+                'other' => false,
+                'ends' => $class !== null && $this->csrfMiddlewareIn($class) !== null ? null : false,
+                'unknown', 'deep' => null,
+            };
+
+            if ($entryRunsCsrf === true) {
+                return true;
+            }
+
+            if ($entryRunsCsrf === null) {
+                $runsCsrf = null;
+            }
+        }
+
+        return $runsCsrf;
+    }
+
+    /**
+     * Whether a Kernel web group entry's class is CSRF middleware (see csrfChain()): it is when
+     * it reaches the framework's CSRF middleware, and is not when it reaches another Illuminate
+     * class. A chain that ends elsewhere counts it by its name, as in bootstrap/app.php, such as
+     * a CustomVerifyCsrfToken that checks the token itself; so does one that cannot be followed
+     * when the name holds a CSRF name, which csrfAncestors() assumes extends VerifyCsrfToken,
+     * and otherwise it is unknown (null). A chain deeper than the parents followed is unknown
+     * too, as csrfAncestors() stops at the same depth.
+     */
+    private function kernelEntryIsCsrf(string $class): ?bool
+    {
+        $named = $this->csrfMiddlewareIn($class) !== null;
+
+        return match ($this->csrfChain($class)) {
+            'framework' => true,
+            'other' => false,
+            'ends' => $named,
+            'unknown' => $named ? true : null,
+            'deep' => null,
+        };
+    }
+
+    /**
+     * Where a middleware class's parents lead, following an application class through the files
+     * under app/ for a few levels: 'framework' at the framework's CSRF middleware, 'other' at
+     * another Illuminate class, 'ends' at an application class read without a parent or a
+     * vendor class whose name holds no CSRF name, 'unknown' at an application class whose file
+     * cannot be read or a vendor class whose name holds a CSRF name, which may extend it, and
+     * 'deep' when the levels run out still under App.
+     *
+     * @return 'framework'|'other'|'ends'|'unknown'|'deep'
+     */
+    private function csrfChain(string $class): string
+    {
+        $class = ltrim($class, '\\');
+
+        for ($depth = 0; str_starts_with($class, 'App\\'); $depth++) {
+            if ($depth === 5) {
+                return 'deep';
+            }
+
+            $parent = $this->applicationParent($class);
+            if ($parent === null) {
+                return 'unknown';
+            }
+            if ($parent === false) {
+                return 'ends';
+            }
+            $class = ltrim($parent, '\\');
+        }
+
+        $framework = 'Illuminate\\Foundation\\Http\\Middleware\\';
+        if (str_starts_with($class, $framework) && in_array(substr($class, strlen($framework)), self::CSRF_MIDDLEWARE, true)) {
+            return 'framework';
+        }
+
+        if (str_starts_with($class, 'Illuminate\\')) {
+            return 'other';
+        }
+
+        return $this->csrfMiddlewareIn($class) !== null ? 'unknown' : 'ends';
+    }
+
+    /**
+     * Whether bootstrap/app.php starts the application with Application::configure(), whose
+     * builder binds the framework's HTTP Kernel, so that app/Http/Kernel.php is a leftover the
+     * application does not use. A Laravel 10 bootstrap/app.php binds the application's Kernel
+     * itself and has no such call. The class is matched by its last segment, as
+     * BootstrapRouteParser matches the builder.
+     */
+    private function bootstrapConfiguresApplication(): bool
+    {
+        $file = $this->buildPath('bootstrap', 'app.php');
+        if (! file_exists($file)) {
+            return false;
+        }
+
+        foreach ($this->parser->findNodes($this->resolveNamesForMatching($this->parser->parseFile($file)), Expr\StaticCall::class) as $call) {
+            if ($call instanceof Expr\StaticCall
+                && $call->class instanceof Name
+                && $call->name instanceof Identifier
+                && $call->name->toLowerString() === 'configure') {
+                $resolved = $call->class->getAttribute('resolvedName');
+                $name = ($resolved instanceof Name ? $resolved : $call->class)->getLast();
+
+                if (strcasecmp($name, 'Application') === 0) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1136,7 +1390,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $final = [...array_diff($entries, array_keys($removals)), ...$additions];
         $this->webGroupCsrf = $unreadable || in_array(null, $final, true)
             ? null
-            : array_values(array_filter($final, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null));
+            : array_values(array_map($this->groupEntry(...), array_filter($final, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null)));
 
         foreach ($removals as $name => $line) {
             $removed = $this->csrfMiddlewareIn($name);
@@ -1688,24 +1942,25 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a CSRF check still runs on a route: the web group's, when 'web' reaches it and
-     * the exclusions do not remove every CSRF entry it holds, or a CSRF class applied directly
-     * that no exclusion names, by itself or a class it extends. Excluding 'web' excludes the
-     * group's members, as Router::resolveMiddleware() resolves it, so it also removes a class
-     * applied directly that is or extends the group's CSRF middleware.
+     * Whether a CSRF check still runs on a route: the Kernel's global one (see $globalCsrf), the
+     * web group's, when 'web' reaches it and the exclusions do not remove every CSRF entry it
+     * holds, or a CSRF class applied directly that no exclusion names, by itself or a class it
+     * extends. Excluding 'web' excludes the group's members, as Router::resolveMiddleware()
+     * resolves it, so it also removes a class applied directly that is or extends the group's
+     * CSRF middleware.
      *
      * @param  list<string>  $applied
      * @param  list<string|null>  $excluded
      */
     private function csrfRuns(bool $group, array $applied, array $excluded): bool
     {
-        if ($group && ! $this->namesStripCsrf($excluded)) {
+        if ($this->globalCsrf || ($group && ! $this->namesStripCsrf($excluded))) {
             return true;
         }
 
         $names = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($excluded, is_string(...)));
         if (in_array('web', $names, true)) {
-            // With the group not modelled, any CSRF class is assumed to be in it, as namesStripCsrf()
+            // With the group not settled, any CSRF class is assumed to be in it, as namesStripCsrf()
             // assumes before Laravel 13; on 13 every CSRF class extends PreventRequestForgery anyway
             if ($this->webGroupCsrf === null) {
                 return false;
@@ -2397,15 +2652,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether excluding these middleware removes the web group's CSRF protection: they name
-     * 'web', or the CSRF middleware the group holds or a class it extends. A CSRF class a route
-     * applies itself is judged by csrfRuns().
+     * 'web', or the CSRF middleware the group holds or a class it extends. Never while the
+     * Kernel's global middleware runs CSRF (see $globalCsrf). A CSRF class a route applies
+     * itself is judged by csrfRuns().
      *
      * Laravel's Router::resolveMiddleware() drops a middleware when it is an excluded name or a
-     * subclass of one. When bootstrap/app.php defines the web group, its CSRF entries are known,
-     * and the exclusion has to name each entry or a class it extends (see csrfAncestors()).
-     * Otherwise, for an application with a Kernel or a group that cannot be read, the class is
-     * assumed: before Laravel 13 any CSRF name
-     * removes it, as the framework's VerifyCsrfToken is the base class. Laravel 13 makes
+     * subclass of one. When app/Http/Kernel.php or bootstrap/app.php settles the web group, its
+     * CSRF entries are known, and the exclusion has to name each entry or a class it extends (see
+     * csrfAncestors()). Otherwise, for a group that cannot be settled, the class is assumed:
+     * before Laravel 13 any CSRF name removes it, as the framework's VerifyCsrfToken is the base
+     * class. Laravel 13 makes
      * PreventRequestForgery the base, with VerifyCsrfToken and ValidateCsrfToken as empty
      * subclasses, so there only PreventRequestForgery, an application's own CSRF class, or the
      * framework's VerifyCsrfToken when the application has a CSRF subclass in
@@ -2415,6 +2671,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function namesStripCsrf(array $names): bool
     {
+        if ($this->globalCsrf) {
+            return false;
+        }
+
         if (in_array('web', $names, true)) {
             return true;
         }
@@ -2453,9 +2713,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * CSRF middleware $entry and every class it extends, nearest first: the classes an exclusion
      * may name to remove it. An application class is read from its file under app/, following
      * the App namespace; one whose file cannot be read is assumed to extend the framework's
-     * VerifyCsrfToken, as Laravel's stubs do. Laravel 13 derives VerifyCsrfToken and
+     * VerifyCsrfToken, as Laravel's stubs do, while one read without an extends clause extends
+     * nothing an exclusion may name. Laravel 13 derives VerifyCsrfToken and
      * ValidateCsrfToken from PreventRequestForgery; earlier versions derive ValidateCsrfToken
-     * from VerifyCsrfToken.
+     * from VerifyCsrfToken. An entry with :parameters is only itself: Router::resolveMiddleware()
+     * drops it for an exclusion of the same string, as 'Class:params' is not a class to subclass.
+     * A group entry's empty or '0' parameters are dropped before it gets here (see groupEntry()).
      *
      * @return list<string>
      */
@@ -2465,10 +2728,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $ancestors = [];
         $class = ltrim($entry, '\\');
 
+        if (str_contains($class, ':')) {
+            return [$class];
+        }
+
         // A few levels of application subclasses, then the framework hierarchy
         for ($depth = 0; $depth < 5 && ! str_starts_with($class, 'Illuminate\\'); $depth++) {
             $ancestors[] = $class;
-            $class = $this->applicationParent($class) ?? self::FRAMEWORK_VERIFY_CSRF;
+            $parent = $this->applicationParent($class);
+            if ($parent === false) {
+                return $ancestors;
+            }
+            $class = $parent ?? self::FRAMEWORK_VERIFY_CSRF;
         }
         $ancestors[] = $class;
 
@@ -2481,10 +2752,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The class an App-namespaced class extends, read from its file under app/, or null when
-     * the file or its extends clause cannot be read.
+     * The class an App-namespaced class extends, read from its file under app/, false when the
+     * file declares the class without an extends clause, or null when the class is not under App
+     * or its file is missing, does not parse or does not declare it.
      */
-    private function applicationParent(string $class): ?string
+    private function applicationParent(string $class): string|false|null
     {
         if (! str_starts_with($class, 'App\\')) {
             return null;
@@ -2498,7 +2770,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         $short = $segments[count($segments) - 1];
         foreach ($this->parser->findNodes($this->resolveNamesForMatching($this->parser->parseFile($path)), Stmt\Class_::class) as $node) {
-            if ($node instanceof Stmt\Class_ && $node->name?->toString() === $short && $node->extends !== null) {
+            if ($node instanceof Stmt\Class_ && $node->name?->toString() === $short) {
+                if ($node->extends === null) {
+                    return false;
+                }
+
                 $resolved = $node->extends->getAttribute('resolvedName');
 
                 return ($resolved instanceof Name ? $resolved : $node->extends)->toString();

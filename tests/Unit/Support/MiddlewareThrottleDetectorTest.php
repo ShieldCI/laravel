@@ -263,6 +263,13 @@ class MiddlewareThrottleDetectorTest extends TestCase
             'another middleware' => ["'throttle:5,1'", "'auth'", true],
             'nothing throttles' => ["'auth'", "'throttle:5,1'", false],
             'a concatenation naming nothing' => ["\$name.':5,1'", "'throttle:5,1'", false],
+            'a parameterless subclass of the excluded class' => ["{$class}WithRedis::class", "{$class}::class", false],
+            'a subclass with parameters' => ["{$class}WithRedis::class.':5,1'", "{$class}::class", true],
+            'the parent of the excluded class' => ["{$class}::class", "{$class}WithRedis::class", true],
+            'a parameterless subclass of no excluded class' => ["{$class}WithRedis::class", "'auth'", true],
+            'a class string with a leading backslash against the alias' => ["'throttle:5,1'", "'\\Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1'", true],
+            'a class string against the alias' => ["'throttle:5,1'", "'Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1'", false],
+            'the same class string with a leading backslash' => ["'\\Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1'", "'\\Illuminate\\Routing\\Middleware\\ThrottleRequests:5,1'", false],
         ];
     }
 
@@ -379,6 +386,65 @@ PHP;
 
         $this->assertSame(['global' => true, 'names' => ['throttle:api']], $detector->groupThrottleNames(['api']));
         $this->assertSame(['global' => true, 'names' => []], $detector->groupThrottleNames(['web']));
+    }
+
+    /**
+     * @dataProvider groupRemovalProvider
+     *
+     * @param  list<string>  $names
+     */
+    #[DataProvider('groupRemovalProvider')]
+    public function test_a_group_removal_takes_out_what_the_group_starts_with(string $body, array $names): void
+    {
+        $detector = $this->bootstrapDetector($body);
+
+        $this->assertSame(['global' => false, 'names' => $names], $detector->groupThrottleNames(['api']));
+    }
+
+    /**
+     * @dataProvider perGroupRemovalProvider
+     */
+    #[DataProvider('perGroupRemovalProvider')]
+    public function test_a_group_removal_reaches_only_its_own_group(string $body, bool $throttles): void
+    {
+        $this->assertSame($throttles, $this->bootstrapDetector($body)->throttlesGroups(['web', 'api']));
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function perGroupRemovalProvider(): array
+    {
+        return [
+            'web removes what throttleApi() gives api' => ["\$middleware->throttleApi();\n\$middleware->web(remove: ['throttle:api']);", true],
+            'api removes what web lists' => ["\$middleware->group('web', ['throttle:5,1']);\n\$middleware->api(remove: ['throttle:5,1']);", true],
+            'removeFromGroup() on another group' => ["\$middleware->group('web', ['throttle:5,1']);\n\$middleware->removeFromGroup('api', 'throttle:5,1');", true],
+            'api removes its own throttle' => ["\$middleware->throttleApi();\n\$middleware->api(remove: ['throttle:api']);", false],
+            'web removes its own throttle' => ["\$middleware->group('web', ['throttle:5,1']);\n\$middleware->web(remove: ['throttle:5,1']);", false],
+        ];
+    }
+
+    /**
+     * @return array<string, array{string, list<string>}>
+     */
+    public static function groupRemovalProvider(): array
+    {
+        return [
+            'the limiter throttleApi() adds' => ["\$middleware->throttleApi();\n\$middleware->api(remove: ['throttle:api']);", []],
+            'the limiter as one name' => ["\$middleware->throttleApi('partners');\n\$middleware->api(remove: 'throttle:partners');", []],
+            'a positional removal' => ["\$middleware->throttleApi();\n\$middleware->api([], [], ['throttle:api']);", []],
+            'another limiter' => ["\$middleware->throttleApi();\n\$middleware->api(remove: ['throttle:global']);", ['throttle:api']],
+            'a group the app defines' => ["\$middleware->group('api', ['throttle:5,1']);\n\$middleware->api(remove: ['throttle:5,1']);", []],
+            'an appended throttle is added after the removal' => ["\$middleware->api(append: ['throttle:5,1'], remove: ['throttle:5,1']);", ['throttle:5,1']],
+            'a class by its string' => [
+                "\$middleware->group('api', [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class]);\n\$middleware->api(remove: ['Illuminate\\Routing\\Middleware\\ThrottleRequests']);",
+                [],
+            ],
+            'a class by a string with a leading backslash' => [
+                "\$middleware->group('api', [\\Illuminate\\Routing\\Middleware\\ThrottleRequests::class]);\n\$middleware->api(remove: ['\\Illuminate\\Routing\\Middleware\\ThrottleRequests']);",
+                ['\\Illuminate\\Routing\\Middleware\\ThrottleRequests'],
+            ],
+        ];
     }
 
     public function test_group_throttle_names_read_the_kernel(): void

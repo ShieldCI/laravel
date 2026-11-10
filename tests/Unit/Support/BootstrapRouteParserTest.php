@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PhpParser\Node;
 use PhpParser\Node\Expr\MethodCall;
 use PhpParser\Node\Expr\StaticCall;
 use PHPUnit\Framework\Attributes\DataProvider;
@@ -2484,6 +2485,12 @@ PHP;
             'passed to a static group() on another class' => ["\$file = base_path('routes/admin.php'); RouteFiles::group(\$file); Route::middleware('web')->group(\$file);", 'web', []],
             'a reference the closure imports' => ["\$cb = function () use (&\$file) { \$file = base_path('routes/admin.php'); swapRoutes(); Route::middleware('web')->group(\$file); }; \$cb();", 'web', []],
             'a reference parameter' => ["\$cb = function (&\$file) { \$file = base_path('routes/admin.php'); swapRoutes(); Route::middleware('web')->group(\$file); }; \$cb(\$x);", 'web', []],
+            'held group attributes' => ["\$attrs = ['middleware' => 'web']; Route::group(\$attrs, base_path('routes/admin.php'));", 'web', ['admin.php']],
+            'a held middleware name' => ["\$mw = 'web'; Route::middleware(\$mw)->group(base_path('routes/admin.php'));", 'web', ['admin.php']],
+            'a held middleware name in held group attributes' => ["\$mw = 'web'; \$attrs = ['middleware' => \$mw]; Route::group(\$attrs, base_path('routes/admin.php'));", 'web', ['admin.php']],
+            'passed to a registrar a variable holds' => ["\$file = base_path('routes/admin.php'); \$r = Route::middleware('web'); \$r->group(\$file);", 'registered', ['admin.php']],
+            'passed to another call on the router' => ["\$file = base_path('routes/admin.php'); Route::pattern('file', \$file); Route::middleware('web')->group(\$file);", 'web', ['admin.php']],
+            'passed to a variable reassigned from the router' => ["\$file = base_path('routes/admin.php'); \$r = Route::middleware('web'); \$r = new RouteFiles; \$r->group(\$file);", 'registered', []],
             'a list doubled many times stays bounded' => ["\$f = [base_path('routes/admin.php')];".str_repeat(' $f = [$f, $f];', 30)." Route::middleware('web')->group(\$f);", 'web', ['admin.php']],
         ];
     }
@@ -2533,6 +2540,66 @@ PHP;
         }
     }
 
+    /**
+     * @dataProvider computedProviderPathProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('computedProviderPathProvider')]
+    public function test_provider_group_reads_a_path_a_method_of_its_class_computes(string $method, string $call, array $expected): void
+    {
+        $provider = <<<PHP
+<?php
+
+namespace App\\Providers;
+
+use Illuminate\\Support\\Facades\\Route;
+
+class RouteServiceProvider
+{
+    public function boot(): void
+    {
+        Route::middleware('api')->prefix('api')->group({$call});
+    }
+
+    {$method}
+}
+PHP;
+        $tempDir = $this->createTempDir([
+            'app/Providers/RouteServiceProvider.php' => $provider,
+            'routes/api.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+
+            $this->assertSame($expected, array_map('basename', $parser->getApiRegisteredRouteFiles()));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function computedProviderPathProvider(): array
+    {
+        return [
+            'interpolated parameter' => ['private function path(string $name): string { return base_path("routes/{$name}.php"); }', "\$this->path('api')", ['api.php']],
+            'concatenated parameter' => ["protected function path(\$name) { return base_path('routes/'.\$name.'.php'); }", "\$this->path('api')", ['api.php']],
+            'the method name in another case' => ['private function path(string $name): string { return base_path("routes/{$name}.php"); }', "\$this->PATH('api')", ['api.php']],
+            'another variable' => ['private function path(string $name): string { return base_path("routes/{$this->dir}/{$name}.php"); }', "\$this->path('api')", []],
+            'a variable that is not the parameter' => ['private function path(string $name): string { return base_path("routes/{$other}.php"); }', "\$this->path('api')", []],
+            'a call in the concatenation' => ["private function path(\$name) { return base_path('routes/'.strtolower(\$name).'.php'); }", "\$this->path('api')", []],
+            'more than a return' => ['private function path(string $name): string { $name = "api"; return base_path("routes/{$name}.php"); }', "\$this->path('web')", []],
+            'another function' => ['private function path(string $name): string { return app_path("routes/{$name}.php"); }', "\$this->path('api')", []],
+            'two parameters' => ['private function path(string $dir, string $name): string { return base_path("{$dir}/{$name}.php"); }', "\$this->path('routes', 'api')", []],
+            'a computed argument' => ['private function path(string $name): string { return base_path("routes/{$name}.php"); }', '$this->path($this->name)', []],
+            'a method of another object' => ['private function path(string $name): string { return base_path("routes/{$name}.php"); }', "\$paths->path('api')", []],
+            'a method the class does not declare' => ['', "\$this->path('api')", []],
+        ];
+    }
+
     public function test_route_file_loads_read_a_group_path_held_in_a_variable(): void
     {
         $web = <<<'PHP'
@@ -2561,6 +2628,98 @@ PHP;
         } finally {
             $this->removeDir($tempDir);
         }
+    }
+
+    /**
+     * @dataProvider heldRegistrarRegistrationProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('heldRegistrarRegistrationProvider')]
+    public function test_a_held_registrar_registers_the_files_its_group_loads(string $registration, string $reader, array $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => $this->bootstrapRegistering('', $registration),
+            'routes/auth.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser);
+            $result = $reader === 'web' ? $parser->getWebProtectedRouteFiles() : $parser->getThrottleProtectedRouteFiles();
+
+            $this->assertSame($expected, array_map('basename', $result));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function heldRegistrarRegistrationProvider(): array
+    {
+        $file = "base_path('routes/auth.php')";
+
+        return [
+            'a held registrar' => ["\$r = Route::middleware(['web', 'throttle:5,1']);\n            \$r->group({$file});", 'throttle', ['auth.php']],
+            'a held registrar a later call changes' => ["\$r = Route::middleware(['web', 'throttle:5,1']);\n            \$r->middleware('web');\n            \$r->group({$file});", 'throttle', []],
+        ];
+    }
+
+    public function test_throttled_group_ranges_read_a_held_middleware_name(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+$mw = 'throttle:5,1';
+Route::middleware($mw)->group(function () {
+    Route::post('/login', [LoginController::class, 'store']);
+});
+PHP;
+        $tempDir = $this->createTempDir(['routes/web.php' => $routes]);
+
+        try {
+            $this->assertSame([['start' => 4, 'end' => 6]], (new BootstrapRouteParser($tempDir, $this->parser))->getThrottledGroupLineRanges($tempDir.'/routes/web.php'));
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    public function test_a_walk_gives_a_read_variable_the_value_it_holds(): void
+    {
+        $ast = $this->parser->parseCode(<<<'PHP'
+<?php
+
+$name = 'throttle:5,1';
+$limited = Route::middleware($name);
+$limited->group(function () {});
+
+$open = Route::prefix('open');
+if ($local) {
+    $open = Route::prefix('local');
+}
+$open->group(function () {});
+PHP);
+
+        (new BootstrapRouteParser('/app', $this->parser))->routerGroupCalls($ast);
+
+        $held = [];
+        foreach ($this->parser->findNodes($ast, Node\Expr\Variable::class) as $variable) {
+            $this->assertInstanceOf(Node\Expr\Variable::class, $variable);
+            $value = $variable->getAttribute(BootstrapRouteParser::HELD_VALUE);
+            $held[] = [$variable->name, $value instanceof Node ? $value::class : null];
+        }
+
+        $this->assertSame([
+            ['name', null],
+            ['limited', null],
+            ['name', Node\Scalar\String_::class],
+            ['limited', StaticCall::class],
+            ['open', null],
+            ['local', null],
+            ['open', null],
+            ['open', null],
+        ], $held);
     }
 
     public function test_throttled_group_ranges_do_not_read_a_closure_held_in_a_variable(): void

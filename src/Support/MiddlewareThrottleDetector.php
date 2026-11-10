@@ -129,14 +129,16 @@ class MiddlewareThrottleDetector
 
     /**
      * Whether a throttle among the applied middleware entries survives the excluded ones.
-     * Laravel's Router drops an applied middleware only when an excluded one resolves to
-     * exactly the same name: the alias resolved to its class, with its parameters. So
-     * excluding 'throttle:5,1' drops ThrottleRequests::class.':5,1', while excluding
-     * 'throttle:api' or ThrottleRequests::class leaves 'throttle:5,1' in place.
+     * Laravel's Router drops an applied middleware when an excluded one resolves to exactly
+     * the same name: the alias resolved to its class, with its parameters. So excluding
+     * 'throttle:5,1' drops ThrottleRequests::class.':5,1', while excluding 'throttle:api'
+     * or ThrottleRequests::class leaves 'throttle:5,1' in place. It also drops a
+     * parameterless middleware whose class extends a parameterless excluded one (see
+     * {@see self::extendsExcludedClass()}).
      *
      * Only the 'throttle' alias is resolved; other aliases and middleware groups match as
-     * written. Laravel also drops a parameterless subclass of an excluded class, which is
-     * not read. An exclusion this cannot match leaves the throttle counted.
+     * written, and so does a class string with a leading backslash, which the alias never
+     * resolves to. An exclusion this cannot match leaves the throttle counted.
      *
      * @param  array<Expr>  $applied
      * @param  array<Expr>  $excluded
@@ -146,12 +148,43 @@ class MiddlewareThrottleDetector
     public function throttlesAfterExclusion(array $applied, array $excluded): bool
     {
         $removed = [];
-        foreach ($this->listedNames($excluded) as $name) {
-            $removed[$this->resolvedName($name)] = true;
+        foreach ($this->listedEntries($excluded) as $entry) {
+            $name = $this->comparedName($entry);
+            if ($name !== null) {
+                $removed[$name] = true;
+            }
         }
 
-        foreach ($this->listedNames($applied) as $name) {
-            if (! isset($removed[$this->resolvedName($name)]) && $this->nameThrottles($name)) {
+        foreach ($this->listedEntries($applied) as $entry) {
+            $name = $this->middlewareNameWithParameters($entry);
+            $compared = $this->comparedName($entry);
+            if ($name !== null && $compared !== null && ! isset($removed[$compared])
+                && ! self::extendsExcludedClass($compared, array_keys($removed)) && $this->nameThrottles($name)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether Laravel's Router drops an applied middleware because its class extends an
+     * excluded class: both are named without parameters. Only the framework's own pair is
+     * known, ThrottleRequestsWithRedis extending ThrottleRequests.
+     *
+     * @param  string  $applied  A resolved name, as {@see self::comparedName()} gives it
+     * @param  array<string>  $excluded  Resolved names
+     *
+     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
+     */
+    public static function extendsExcludedClass(string $applied, array $excluded): bool
+    {
+        if (ltrim($applied, '\\') !== self::THROTTLE_MIDDLEWARE[1]) {
+            return false;
+        }
+
+        foreach ($excluded as $name) {
+            if (ltrim($name, '\\') === self::THROTTLE_MIDDLEWARE[0]) {
                 return true;
             }
         }
@@ -245,11 +278,20 @@ class MiddlewareThrottleDetector
      * - web(append: [...]) / api(prepend: [...], replace: [...])
      * - throttleApi(), for the api group only
      *
+     * A removal, web(remove: ...) / api(remove: ...) or removeFromGroup(group, ...), takes a
+     * throttle out of what the group starts with: throttleApi()'s limiter, what group()
+     * lists and what replace: puts in. Laravel adds what is appended or prepended after
+     * removing, so a removal never takes that out. A removal reaches only its own group, and
+     * both sides compare as the strings Laravel holds (see {@see self::heldName()}).
+     *
      * @param  array<int, string>  $groups
      * @param  array{global: bool, names: list<string>}  $throttles
      */
     private function collectBootstrapThrottles(array $groups, array &$throttles): void
     {
+        $base = [];
+        $added = [];
+        $removed = [];
         foreach ($this->configuratorCalls($this->parser, $this->resolvedAst('bootstrap/app.php')) as $call) {
             // configuratorCalls() returns only calls with an identifier name
             $method = $call->name instanceof Identifier ? $call->name->toLowerString() : '';
@@ -260,11 +302,12 @@ class MiddlewareThrottleDetector
                 case 'throttleapi':
                     if (in_array('api', $groups, true)) {
                         $limiter = $this->callArgument($call, 0, 'limiter');
-                        $throttles['names'][] = 'throttle:'.match (true) {
+                        $name = 'throttle:'.match (true) {
                             $limiter === null => 'api',
                             $limiter instanceof String_ => $limiter->value,
                             default => self::unknownParameter($limiter),
                         };
+                        $base[] = ['name' => $name, 'held' => $name, 'group' => 'api'];
                     }
                     break;
 
@@ -280,10 +323,17 @@ class MiddlewareThrottleDetector
                 case 'appendtogroup':
                 case 'prependtogroup':
                 case 'group':
+                case 'removefromgroup':
                     $groupName = $this->callArgument($call, 0, 'group');
                     $middleware = $this->callArgument($call, 1, 'middleware');
                     if ($groupName instanceof String_ && in_array($groupName->value, $groups, true) && $middleware !== null) {
-                        $this->collectThrottleNames($middleware, $throttles);
+                        if ($method === 'removefromgroup') {
+                            $removed[$groupName->value] = ($removed[$groupName->value] ?? []) + $this->heldNames($middleware);
+                        } elseif ($method === 'group') {
+                            array_push($base, ...$this->throttleEntries($middleware, $groupName->value));
+                        } else {
+                            array_push($added, ...$this->throttleEntries($middleware, $groupName->value));
+                        }
                     }
                     break;
 
@@ -293,16 +343,108 @@ class MiddlewareThrottleDetector
                         break;
                     }
 
-                    // web(append, prepend, remove, replace): a throttle under remove:
-                    // takes it out of the group, so only the other three count.
-                    foreach (['append' => 0, 'prepend' => 1, 'replace' => 3] as $name => $position) {
+                    // web(append, prepend, remove, replace)
+                    foreach (['append' => 0, 'prepend' => 1, 'remove' => 2, 'replace' => 3] as $name => $position) {
                         $middleware = $this->callArgument($call, $position, $name);
-                        if ($middleware !== null) {
-                            $this->collectThrottleNames($middleware, $throttles);
+                        if ($middleware === null) {
+                            continue;
+                        }
+                        if ($name === 'remove') {
+                            $removed[$method] = ($removed[$method] ?? []) + $this->heldNames($middleware);
+                        } elseif ($name === 'replace') {
+                            array_push($base, ...$this->throttleEntries($middleware, $method));
+                        } else {
+                            array_push($added, ...$this->throttleEntries($middleware, $method));
                         }
                     }
             }
         }
+
+        foreach ([...$base, ...$added] as $index => $entry) {
+            if ($index >= count($base) || ! isset($removed[$entry['group']][$entry['held']])) {
+                $throttles['names'][] = $entry['name'];
+            }
+        }
+    }
+
+    /**
+     * The throttles a middleware value names, one or a list, in $group, each with its name
+     * (see middlewareNameWithParameters()) and the string Laravel holds for it (see
+     * heldName()).
+     *
+     * @return list<array{name: string, held: string, group: string}>
+     */
+    private function throttleEntries(Expr $middleware, string $group): array
+    {
+        $entries = [];
+        foreach ($this->listedEntries([$middleware]) as $entry) {
+            $name = $this->middlewareNameWithParameters($entry);
+            $held = $this->heldName($entry);
+            if ($name !== null && $held !== null && $this->nameThrottles($name)) {
+                $entries[] = ['name' => $name, 'held' => $held, 'group' => $group];
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * The strings Laravel holds for the middleware a value names, one or a list, as keys.
+     *
+     * @return array<string, true>
+     */
+    private function heldNames(Expr $middleware): array
+    {
+        $held = [];
+        foreach ($this->listedEntries([$middleware]) as $entry) {
+            $name = $this->heldName($entry);
+            if ($name !== null) {
+                $held[$name] = true;
+            }
+        }
+
+        return $held;
+    }
+
+    /**
+     * The string Laravel holds for a middleware value, which a configurator removal
+     * compares as it is: the name middlewareNameWithParameters() gives it, less the leading
+     * backslash it puts before a class reference, which ::class does not give.
+     */
+    private function heldName(Expr $entry): ?string
+    {
+        $name = $this->middlewareNameWithParameters($entry);
+
+        return $name !== null && ! self::leftmost($entry) instanceof String_ ? ltrim($name, '\\') : $name;
+    }
+
+    /**
+     * The name Laravel's Router compares an applied or excluded middleware by (see
+     * resolvedName()). A string written with a leading backslash is compared as written:
+     * the 'throttle' alias never resolves to it.
+     */
+    private function comparedName(Expr $entry): ?string
+    {
+        $name = $this->middlewareNameWithParameters($entry);
+        if ($name === null) {
+            return null;
+        }
+
+        $left = self::leftmost($entry);
+
+        return $left instanceof String_ && str_starts_with($left->value, '\\') ? $name : $this->resolvedName($name);
+    }
+
+    /**
+     * The value a concatenation starts with, or the value itself.
+     */
+    private static function leftmost(Expr $expr): Expr
+    {
+        while ($expr instanceof Expr\BinaryOp\Concat) {
+            $expr = $expr->left;
+        }
+
+        return $expr;
     }
 
     /**
@@ -329,21 +471,38 @@ class MiddlewareThrottleDetector
     private function listedNames(array $entries): array
     {
         $names = [];
-        foreach ($entries as $entry) {
-            if ($entry instanceof Expr\Array_) {
-                $items = [];
-                foreach ($entry->items as $item) {
-                    if ($item instanceof Expr\ArrayItem) {
-                        $items[] = $item->value;
-                    }
-                }
-                array_push($names, ...$this->listedNames($items));
-            } elseif (($name = $this->middlewareNameWithParameters($entry)) !== null) {
+        foreach ($this->listedEntries($entries) as $entry) {
+            if (($name = $this->middlewareNameWithParameters($entry)) !== null) {
                 $names[] = $name;
             }
         }
 
         return $names;
+    }
+
+    /**
+     * Middleware entries with each array entry read as the list it holds.
+     *
+     * @param  array<Expr>  $entries
+     * @return list<Expr>
+     */
+    private function listedEntries(array $entries): array
+    {
+        $listed = [];
+        foreach ($entries as $entry) {
+            if (! $entry instanceof Expr\Array_) {
+                $listed[] = $entry;
+
+                continue;
+            }
+            foreach ($entry->items as $item) {
+                if ($item instanceof Expr\ArrayItem) {
+                    array_push($listed, ...$this->listedEntries([$item->value]));
+                }
+            }
+        }
+
+        return $listed;
     }
 
     /**

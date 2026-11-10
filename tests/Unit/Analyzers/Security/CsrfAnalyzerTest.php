@@ -4065,6 +4065,40 @@ PHP,
         $this->assertHasIssueContaining('PUT route excludes the CSRF middleware', $result);
     }
 
+    /**
+     * @dataProvider sharedRegistrarProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('sharedRegistrarProvider')]
+    public function test_a_registrar_is_read_as_the_object_it_is(string $then, array $expected): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            {$then}\n        },\n    )\n    ->create();\n",
+            'routes/web.php' => '<?php',
+            'routes/portal.php' => "<?php\n\nRoute::post('/portal/messages', [MessageController::class, 'store']);\n",
+        ]);
+
+        $this->assertSame($expected, array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    /**
+     * @return array<string, array{string, list<string>}>
+     */
+    public static function sharedRegistrarProvider(): array
+    {
+        $missing = ['POST route in custom route file missing CSRF protection - no "web" middleware detected'];
+
+        return [
+            'a copy shares the registrar' => ["\$a = Route::middleware('web');\n            \$b = \$a;\n            \$b->middleware('auth');\n            \$a->group(base_path('routes/portal.php'));", $missing],
+            'attribute() replaces the middleware' => ["\$a = Route::middleware('web');\n            \$a->attribute('middleware', ['auth']);\n            \$a->group(base_path('routes/portal.php'));", $missing],
+            'a middleware statement on the facade root router is discarded' => ["\$router = Route::getFacadeRoot();\n            \$router->middleware('web');\n            \$router->group([], base_path('routes/portal.php'));", $missing],
+            'a middleware statement on the router is discarded' => ["\$router = app('router');\n            \$router->middleware('web');\n            \$router->group([], base_path('routes/portal.php'));", $missing],
+            'held group attributes' => ["\$attrs = ['middleware' => 'web'];\n            Route::group(\$attrs, base_path('routes/portal.php'));", []],
+            'a held middleware name' => ["\$mw = 'web';\n            Route::middleware(\$mw)->group(base_path('routes/portal.php'));", []],
+        ];
+    }
+
     public function test_reports_file_required_inside_group_excluding_csrf_in_web_php(): void
     {
         $result = $this->analyzeRouteFiles([

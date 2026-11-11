@@ -31,7 +31,7 @@
 - `csrf-protection` no longer reports Laravel 11/12 routes excluding `ValidateCsrfToken` when the Kernel web group runs `VerifyCsrfToken` (#602)
 - `csrf-protection` no longer reports a route excluding a CSRF class when the Kernel's global `$middleware` runs CSRF, since `withoutMiddleware()` only filters route middleware (#602)
 - `csrf-protection` no longer reports a route excluding a CSRF class the web group lists with parameters, such as `csrf:strict`, unless the exclusion names the same `Class:params` string (#602)
-- `csrf-protection` no longer assumes a `bootstrap/app.php` web-group class without a parent extends `VerifyCsrfToken`, so excluding it is no longer reported (#602)
+- `csrf-protection` no longer assumes a `bootstrap/app.php` web-group class without a parent extends `VerifyCsrfToken`, so excluding the framework `VerifyCsrfToken` is no longer reported (#602)
 - `csrf-protection` reads the `middleware` key of a route's action array, such as `['middleware' => 'web', 'uses' => ...]`, instead of reporting `no "web" middleware detected` (#609)
 - `csrf-protection` reads the methods a `Route::match()` call names through a `methods:` argument, so a GET-only route is no longer reported (#609)
 

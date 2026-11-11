@@ -5485,6 +5485,624 @@ PHP;
     }
 
     // ==========================================
+    // Route file prefixes from registrations
+    // ==========================================
+
+    /**
+     * @dataProvider routeFileRegistrationProvider
+     *
+     * @param  array<string, string>  $registration
+     */
+    #[DataProvider('routeFileRegistrationProvider')]
+    public function test_route_file_prefix_is_read_from_its_registration(array $registration, string $routeFile, string $prefix): void
+    {
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ["/{$prefix}/leads"]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider routeFileRegistrationProvider
+     *
+     * @param  array<string, string>  $registration
+     */
+    #[DataProvider('routeFileRegistrationProvider')]
+    public function test_route_file_prefix_from_a_registration_still_reports_a_route_listed_under_another_prefix(array $registration, string $routeFile, string $prefix): void
+    {
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ['/elsewhere/leads']);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string, string}>
+     */
+    public static function routeFileRegistrationProvider(): array
+    {
+        return [
+            'then: callback held in a variable' => [['bootstrap/app.php' => self::bootstrapApp(
+                "\$mapAffiliateRoutes = function () {\n    Route::prefix('affiliates')->group(base_path('routes/affiliates.php'));\n};",
+                "web: __DIR__.'/../routes/web.php',\n        then: \$mapAffiliateRoutes,",
+            )], 'routes/affiliates.php', 'affiliates'],
+            'then: arrow function held in a variable' => [['bootstrap/app.php' => self::bootstrapApp(
+                "\$mapAffiliateRoutes = fn () => Route::prefix('affiliates')->group(base_path('routes/affiliates.php'));",
+                "web: __DIR__.'/../routes/web.php',\n        then: \$mapAffiliateRoutes,",
+            )], 'routes/affiliates.php', 'affiliates'],
+            'using: callback' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "using: function () {\n            Route::middleware('web')->group(base_path('routes/web.php'));\n            Route::prefix('kiosk')->group(base_path('routes/kiosk.php'));\n        },",
+            )], 'routes/kiosk.php', 'kiosk'],
+            'using: callback held in a variable' => [['bootstrap/app.php' => self::bootstrapApp(
+                "\$loadRoutes = function () {\n    Route::prefix('kiosk')->group(base_path('routes/kiosk.php'));\n};",
+                'using: $loadRoutes,',
+            )], 'routes/kiosk.php', 'kiosk'],
+            'using: callback given by position' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "function () {\n            Route::prefix('kiosk')->group(base_path('routes/kiosk.php'));\n        },",
+            )], 'routes/kiosk.php', 'kiosk'],
+            'api: list with an apiPrefix' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "api: [__DIR__.'/../routes/mobile.php'],\n        apiPrefix: 'mobile-api',",
+            )], 'routes/mobile.php', 'mobile-api'],
+            'api: base_path() with an apiPrefix' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "api: base_path('routes/mobile.php'),\n        apiPrefix: 'mobile-api',",
+            )], 'routes/mobile.php', 'mobile-api'],
+            'api: list of base_path() calls with an apiPrefix' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "api: [base_path('routes/catalog.php'), base_path('routes/mobile.php')],\n        apiPrefix: 'mobile-api',",
+            )], 'routes/mobile.php', 'mobile-api'],
+            'provider path variable' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$file = base_path('routes/backoffice.php');\n        Route::prefix('backoffice')->group(\$file);",
+            )], 'routes/backoffice.php', 'backoffice'],
+            'provider path variable inside the routes() callback' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$this->routes(function () {\n            \$file = base_path('routes/backoffice.php');\n            Route::prefix('backoffice')->middleware('web')->group(\$file);\n        });",
+            )], 'routes/backoffice.php', 'backoffice'],
+            'provider registrar variable' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$tenant = Route::prefix('tenant');\n        \$tenant->group(base_path('routes/tenant.php'));",
+            )], 'routes/tenant.php', 'tenant'],
+            'provider registrar variable given its prefix by a later statement' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$tenant = Route::middleware('web');\n        \$tenant->prefix('tenant');\n        \$tenant->group(base_path('routes/tenant.php'));",
+            )], 'routes/tenant.php', 'tenant'],
+            'then: registrar variable' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            \$tenant = Route::prefix('tenant');\n            \$tenant->group(base_path('routes/tenant.php'));\n        },",
+            )], 'routes/tenant.php', 'tenant'],
+            'provider Route::group() attribute array' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "Route::group(['middleware' => 'web', 'prefix' => '/ops/'], base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            'provider router property group() attribute array' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$this->router->group(['prefix' => 'ops'], base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            'then: Route::group() attribute array' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::group(['prefix' => 'ops'], base_path('routes/ops.php'));\n        },",
+            )], 'routes/ops.php', 'ops'],
+            'provider require inside a prefixed group closure' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "Route::prefix('ops')->group(function () {\n            require base_path('routes/ops.php');\n        });",
+            )], 'routes/ops.php', 'ops'],
+            'then: require inside a prefixed group closure' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('ops')->group(function () {\n                require base_path('routes/ops.php');\n            });\n        },",
+            )], 'routes/ops.php', 'ops'],
+            'registration in another provider' => [['app/Providers/AppServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\ServiceProvider;
+
+class AppServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        Route::prefix('ops')->middleware('web')->group(base_path('routes/ops.php'));
+    }
+}
+PHP], 'routes/ops.php', 'ops'],
+            'outer prefix around an inner group that sets none' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "Route::prefix('ops')->group(function () {\n            Route::middleware('web')->group(base_path('routes/ops.php'));\n        });",
+            )], 'routes/ops.php', 'ops'],
+            'nested prefixes composed' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "Route::prefix('admin')->group(function () {\n            Route::prefix('/ops/')->group(base_path('routes/ops.php'));\n        });",
+            )], 'routes/ops.php', 'admin/ops'],
+            'two providers giving one file the same prefix' => [[
+                'app/Providers/AProvider.php' => self::appProvider("Route::prefix('ops')->group(base_path('routes/ops.php'));", '', 'AProvider'),
+                'app/Providers/BProvider.php' => self::appProvider("Route::prefix('ops')->group(base_path('routes/ops.php'));", '', 'BProvider'),
+            ], 'routes/ops.php', 'ops'],
+            'provider method boot() calls' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                '$this->mapOpsRoutes();',
+                "    private function mapOpsRoutes(): void\n    {\n        Route::prefix('ops')->group(base_path('routes/ops.php'));\n    }\n",
+            )], 'routes/ops.php', 'ops'],
+            'map() in a RouteServiceProvider subclass' => [['app/Providers/RouteServiceProvider.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function map(): void
+    {
+        $this->mapOpsRoutes();
+    }
+
+    protected function mapOpsRoutes(): void
+    {
+        $file = base_path('routes/ops.php');
+        Route::prefix('ops')->group($file);
+    }
+}
+PHP], 'routes/ops.php', 'ops'],
+            'global Route alias' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "\\Route::prefix('ops')->group(base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+        ];
+    }
+
+    /**
+     * @dataProvider unreadableRouteFileRegistrationProvider
+     *
+     * @param  array<string, string>  $registration
+     */
+    #[DataProvider('unreadableRouteFileRegistrationProvider')]
+    public function test_route_file_prefix_is_not_read_from_a_registration_it_cannot_follow(array $registration, string $routeFile, string $prefix): void
+    {
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ["/{$prefix}/leads"]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string, string}>
+     */
+    public static function unreadableRouteFileRegistrationProvider(): array
+    {
+        return [
+            'then: variable set in a required file' => [[
+                'bootstrap/app.php' => self::bootstrapApp(
+                    "require __DIR__.'/routing.php';",
+                    "web: __DIR__.'/../routes/web.php',\n        then: \$mapAffiliateRoutes,",
+                ),
+                'bootstrap/routing.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n\$mapAffiliateRoutes = function () {\n    Route::prefix('affiliates')->group(base_path('routes/affiliates.php'));\n};\n",
+            ], 'routes/affiliates.php', 'affiliates'],
+            // ApplicationBuilder::withRouting() builds its own callback when then: is given, and drops using:.
+            'using: beside a then: callback' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "using: function () {\n            Route::prefix('kiosk')->group(base_path('routes/kiosk.php'));\n        },\n        then: function () {},",
+            )], 'routes/kiosk.php', 'kiosk'],
+            'provider path variable from a required file' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$file = require base_path('config/backoffice-routes.php');\n        Route::prefix('backoffice')->group(\$file);",
+            )], 'routes/backoffice.php', 'backoffice'],
+            'provider registrar variable reassigned in a branch' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$tenant = Route::prefix('tenant');\n        if (app()->isLocal()) {\n            \$tenant = Route::prefix('local');\n        }\n        \$tenant->group(base_path('routes/tenant.php'));",
+            )], 'routes/tenant.php', 'tenant'],
+            'provider attribute array prefix read from config' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "Route::group(['prefix' => config('ops.prefix')], base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            // RouteRegistrar::attribute() overwrites the prefix, so an unreadable later call decides.
+            'literal prefix overridden by one read from config' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "Route::prefix('ops')->prefix(config('ops.prefix'))->group(base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            'registrar variable prefix overridden by one read from config' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "\$ops = Route::prefix('ops');\n        \$ops->prefix(config('ops.prefix'));\n        \$ops->group(base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            // An apiPrefix that cannot be read is no reason to guess the 'api' default.
+            'api: list with an apiPrefix read from config' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "api: [base_path('routes/mobile.php')],\n        apiPrefix: config('app.api_prefix'),",
+            )], 'routes/mobile.php', 'api'],
+            'api: base_path() with an apiPrefix variable set from a required file' => [['bootstrap/app.php' => self::bootstrapApp(
+                "\$apiPrefix = require __DIR__.'/api-prefix.php';",
+                "api: base_path('routes/mobile.php'),\n        apiPrefix: \$apiPrefix,",
+            )], 'routes/mobile.php', 'api'],
+        ];
+    }
+
+    /**
+     * @dataProvider unappliedRouteFileRegistrationProvider
+     *
+     * @param  array<string, string>  $registration
+     */
+    #[DataProvider('unappliedRouteFileRegistrationProvider')]
+    public function test_route_file_prefix_is_not_read_from_a_registration_laravel_does_not_make(array $registration, string $routeFile, string $prefix): void
+    {
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ["/{$prefix}/leads"]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string, string}>
+     */
+    public static function unappliedRouteFileRegistrationProvider(): array
+    {
+        return [
+            // Only Router::group() reads an attribute array.
+            'group() attribute array on a property that is not the router' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$this->registry->group(['prefix' => 'ops'], base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            'group() attribute array on another object' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "\$collection = new \\ArrayObject;\n        \$collection->group(['prefix' => 'ops'], base_path('routes/ops.php'));",
+            )], 'routes/ops.php', 'ops'],
+            // The prefix map is keyed by basename, so a nested file must not lend its prefix to a top-level one.
+            'nested route file of the same name' => [[
+                'app/Providers/AppServiceProvider.php' => self::appProvider("Route::prefix('partners')->group(base_path('routes/partners/web.php'));"),
+                'routes/partners/web.php' => '<?php',
+            ], 'routes/web.php', 'partners'],
+            'nested required route file of the same name' => [[
+                'app/Providers/AppServiceProvider.php' => self::appProvider("Route::prefix('v1')->group(function () {\n            require base_path('routes/v1/orders.php');\n        });"),
+                'routes/v1/orders.php' => '<?php',
+            ], 'routes/orders.php', 'v1'],
+            // A route file a route file requires takes no prefix from it.
+            'route file required through the api.php convention' => [[
+                'bootstrap/app.php' => self::bootstrapApp('', "web: __DIR__.'/../routes/web.php',"),
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/api.php';\n",
+                'routes/api.php' => "<?php\n\nrequire __DIR__.'/partners.php';\n",
+            ], 'routes/partners.php', 'api'],
+            'route file required only in a function a prefixed route file never calls' => [[
+                'app/Providers/AppServiceProvider.php' => self::appProvider("Route::prefix('ops')->group(base_path('routes/ops.php'));"),
+                'routes/ops.php' => "<?php\n\nfunction loadLegacyOps(): void\n{\n    require __DIR__.'/legacy.php';\n}\n",
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/legacy.php';\n",
+            ], 'routes/legacy.php', 'ops'],
+            // Only RouteServiceProvider calls map().
+            'map() in a provider that is not a RouteServiceProvider' => [[
+                'bootstrap/app.php' => self::bootstrapApp('', "web: [__DIR__.'/../routes/web.php', __DIR__.'/../routes/ops.php'],"),
+                'routes/web.php' => '<?php',
+                'app/Providers/AppServiceProvider.php' => self::appProvider(
+                    '',
+                    "    public function map(): void\n    {\n        Route::prefix('partners')->group(base_path('routes/ops.php'));\n    }\n",
+                ),
+            ], 'routes/ops.php', 'partners'],
+            // Laravel runs only what a service provider's boot(), register() or map() reaches.
+            'provider method nothing calls' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                '',
+                "    private function unused(): void\n    {\n        Route::prefix('ops')->group(base_path('routes/ops.php'));\n    }\n",
+            )], 'routes/ops.php', 'ops'],
+            'class under app/Providers that is not a provider' => [['app/Providers/RouteHelper.php' => <<<'PHP'
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Support\Facades\Route;
+
+class RouteHelper
+{
+    public static function register(): void
+    {
+        Route::prefix('ops')->group(base_path('routes/ops.php'));
+    }
+}
+PHP], 'routes/ops.php', 'ops'],
+            'class named Route that is not the facade' => [['app/Providers/AppServiceProvider.php' => self::appProvider(
+                "Route::prefix('ops')->group(base_path('routes/ops.php'));",
+                '',
+                'AppServiceProvider',
+                'App\\Menu\\Route',
+            )], 'routes/ops.php', 'ops'],
+            // Laravel's provider order is not read, so neither prefix is guessed.
+            'two providers giving one file different prefixes, the first listed' => [[
+                'app/Providers/AProvider.php' => self::appProvider("Route::prefix('one')->group(base_path('routes/ops.php'));", '', 'AProvider'),
+                'app/Providers/BProvider.php' => self::appProvider("Route::prefix('two')->group(base_path('routes/ops.php'));", '', 'BProvider'),
+            ], 'routes/ops.php', 'one'],
+            'two providers giving one file different prefixes, the second listed' => [[
+                'app/Providers/AProvider.php' => self::appProvider("Route::prefix('one')->group(base_path('routes/ops.php'));", '', 'AProvider'),
+                'app/Providers/BProvider.php' => self::appProvider("Route::prefix('two')->group(base_path('routes/ops.php'));", '', 'BProvider'),
+            ], 'routes/ops.php', 'two'],
+            // ApplicationBuilder::withRouting() runs a using: callback in place of its own, so api: is never registered.
+            'api: beside a using: callback' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "using: function () {},\n        api: base_path('routes/mobile.php'),\n        apiPrefix: 'mobile-api',",
+            )], 'routes/mobile.php', 'mobile-api'],
+        ];
+    }
+
+    /**
+     * @dataProvider literalRegistrationPrecedenceProvider
+     *
+     * @param  array<string, string>  $registration
+     */
+    #[DataProvider('literalRegistrationPrecedenceProvider')]
+    public function test_route_file_prefix_read_from_literal_registrations_keeps_precedence(array $registration, string $routeFile, string $prefix): void
+    {
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ["/{$prefix}/leads"]);
+
+        // A file the literal reading maps keeps that prefix, so a pattern written for it keeps matching
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string, string}>
+     */
+    public static function literalRegistrationPrecedenceProvider(): array
+    {
+        return [
+            'routes/api.php convention beside an api: list' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "api: [__DIR__.'/../routes/api.php'],\n        apiPrefix: 'mobile-api',",
+            )], 'routes/api.php', 'api'],
+            'then: chain beside a later registrar variable group' => [['bootstrap/app.php' => self::bootstrapApp(
+                '',
+                "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('partners')->group(base_path('routes/partners.php'));\n            \$suppliers = Route::prefix('suppliers');\n            \$suppliers->group(base_path('routes/partners.php'));\n        },",
+            )], 'routes/partners.php', 'partners'],
+        ];
+    }
+
+    /**
+     * @dataProvider publicUriAuthenticatedRouteProvider
+     *
+     * @param  array<string, string>  $files
+     * @param  list<string>  $publicRoutes
+     */
+    #[DataProvider('publicUriAuthenticatedRouteProvider')]
+    public function test_auth_user_null_check_reads_the_auth_middleware_of_a_route_with_a_public_uri(array $files, array $publicRoutes, bool $warned): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class TicketController extends Controller
+{
+    public function store()
+    {
+        return Auth::user()->email;
+    }
+}
+PHP;
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([...$files, 'app/Http/Controllers/TicketController.php' => $controller]));
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        if ($warned) {
+            $this->assertHasIssueContaining('Unsafe Auth::user() usage without null check', $result);
+            $this->assertIssueCount(1, $result);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, list<string>, bool}>
+     */
+    public static function publicUriAuthenticatedRouteProvider(): array
+    {
+        $authenticated = "Route::post('/tickets', [App\\Http\\Controllers\\TicketController::class, 'store'])->middleware('auth');";
+        $unauthenticated = "Route::post('/tickets/guest', [App\\Http\\Controllers\\TicketController::class, 'store']);";
+
+        return [
+            // A public URI does not take away the auth middleware the route carries.
+            'literal pattern' => [['routes/web.php' => "<?php\n\n{$authenticated}\n"], ['/tickets*'], false],
+            'pattern written with a route file prefix' => [[
+                'app/Providers/AppServiceProvider.php' => self::appProvider("Route::prefix('ops')->middleware('web')->group(base_path('routes/ops.php'));"),
+                'routes/ops.php' => "<?php\n\n{$authenticated}\n",
+            ], ['/ops/*'], false],
+            // A route without auth still reaches the method, so the user may be null.
+            'also reached by an unauthenticated route' => [['routes/web.php' => "<?php\n\n{$authenticated}\n{$unauthenticated}\n"], ['/tickets*'], true],
+            // Routes naming the controller by its short name reach the same method.
+            'also reached under its short name by an open GET route' => [['routes/web.php' => "<?php\n\n{$authenticated}\nRoute::get('/tickets/open', 'TicketController@store');\n"], [], true],
+        ];
+    }
+
+    /**
+     * @dataProvider publicUriControllerAuthProvider
+     *
+     * @param  array<string, string>  $files
+     * @param  list<string>  $publicRoutes
+     */
+    #[DataProvider('publicUriControllerAuthProvider')]
+    public function test_auth_user_null_check_reads_controller_auth_beside_a_public_uri(array $files, array $publicRoutes, string $constructor, bool $warned): void
+    {
+        $controller = <<<PHP
+<?php
+
+namespace App\\Http\\Controllers;
+
+use Illuminate\\Support\\Facades\\Auth;
+
+class TicketController extends Controller
+{
+{$constructor}
+    public function store()
+    {
+        return Auth::user()->email;
+    }
+}
+PHP;
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([...$files, 'app/Http/Controllers/TicketController.php' => $controller]));
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $unsafe = array_filter(
+            $result->getIssues(),
+            fn ($issue): bool => str_contains($issue->message, 'Unsafe Auth::user() usage without null check'),
+        );
+        $this->assertCount($warned ? 1 : 0, $unsafe);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, list<string>, string, bool}>
+     */
+    public static function publicUriControllerAuthProvider(): array
+    {
+        $constructorAuth = "    public function __construct()\n    {\n        \$this->middleware('auth');\n    }\n";
+        $route = "Route::post('/tickets', [App\\Http\\Controllers\\TicketController::class, 'store'])";
+        $literal = ['routes/web.php' => "<?php\n\n{$route};\n"];
+        $followed = [
+            'app/Providers/AppServiceProvider.php' => self::appProvider("Route::prefix('ops')->group(base_path('routes/ops.php'));"),
+            'routes/ops.php' => "<?php\n\n{$route};\n",
+        ];
+
+        return [
+            // A public URI says the route may go unauthenticated, not that the controller's auth is gone.
+            'literal pattern, constructor auth' => [$literal, ['/tickets'], $constructorAuth, false],
+            'route file prefix pattern, constructor auth' => [$followed, ['/ops/*'], $constructorAuth, false],
+            'literal pattern, no controller auth' => [$literal, ['/tickets'], '', true],
+            'route file prefix pattern, no controller auth' => [$followed, ['/ops/*'], '', true],
+            // withoutMiddleware() strips the controller's middleware too.
+            'literal pattern, constructor auth removed by the route' => [['routes/web.php' => "<?php\n\n{$route}->withoutMiddleware('auth');\n"], ['/tickets'], $constructorAuth, true],
+            // Router::gatherRouteMiddleware() applies a group's exclusions to controller middleware too.
+            'literal pattern, constructor auth removed by a group' => [['routes/web.php' => "<?php\n\nRoute::withoutMiddleware('auth')->group(function () {\n    {$route};\n});\n"], ['/tickets'], $constructorAuth, true],
+            'literal pattern, constructor auth excluded by a group attribute' => [['routes/web.php' => "<?php\n\nRoute::group(['excluded_middleware' => ['auth']], function () {\n    {$route};\n});\n"], ['/tickets'], $constructorAuth, true],
+        ];
+    }
+
+    public function test_auth_user_null_check_does_not_read_routes_to_another_class_of_the_same_short_name(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use Illuminate\Support\Facades\Auth;
+
+class TicketController extends Controller
+{
+    public function store()
+    {
+        return Auth::user()->email;
+    }
+}
+PHP;
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => ['/tickets'],
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([
+            'routes/web.php' => "<?php\n\nRoute::post('/tickets', 'TicketController@store')->middleware('auth');\n",
+            'app/Http/Controllers/Admin/TicketController.php' => $controller,
+        ]));
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        // The route names App\Http\Controllers\TicketController, not this class
+        $this->assertHasIssueContaining('Unsafe Auth::user() usage without null check', $result);
+    }
+
+    /**
+     * Analyze an unauthenticated POST /leads closure route in $routeFile, registered by the
+     * given bootstrap/app.php or RouteServiceProvider.
+     *
+     * @param  array<string, string>  $registration
+     * @param  list<string>  $publicRoutes
+     */
+    private function analyzeRegisteredRouteFile(array $registration, string $routeFile, array $publicRoutes): ResultInterface
+    {
+        $routes = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::post('/leads', fn () => response()->noContent());
+PHP;
+
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([...$registration, $routeFile => $routes]));
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * A bootstrap/app.php running $before, then configuring the application with
+     * withRouting($arguments).
+     */
+    private static function bootstrapApp(string $before, string $arguments): string
+    {
+        return <<<PHP
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Support\Facades\Route;
+
+{$before}
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        {$arguments}
+    )
+    ->create();
+PHP;
+    }
+
+    /**
+     * A service provider named $class whose boot() runs $boot, declaring $members beside it,
+     * with Route imported as $route.
+     */
+    private static function appProvider(string $boot, string $members = '', string $class = 'AppServiceProvider', string $route = 'Illuminate\\Support\\Facades\\Route'): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\Providers;
+
+use {$route};
+use Illuminate\Support\ServiceProvider;
+
+class {$class} extends ServiceProvider
+{
+    public function boot(): void
+    {
+        {$boot}
+    }
+
+{$members}}
+PHP;
+    }
+
+    /**
+     * A RouteServiceProvider whose boot() runs $boot.
+     */
+    private static function routeServiceProvider(string $boot): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\Providers;
+
+use Illuminate\Foundation\Support\Providers\RouteServiceProvider as ServiceProvider;
+use Illuminate\Support\Facades\Route;
+
+class RouteServiceProvider extends ServiceProvider
+{
+    public function boot(): void
+    {
+        {$boot}
+    }
+}
+PHP;
+    }
+
+    // ==========================================
     // Imports PHP would reject (#445)
     // ==========================================
 

@@ -8,6 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\LoginThrottlingAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LoginThrottlingAnalyzerTest extends AnalyzerTestCase
@@ -8048,6 +8049,544 @@ PHP;
         $result = $this->analyzeApp(['routes/web.php' => "<?php\n\n\$router = Route::getFacadeRoot();\n\$router->middleware('throttle:5,1');\n\$router->group([], function () {\n    Route::post('/login', [LoginController::class, 'store']);\n});\n"]);
 
         $this->assertSame(['Login route "/login" lacks rate limiting protection'], $this->issueMessages($result));
+    }
+
+    /**
+     * @dataProvider unthrottledLoginRouteFormProvider
+     */
+    #[DataProvider('unthrottledLoginRouteFormProvider')]
+    public function test_an_unthrottled_login_route_is_reported_at_its_verb_in_any_form(string $routes, int $line): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame($line, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function unthrottledLoginRouteFormProvider(): array
+    {
+        return [
+            'arguments on later lines' => ["<?php\n\nRoute::post(\n    '/session/login',\n    [SessionController::class, 'store']\n);\n", 3],
+            'verb on a later line of its chain' => ["<?php\n\nRoute::name('session.store')\n    ->post(\n        '/session/login',\n        [SessionController::class, 'store']\n    );\n", 4],
+            'match() with a methods list' => ["<?php\n\nRoute::match(['GET', 'POST'], '/session/login', [SessionController::class, 'store']);\n", 3],
+            'match() with one method' => ["<?php\n\nRoute::match('post', '/session/login', [SessionController::class, 'store']);\n", 3],
+            'match() with named arguments' => ["<?php\n\nRoute::match(methods: ['POST'], uri: '/session/login', action: [SessionController::class, 'store']);\n", 3],
+            'an aliased facade' => ["<?php\n\nuse Illuminate\\Support\\Facades\\Route as R;\n\nR::post('/session/login', [SessionController::class, 'store']);\n", 5],
+            'a chain on an aliased facade' => ["<?php\n\nuse Illuminate\\Support\\Facades\\Route as R;\n\nR::middleware('guest')->post('/session/login', [SessionController::class, 'store']);\n", 5],
+            'named arguments' => ["<?php\n\nRoute::post(uri: '/session/login', action: [SessionController::class, 'store']);\n", 3],
+            'named arguments out of order' => ["<?php\n\nRoute::post(action: [SessionController::class, 'store'], uri: '/session/login');\n", 3],
+            'a router variable in a group' => ["<?php\n\n\$router = app('router');\n\$router->middleware('guest')->group(function () use (\$router) {\n    \$router->post('/session/login', [SessionController::class, 'store']);\n});\n", 5],
+            'the router a group callback receives' => ["<?php\n\nRoute::middleware('guest')->group(function (\$routes) {\n    \$routes->post('/session/login', [SessionController::class, 'store']);\n});\n", 4],
+            'the container router' => ["<?php\n\napp('router')->post('/session/login', [SessionController::class, 'store']);\n", 3],
+            'a registrar variable' => ["<?php\n\n\$guest = Route::middleware('guest');\n\$guest->post('/session/login', [SessionController::class, 'store']);\n", 4],
+        ];
+    }
+
+    /**
+     * @dataProvider throttledLoginRouteFormProvider
+     */
+    #[DataProvider('throttledLoginRouteFormProvider')]
+    public function test_a_throttled_login_route_passes_in_any_form(string $routes): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function throttledLoginRouteFormProvider(): array
+    {
+        return [
+            'arguments on later lines, throttled after them' => ["<?php\n\nRoute::post(\n    '/session/login',\n    [SessionController::class, 'store']\n)->middleware('throttle:5,1');\n"],
+            'arguments on later lines, in a throttled group' => ["<?php\n\nRoute::middleware('throttle:5,1')->group(function () {\n    Route::post(\n        '/session/login',\n        [SessionController::class, 'store']\n    );\n});\n"],
+            'match() throttled' => ["<?php\n\nRoute::match(['GET', 'POST'], '/session/login', [SessionController::class, 'store'])->middleware('throttle:5,1');\n"],
+            'an aliased facade throttled' => ["<?php\n\nuse Illuminate\\Support\\Facades\\Route as R;\n\nR::post('/session/login', [SessionController::class, 'store'])->middleware('throttle:5,1');\n"],
+            'a chain on an aliased facade throttled' => ["<?php\n\nuse Illuminate\\Support\\Facades\\Route as R;\n\nR::middleware('throttle:5,1')->post('/session/login', [SessionController::class, 'store']);\n"],
+            'named arguments in a throttled group' => ["<?php\n\nRoute::middleware('throttle:5,1')->group(function () {\n    Route::post(uri: '/session/login', action: [SessionController::class, 'store']);\n});\n"],
+            'a router variable in a throttled group' => ["<?php\n\n\$router = app('router');\n\$router->middleware('throttle:5,1')->group(function () use (\$router) {\n    \$router->post('/session/login', [SessionController::class, 'store']);\n});\n"],
+            'a router variable throttling its route' => ["<?php\n\n\$router = app('router');\n\$router->middleware('throttle:5,1')->post('/session/login', [SessionController::class, 'store']);\n"],
+            'a throttling registrar variable' => ["<?php\n\n\$limited = Route::middleware('throttle:5,1');\n\$limited->post('/session/login', [SessionController::class, 'store']);\n"],
+            'a registrar variable throttled by a later statement' => ["<?php\n\n\$limited = Route::prefix('account');\n\$limited->middleware('throttle:5,1');\n\$limited->post('/session/login', [SessionController::class, 'store']);\n"],
+        ];
+    }
+
+    public function test_a_registrar_variable_whose_middleware_cannot_be_read_is_not_reported(): void
+    {
+        // A closure that imports the registrar may change it, so its middleware is unread
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\n\$limited = Route::middleware('throttle:5,1');\nRoute::prefix('account')->group(function () use (\$limited) {\n    \$limited->post('/session/login', [SessionController::class, 'store']);\n});\n"]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_a_named_argument_route_is_credited_with_the_throttle_its_controller_applies(): void
+    {
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/SessionSignInController.php' => $this->selfThrottlingController('App\\Http\\Controllers\\Auth', 'SessionSignInController'),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\Auth\\SessionSignInController;\n\nRoute::post(action: [SessionSignInController::class, 'store'], uri: '/session/login');\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_a_throttled_route_written_over_many_lines_covers_its_controller(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\Auth\LoginController;
+
+Route::post(
+    '/session/login',
+
+    // Signs the user in
+
+
+    [LoginController::class, 'login'],
+)->middleware('throttle:5,1');
+PHP;
+
+        $result = $this->analyzeApp([
+            'app/Http/Controllers/Auth/LoginController.php' => $this->unthrottledLoginController(),
+            'routes/web.php' => $routes,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider matchMethodsProvider
+     */
+    #[DataProvider('matchMethodsProvider')]
+    public function test_a_match_route_is_judged_by_the_methods_it_lists(string $file, string $methods, ?string $message): void
+    {
+        $result = $this->analyzeRoutesOnly([$file => "<?php\n\nRoute::match({$methods}, '/session/login', [SessionController::class, 'store']);\n"]);
+
+        if ($message === null) {
+            $this->assertPassed($result);
+        } else {
+            $this->assertSame([$message], $this->issueMessages($result));
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string, ?string}>
+     */
+    public static function matchMethodsProvider(): array
+    {
+        return [
+            'GET and HEAD in a web file' => ['routes/web.php', "['GET', 'HEAD']", null],
+            'POST in an API file' => ['routes/api.php', "['POST']", 'API authentication route "/session/login" lacks rate limiting protection'],
+            'GET in an API file' => ['routes/api.php', "['GET']", 'API authentication route "/session/login" lacks rate limiting protection'],
+            'methods in a variable' => ['routes/web.php', '$methods', null],
+            'a computed method' => ['routes/web.php', "[config('auth.method')]", null],
+        ];
+    }
+
+    public function test_a_commented_out_route_over_several_lines_is_not_found(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+/*
+Route::post(
+    '/session/login',
+    [SessionController::class, 'store']
+);
+*/
+// Route::post(uri: '/session/login', action: [SessionController::class, 'store']);
+PHP;
+
+        $this->assertPassed($this->analyzeRoutesOnly(['routes/web.php' => $routes]));
+    }
+
+    public function test_route_text_inside_a_string_is_not_a_route(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+$example = "Route::post('/session/login', [SessionController::class, 'store']);";
+$help = <<<TEXT
+Route::post('/session/login', [SessionController::class, 'store']);
+TEXT;
+logger()->info('/session/login');
+PHP;
+
+        $this->assertPassed($this->analyzeRoutesOnly(['routes/web.php' => $routes]));
+    }
+
+    public function test_a_one_line_login_route_keeps_its_line_message_and_metadata(): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/session/login', [SessionController::class, 'store']);\n"]);
+
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Login route "/session/login" lacks rate limiting protection', $issue->message);
+        $this->assertSame(5, $issue->location?->line);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('Apply rate limiting middleware to this route to cap authentication attempts and prevent brute force attacks.', $issue->recommendation);
+        $this->assertSame(['route' => '/session/login', 'route_type' => 'web', 'issue_type' => 'missing_route_throttle'], $issue->metadata);
+    }
+
+    /**
+     * @dataProvider writtenRouteParityProvider
+     *
+     * @param  list<string>  $messages
+     */
+    #[DataProvider('writtenRouteParityProvider')]
+    public function test_a_route_keeps_the_finding_the_route_text_gave_it(string $file, string $routes, array $messages): void
+    {
+        $this->assertSame($messages, $this->issueMessages($this->analyzeRoutesOnly([$file => $routes])));
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function writtenRouteParityProvider(): array
+    {
+        return [
+            'two routes on one line report the first' => ['routes/web.php', "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']); Route::post('/signin', [SignInController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+            'a written route before a chained one on its line' => ['routes/web.php', "<?php\n\nRoute::name('x')->post('/signin', [SignInController::class, 'store']); Route::post('/session/login', [SessionController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+            'an API POST before a GET on its line' => ['routes/api.php', "<?php\n\nRoute::get('/auth/session', [SessionController::class, 'show']); Route::post('/token', [TokenController::class, 'store']);\n", ['API authentication route "/token" lacks rate limiting protection']],
+            'an interpolated URI kept as written' => ['routes/web.php', "<?php\n\nRoute::post(\"/{\$locale}/login\", [SessionController::class, 'store']);\n", ['Login route "/{$locale}/login" lacks rate limiting protection']],
+            'a URI kept as written' => ['routes/web.php', "<?php\n\nRoute::post('/session\\\\login', [SessionController::class, 'store']);\n", ['Login route "/session\\\\login" lacks rate limiting protection']],
+            'a string controller' => ['routes/web.php', "<?php\n\nRoute::controller('auth', 'AuthController');\n", ['Login route "auth" lacks rate limiting protection']],
+            'a resource' => ['routes/web.php', "<?php\n\nRoute::resource('auth', AuthController::class);\n", ['Login route "auth" lacks rate limiting protection']],
+            'a facade name ending in Route' => ['routes/web.php', "<?php\n\nApiRoute::post('/session/login', [SessionController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+            'a logout route' => ['routes/web.php', "<?php\n\nRoute::post('/auth/logout', [SessionController::class, 'destroy']);\n", []],
+            'a GET login form' => ['routes/web.php', "<?php\n\nRoute::get('/session/login', [SessionController::class, 'create']);\n", []],
+            'a URI concatenated after its literal' => ['routes/web.php', "<?php\n\nRoute::post('/session/login'.\$suffix, [SessionController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+            'a URI literal around a variable' => ['routes/web.php', "<?php\n\nRoute::post('/auth/'.\$provider.'/callback', [SessionController::class, 'store']);\n", ['Login route "/auth/" lacks rate limiting protection']],
+            'a route on the router beside a written one' => ['routes/web.php', "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']); \$router->middleware('throttle:5,1')->post('/x', [XController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+            'two chained routes on one line report the last' => ['routes/web.php', "<?php\n\nRoute::name('a')->post('/login', [SessionController::class, 'store']); Route::name('b')->post('/signin', [SignInController::class, 'store']);\n", ['Login route "/signin" lacks rate limiting protection']],
+            'two chained API routes on one line report the last' => ['routes/api.php', "<?php\n\nRoute::name('a')->post('/login', [SessionController::class, 'store']); Route::name('b')->post('/signin', [SignInController::class, 'store']);\n", ['API authentication route "/signin" lacks rate limiting protection']],
+            'Auth::routes() beside a throttled route on the router' => ['routes/web.php', "<?php\n\nAuth::routes(); app('router')->middleware('throttle:5,1')->post('/x', [XController::class, 'store']);\n", ['Auth::routes() includes login endpoint without explicit rate limiting']],
+            'a string controller beside a throttled route on the router' => ['routes/web.php', "<?php\n\nRoute::controller('auth', 'AuthController'); app('router')->middleware('throttle:5,1')->post('/x', [XController::class, 'store']);\n", ['Login route "auth" lacks rate limiting protection']],
+            'a lookup on the facade route collection' => ['routes/api.php', "<?php\n\nRoute::getRoutes()->get('auth/login');\n", ['API authentication route "auth/login" lacks rate limiting protection']],
+            'a route on the container router beside a written one' => ['routes/web.php', "<?php\n\nRoute::post('/session/login', [SessionController::class, 'store']); app('router')->middleware('throttle:5,1')->post('/x', [XController::class, 'store']);\n", ['Login route "/session/login" lacks rate limiting protection']],
+        ];
+    }
+
+    /**
+     * @dataProvider interpolatedUriProvider
+     */
+    #[DataProvider('interpolatedUriProvider')]
+    public function test_an_interpolated_uri_is_read_as_written_in_any_form(string $route): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\n{$route}\n"]);
+
+        $this->assertSame(['Login route "/{$locale}/login" lacks rate limiting protection'], $this->issueMessages($result));
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function interpolatedUriProvider(): array
+    {
+        return [
+            'named arguments' => ["Route::post(uri: \"/{\$locale}/login\", action: [SessionController::class, 'store']);"],
+            'match()' => ["Route::match(['POST'], \"/{\$locale}/login\", [SessionController::class, 'store']);"],
+            'the container router' => ["app('router')->post(\"/{\$locale}/login\", [SessionController::class, 'store']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider routeOnNoRouterProvider
+     */
+    #[DataProvider('routeOnNoRouterProvider')]
+    public function test_a_verb_on_what_may_not_be_the_bare_router_is_not_a_reported_route(string $routes): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes, 'routes/partials.php' => "<?php\n"]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function routeOnNoRouterProvider(): array
+    {
+        $route = "->post('/session/login', [SessionController::class, 'store']);";
+
+        return [
+            'a registrar off a router variable, imported by a closure' => ["<?php\n\n\$limited = \$router->middleware('throttle:5,1');\nRoute::prefix('account')->group(function () use (\$limited) {\n    \$limited{$route}\n});\n"],
+            'a registrar off the container router, assigned in branches' => ["<?php\n\nif (\$strict) {\n    \$limited = app('router')->middleware('throttle:5,1');\n} else {\n    \$limited = app('router')->middleware('throttle:10,1');\n}\n\$limited{$route}\n"],
+            'a registrar off a router variable, past a require' => ["<?php\n\n\$limited = \$router->middleware('throttle:5,1');\nrequire __DIR__.'/partials.php';\n\$limited{$route}\n"],
+            'a router variable reassigned a registrar' => ["<?php\n\nRoute::prefix('account')->group(function () use (\$router) {\n    \$router = \$router->middleware('throttle:5,1');\n    \$router{$route}\n});\n"],
+            'the facade root registrar, imported by a closure' => ["<?php\n\n\$limited = Route::getFacadeRoot()->middleware('throttle:5,1');\nRoute::prefix('account')->group(function () use (\$limited) {\n    \$limited{$route}\n});\n"],
+            'an HTTP client named router' => ["<?php\n\n\$router = new \\GuzzleHttp\\Client();\n\$router->post('/session/login', ['json' => []]);\n"],
+            'a router variable reassigned an HTTP client' => ["<?php\n\n\$router = app('router');\n\$router = new Client();\n\$router->post('/session/login', []);\n"],
+            'a class imported as another Route' => ["<?php\n\nuse App\\Support\\Route as R;\n\nR::middleware('guest'){$route}\n"],
+            'a copy of an HTTP client named router' => ["<?php\n\n\$router = new Client();\n\$client = \$router;\n\$client->post('/session/login', []);\n"],
+            'a router bound by foreach' => ["<?php\n\nforeach (\$clients as \$router) {\n    \$router->post('/session/login', []);\n}\n"],
+            'a router bound by destructuring' => ["<?php\n\n[\$router] = \$clients;\n\$router->post('/session/login', []);\n"],
+            'a router bound by ??=' => ["<?php\n\n\$router ??= new Client();\n\$router->post('/session/login', []);\n"],
+            'a router bound by reference' => ["<?php\n\n\$router = &\$client;\n\$router->post('/session/login', []);\n"],
+            'a router bound by catch' => ["<?php\n\ntry {\n    report_now();\n} catch (\\Exception \$router) {\n    \$router->post('/session/login', []);\n}\n"],
+            'a global router' => ["<?php\n\nglobal \$router;\n\$router->post('/session/login', []);\n"],
+            'a static router' => ["<?php\n\nstatic \$router;\n\$router->post('/session/login', []);\n"],
+            'a function parameter named router' => ["<?php\n\nfunction send(\$router)\n{\n    \$router->post('/session/login', []);\n}\n"],
+            'a route action parameter named router' => ["<?php\n\nRoute::get('/x', function (\$router) {\n    \$router->post('/session/login', []);\n});\n"],
+            'the second group callback parameter' => ["<?php\n\nRoute::group([], function (\$routes, \$router) {\n    \$router->post('/session/login', []);\n});\n"],
+            'extract() binding router' => ["<?php\n\nextract(['router' => new \\GuzzleHttp\\Client()]);\n\$router->post('/session/login', []);\n"],
+            'a variable variable binding router' => ["<?php\n\n\$name = 'router';\n\$\$name = new Client();\n\$router->post('/session/login', []);\n"],
+            'a router property of a class' => ["<?php\n\nclass SsoClient\n{\n    public function __construct(private \\GuzzleHttp\\Client \$router) {}\n\n    public function signIn()\n    {\n        return \$this->router->post('/session/login', []);\n    }\n}\n"],
+            'a free router variable' => ["<?php\n\n\$router{$route}\n"],
+            'a group callback held in a variable' => ["<?php\n\n\$auth = function (\$router) {\n    \$router{$route}\n};\nRoute::middleware('throttle:5,1')->group(\$auth);\n"],
+        ];
+    }
+
+    public function test_a_file_required_after_router_is_assigned_does_not_read_router_as_the_router(): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\n\$router = Route::middleware('throttle:5,1');\nrequire __DIR__.'/auth.php';\n",
+            'routes/auth.php' => "<?php\n\n\$router->post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_a_free_router_variable_in_a_required_route_file_registers_no_route(): void
+    {
+        // Laravel requires a route file with $router in scope, but nothing in the file says
+        // what it holds, so the name alone records no route
+        $result = $this->analyzeRoutesOnly([
+            'routes/web.php' => "<?php\n\nrequire __DIR__.'/auth.php';\n",
+            'routes/auth.php' => "<?php\n\n\$router->post('/session/login', [LoginController::class, 'login']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_a_router_variable_bound_before_a_provider_requires_a_route_file_registers_no_route(): void
+    {
+        $result = $this->analyzeRoutesOnly([
+            'app/Providers/AccountRouteProvider.php' => self::bootingProvider('AccountRouteProvider', "\$router = Route::middleware('throttle:5,1');\n        require base_path('routes/auth.php');"),
+            'routes/web.php' => "<?php\n",
+            'routes/auth.php' => "<?php\n\n\$router->post('/session/login', [SessionController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider routeHeldOffARegistrarProvider
+     */
+    #[DataProvider('routeHeldOffARegistrarProvider')]
+    public function test_middleware_on_a_route_held_in_a_variable_reaches_it(string $routes, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+            $this->assertSame(4, $result->getIssues()[0]->location?->line);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function routeHeldOffARegistrarProvider(): array
+    {
+        $route = "\$route = \$guest->post('/session/login', [SessionController::class, 'store']);";
+
+        return [
+            'throttled' => ["<?php\n\n\$guest = Route::middleware('guest');\n{$route}\n\$route->middleware('throttle:5,1');\n", false],
+            'throttled in a group' => ["<?php\n\nRoute::prefix('account')->group(function () {\n    \$guest = Route::middleware('guest'); {$route}\n    \$route->middleware('throttle:5,1');\n});\n", false],
+            'given other middleware' => ["<?php\n\n\$guest = Route::middleware('guest');\n{$route}\n\$route->middleware('verified');\n", true],
+        ];
+    }
+
+    /**
+     * @dataProvider registrarDerivedFromARegistrarProvider
+     */
+    #[DataProvider('registrarDerivedFromARegistrarProvider')]
+    public function test_middleware_set_on_a_registrar_derived_from_another_reaches_its_group(string $middleware, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\n\$base = Route::name('session.');\n\$scoped = \$base->prefix('account');\n\$scoped->middleware('{$middleware}');\n\n\$scoped->group(function () {\n    Route::post('/session/login', [SessionController::class, 'store']);\n});\n"]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function registrarDerivedFromARegistrarProvider(): array
+    {
+        return [
+            'throttled' => ['throttle:5,1', false],
+            'given other middleware' => ['verified', true],
+        ];
+    }
+
+    /**
+     * @dataProvider routeHeldOffARouterProvider
+     */
+    #[DataProvider('routeHeldOffARouterProvider')]
+    public function test_middleware_on_a_route_held_off_a_known_router_reaches_it(string $routes, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function routeHeldOffARouterProvider(): array
+    {
+        $action = "('/session/login', [SessionController::class, 'store']);";
+        $cases = [];
+        foreach (['throttle:5,1' => false, 'verified' => true] as $middleware => $reported) {
+            $later = "\$route->middleware('{$middleware}');";
+            $cases += [
+                "the group callback router, given {$middleware}" => ["<?php\n\nRoute::group([], function (\$r) {\n    \$route = \$r->post{$action}\n    {$later}\n});\n", $reported],
+                "a router variable, given {$middleware}" => ["<?php\n\n\$r = app('router');\n\$route = \$r->post{$action}\n{$later}\n", $reported],
+                "a named route off a router variable, given {$middleware}" => ["<?php\n\n\$r = app('router');\n\$route = \$r->name('login')->post{$action}\n{$later}\n", $reported],
+                "a registrar off the container router, given {$middleware}" => ["<?php\n\n\$route = app('router')->middleware('guest')->post{$action}\n{$later}\n", $reported],
+            ];
+        }
+
+        return $cases + [
+            'the group throttle excluded later' => ["<?php\n\nRoute::middleware('throttle:5,1')->group(function (\$r) {\n    \$route = \$r->post{$action}\n    \$route->withoutMiddleware('throttle:5,1');\n});\n", true],
+        ];
+    }
+
+    /**
+     * @dataProvider shadowedRouterProvider
+     */
+    #[DataProvider('shadowedRouterProvider')]
+    public function test_a_parameter_shadowing_a_router_variable_is_not_the_router(string $routes, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function shadowedRouterProvider(): array
+    {
+        return [
+            'an arrow function parameter' => ["<?php\n\n\$r = app('router');\ncollect(\$clients)->each(fn (\$r) => \$r->post('/session/login', ['json' => []]));\n", false],
+            'an arrow function parameter in a group callback' => ["<?php\n\nRoute::middleware('guest')->group(function (\$router) {\n    collect(\$clients)->each(fn (\$router) => \$router->post('/session/login', []));\n});\n", false],
+            'an arrow function reading the router' => ["<?php\n\n\$r = app('router');\ncollect(\$clients)->each(fn () => \$r->post('/session/login', [SessionController::class, 'store']));\n", true],
+        ];
+    }
+
+    /**
+     * @dataProvider routerPastARequireProvider
+     */
+    #[DataProvider('routerPastARequireProvider')]
+    public function test_a_router_variable_is_unread_past_a_require(string $routes, bool $reported): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => $routes, 'routes/limits.php' => "<?php\n\n\$r = \$r->middleware('throttle:5,1');\n"]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function routerPastARequireProvider(): array
+    {
+        $route = "\$r->post('/session/login', [SessionController::class, 'store']);";
+
+        return [
+            'after a require' => ["<?php\n\n\$r = app('router');\nrequire __DIR__.'/limits.php';\n{$route}\n", false],
+            'after an include_once' => ["<?php\n\n\$r = app('router');\ninclude_once __DIR__.'/limits.php';\n{$route}\n", false],
+            'before a require' => ["<?php\n\n\$r = app('router');\n{$route}\nrequire __DIR__.'/limits.php';\n", true],
+        ];
+    }
+
+    /**
+     * @dataProvider routeCollectionLookupProvider
+     */
+    #[DataProvider('routeCollectionLookupProvider')]
+    public function test_a_lookup_on_the_route_collection_is_not_a_route(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRoutesOnly(['routes/web.php' => "<?php\n", 'routes/api.php' => $routes]));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function routeCollectionLookupProvider(): array
+    {
+        return [
+            'held off the facade' => ["<?php\n\n\$routes = Route::getRoutes();\n\$found = \$routes->get('auth/login');\n"],
+            'off the container router' => ["<?php\n\napp('router')->getRoutes()->get('api/auth/login');\n"],
+            'off a router variable' => ["<?php\n\n\$r = app('router');\n\$r->getRoutes()->get('api/auth/login');\n"],
+        ];
+    }
+
+    /**
+     * @dataProvider knownRouterChainProvider
+     */
+    #[DataProvider('knownRouterChainProvider')]
+    public function test_a_chain_on_a_known_router_is_read_from_its_calls(string $routes, bool $reported, bool $webThrottle = false): void
+    {
+        $kernel = "<?php\n\nnamespace App\\Http;\n\nuse Illuminate\\Foundation\\Http\\Kernel as HttpKernel;\n\nclass Kernel extends HttpKernel\n{\n    protected \$middlewareGroups = ['web' => ['throttle:60,1']];\n}\n";
+        $files = $webThrottle ? ['app/Http/Kernel.php' => $kernel] : [];
+        $result = $this->analyzeRoutesOnly([...$files, 'routes/web.php' => $routes]);
+
+        if ($reported) {
+            $this->assertSame(['Login route "/session/login" lacks rate limiting protection'], $this->issueMessages($result));
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: bool, 2?: bool}>
+     */
+    public static function knownRouterChainProvider(): array
+    {
+        $action = "('/session/login', [SessionController::class, 'store']);";
+        $callback = "<?php\n\nRoute::middleware('guest')->group(function (\$router) {\n    \$router->%s->post{$action}\n});\n";
+
+        return [
+            'a prefix on a router variable' => ["<?php\n\n\$r = app('router');\n\$r->prefix('account')->post{$action}\n", true],
+            'a registrar held off a router variable' => ["<?php\n\n\$r = app('router');\n\$account = \$r->prefix('account');\n\$account->post{$action}\n", true],
+            'a prefix on the group callback router' => [sprintf($callback, "prefix('account')"), true],
+            'a name on the group callback router' => [sprintf($callback, "name('session.store')"), true],
+            'the web throttle excluded on the group callback router' => [sprintf($callback, "withoutMiddleware('throttle:60,1')"), true, true],
+            'a throttle on a router variable' => ["<?php\n\n\$r = app('router');\n\$r->prefix('account')->middleware('throttle:5,1')->post{$action}\n", false],
+            'a throttle on the group callback router' => [sprintf($callback, "prefix('account')->middleware('throttle:5,1')"), false],
+            'the web throttle on the group callback router' => [sprintf($callback, "prefix('account')"), false, true],
+        ];
+    }
+
+    public function test_a_match_chained_after_the_facade_is_judged_by_its_methods(): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => "<?php\n\nRoute::middleware('guest')->match(['GET'], '/session/login', [SessionController::class, 'create']);\n"]);
+
+        $this->assertPassed($result);
     }
 
     private static function bootingProvider(string $class, string $boot): string

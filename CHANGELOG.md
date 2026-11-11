@@ -17,6 +17,9 @@
 - `login-throttling` grades `routes/api.php` by the API rules when it is registered through positional `withRouting()` arguments, `withRouting(api: $file)` or a provider path method, which can fail a default `fail_on: high` build (#595)
 - `csrf-protection`, `login-throttling` and `authentication-authorization` read `->attribute('withoutMiddleware', ...)` as a `withoutMiddleware()` call and report the routes it uncovers, which can fail a default `fail_on: high` build (#599)
 - `csrf-protection` reports Laravel 13 routes excluding the `ValidateCsrfToken` a Kernel web group lists, which can fail a default `fail_on: high` build (#602)
+- `csrf-protection` reports a route whose action array removes `web` or the CSRF middleware through `excluded_middleware`, as it does `withoutMiddleware()`, which can fail a default `fail_on: high` build (#609)
+- `csrf-protection` reports `Route::middleware('web')->post('/x', ['middleware' => 'auth', ...])`, since the action array's middleware replaces the registrar's as it does in Laravel, which can fail a default `fail_on: high` build (#609)
+- `csrf-protection` drops the extra keys of a controller callable such as `[InvoiceController::class, 'store', 'middleware' => 'web']` and the middleware its registrar set, as Laravel does, which can fail a default `fail_on: high` build (#609)
 
 ### Fixed
 - `csrf-protection` reads route files passed to `group()` through a path variable instead of reporting their POST routes (#578)
@@ -29,6 +32,8 @@
 - `csrf-protection` no longer reports a route excluding a CSRF class when the Kernel's global `$middleware` runs CSRF, since `withoutMiddleware()` only filters route middleware (#602)
 - `csrf-protection` no longer reports a route excluding a CSRF class the web group lists with parameters, such as `csrf:strict`, unless the exclusion names the same `Class:params` string (#602)
 - `csrf-protection` no longer assumes a `bootstrap/app.php` web-group class without a parent extends `VerifyCsrfToken`, so excluding it is no longer reported (#602)
+- `csrf-protection` reads the `middleware` key of a route's action array, such as `['middleware' => 'web', 'uses' => ...]`, instead of reporting `no "web" middleware detected` (#609)
+- `csrf-protection` reads the methods a `Route::match()` call names through a `methods:` argument, so a GET-only route is no longer reported (#609)
 
 ## v1.22.0
 

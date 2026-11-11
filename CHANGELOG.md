@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.23.0
+
+### Changed
+- `login-throttling` grades an api file passed to `group()` through a path variable by the API rules, which can fail a default `fail_on: high` build (#578)
+- `config-outside-config` scans projects checked out under a `tests/` or `config/` directory instead of skipping them (#582)
+- `autoloader-optimization` reports an unoptimized Composer autoloader at High, which can fail a default `fail_on: high` build (#584)
+- `config-outside-config` reports loopback and private-IP URLs written with userinfo, such as `http://user@127.0.0.1` (#585)
+- `csrf-protection`, `login-throttling` and `authentication-authorization` apply only the last `middleware()` call before `group()`, which can fail a default `fail_on: high` build (#588)
+- `login-throttling` stops crediting throttles Laravel does not apply, such as one removed by `api(remove:)`, which can fail a default `fail_on: high` build (#595)
+- `csrf-protection` reports Laravel 13 routes excluding the `ValidateCsrfToken` a Kernel web group lists, which can fail a default `fail_on: high` build (#602)
+
+### Fixed
+- `csrf-protection` reads route files passed to `group()` through a path variable instead of reporting their POST routes (#578)
+- `config-outside-config` no longer reports prefixed snake_case identifiers, such as `api_response_cache_key`, as API keys (#582)
+- `config-outside-config` no longer reports public hosts that start with `localhost` or a private IP, such as `localhost.run` (#585)
+- `csrf-protection`, `login-throttling` and `authentication-authorization` apply the middleware a route registrar held in a variable carries (#595, #599)
+- `csrf-protection` no longer reports Laravel 11/12 routes excluding `ValidateCsrfToken` when the Kernel web group runs `VerifyCsrfToken` (#602)
+
 ## v1.22.0
 
 ### Changed

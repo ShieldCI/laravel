@@ -42,6 +42,7 @@ use ShieldCI\Support\BootstrapRouteParser;
  *   - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
  *
  * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>, api: bool}
+ * @phpstan-type ActionMiddleware array{middleware: list<string|null>|null, excluded: list<string|null>|null, dropsRegistrar: bool}
  * @phpstan-type RouteWalk array{
  *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
  *     groups: array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>,
@@ -82,6 +83,13 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * @var array{group: false, applied: list<string>, excluded: list<string|null>, api: false}
      */
     private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => [], 'api' => false];
+
+    /**
+     * What an action that names no middleware gives a route (see routeActionMiddleware()).
+     *
+     * @var ActionMiddleware
+     */
+    private const NO_ACTION_MIDDLEWARE = ['middleware' => null, 'excluded' => null, 'dropsRegistrar' => false];
 
     /**
      * The most registrations of one route statesReaching() follows, one per group() call that
@@ -2005,10 +2013,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * the closures enclosing it.
      *
      * Each route and group carries the CSRF state of its chain (see chainCsrfState()): 'web' and
-     * the CSRF classes its ->middleware(...) calls and 'middleware' attribute apply, and what
-     * its ->withoutMiddleware(...) calls and 'excluded_middleware' attribute exclude. A route
-     * merges the state of every group around it, and csrfRuns() judges whether a check still
-     * runs. Method names are matched case-insensitively, as PHP calls them.
+     * the CSRF classes its ->middleware(...) calls and 'middleware' attribute or action key
+     * apply, and what its ->withoutMiddleware(...) calls and 'excluded_middleware' attribute or
+     * action key exclude. A route merges the state of every group around it, and csrfRuns()
+     * judges whether a check still runs. Method names are matched case-insensitively, as PHP calls them.
      *
      * Each function scope keeps the variables that hold the router (see openScope()), and an
      * assignment updates its own scope's set as the walk reaches it, in source order.
@@ -2322,11 +2330,15 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The CSRF state of a chain: whether it applies 'web', the CSRF classes it applies, and
-     * what it excludes, through ->middleware(...) and ->withoutMiddleware(...) and, on a group,
-     * its 'middleware' and 'excluded_middleware' attributes.
+     * what it excludes, through ->middleware(...) and ->withoutMiddleware(...) and the
+     * 'middleware' and 'excluded_middleware' keys of a group's attribute array or of the
+     * action array the route is registered with, which Route reads as its own middleware.
      *
      * Calls before the route or group is registered set RouteRegistrar attributes, where each
      * middleware() call replaces the last; after it, a route's middleware() calls add up.
+     * RouteRegistrar::compileAction() merges the action array over those attributes, so a key
+     * the action names replaces the registrar's middleware or exclusions, even with an empty
+     * list (see routeActionMiddleware()).
      *
      * @param  list<Expr\MethodCall|Expr\StaticCall>  $chain  The chain's calls, root first
      * @return CsrfState
@@ -2336,13 +2348,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $applied = [];
         $registrarApplied = [];
         $excluded = [];
+        $registrarExcluded = [];
+        $action = self::NO_ACTION_MIDDLEWARE;
         $registered = false;
         foreach ($chain as $link) {
             $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
-            $registered = $registered
-                || ! (in_array($name, self::REGISTRAR_ATTRIBUTES, true) || ($name !== null && str_starts_with($name, 'where')));
+            $registers = ! $registered
+                && ! (in_array($name, self::REGISTRAR_ATTRIBUTES, true) || ($name !== null && str_starts_with($name, 'where')));
+            $registered = $registered || $registers;
 
-            if ($name === 'middleware') {
+            if ($registers) {
+                $action = $this->routeActionMiddleware($link, $routeParser);
+            } elseif ($name === 'middleware') {
                 $names = $this->entryNames($routeParser->middlewareEntries($link));
                 if ($registered) {
                     $applied = [...$applied, ...$names];
@@ -2351,8 +2368,29 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             } elseif ($name === 'withoutmiddleware') {
                 // Route::withoutMiddleware() and the registrar take one argument and wrap it
-                $excluded = [...$excluded, ...$this->entryNames($this->wrappedFirstArgument($link))];
+                $names = $this->entryNames($this->wrappedFirstArgument($link));
+                if ($registered) {
+                    $excluded = [...$excluded, ...$names];
+                } else {
+                    $registrarExcluded = [...$registrarExcluded, ...$names];
+                }
             }
+        }
+
+        if ($action['dropsRegistrar']) {
+            $registrarApplied = [];
+            $registrarExcluded = [];
+        }
+        if ($action['middleware'] !== null) {
+            // An entry that cannot be read keeps the registrar's middleware alongside the action's,
+            // so an unread name is not taken to drop 'web'
+            $registrarApplied = in_array(null, $action['middleware'], true)
+                ? [...$registrarApplied, ...$action['middleware']]
+                : $action['middleware'];
+        }
+        if ($action['excluded'] !== null) {
+            // An unread exclusion removes nothing csrfRuns() can name, so replacing still holds
+            $registrarExcluded = $action['excluded'];
         }
 
         $calls = $this->callsByName($chain);
@@ -2360,8 +2398,74 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         return $this->csrfState(
             [...$registrarApplied, ...$applied, ...$this->entryNames($routeParser->groupAttributeEntries($args, 'middleware'))],
-            [...$excluded, ...$this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware'))],
+            [...$registrarExcluded, ...$excluded, ...$this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware'))],
         );
+    }
+
+    /**
+     * The middleware a route's action array names under 'middleware' and 'excluded_middleware',
+     * each null when the action has no such key, as Laravel reads the action.
+     *
+     * An action Reflector::isCallable() accepts by its syntax, any item at index 0 and a string
+     * at index 1, is reduced to its controller by RouteAction::parse(), so it names none. When it
+     * also has string keys it is not a list, so RouteRegistrar::compileAction() merges it over
+     * the registrar's attributes instead of converting it first, and RouteAction::parse() drops
+     * those attributes too ('dropsRegistrar'). An action that is not an array literal, or has a
+     * key or an unpacked item that cannot be read, names none.
+     *
+     * @return ActionMiddleware
+     */
+    private function routeActionMiddleware(Expr\MethodCall|Expr\StaticCall $call, BootstrapRouteParser $routeParser): array
+    {
+        $action = $this->routeActionArgument($call);
+        $action = $action === null ? null : BootstrapRouteParser::heldValue($action);
+        if (! $action instanceof Expr\Array_) {
+            return self::NO_ACTION_MIDDLEWARE;
+        }
+
+        $indexed = [];
+        $keys = [];
+        foreach ($action->items as $item) {
+            if (! $item instanceof ArrayItem || $item->unpack) {
+                return self::NO_ACTION_MIDDLEWARE;
+            }
+            if ($item->key === null) {
+                $indexed[] = $item->value;
+            } elseif ($item->key instanceof String_) {
+                $keys[$item->key->value] = true;
+            } else {
+                return self::NO_ACTION_MIDDLEWARE;
+            }
+        }
+
+        if (isset($indexed[0], $indexed[1]) && $indexed[1] instanceof String_) {
+            return [...self::NO_ACTION_MIDDLEWARE, 'dropsRegistrar' => $keys !== []];
+        }
+
+        $args = [new Node\Arg($action)];
+
+        return [
+            'middleware' => isset($keys['middleware']) ? $this->entryNames($routeParser->groupAttributeEntries($args, 'middleware')) : null,
+            'excluded' => isset($keys['excluded_middleware']) ? $this->entryNames($routeParser->groupAttributeEntries($args, 'excluded_middleware')) : null,
+            'dropsRegistrar' => false,
+        ];
+    }
+
+    /**
+     * The action a route verb call registers its route with, or null for any other call: the
+     * argument named action:, otherwise the second positional argument of get(), post(), put(),
+     * patch(), delete(), options() and any(), or the third of match().
+     */
+    private function routeActionArgument(Expr\MethodCall|Expr\StaticCall $call): ?Expr
+    {
+        $name = $call->name instanceof Identifier ? $call->name->toLowerString() : null;
+        $position = match (true) {
+            $name === 'match' => 2,
+            in_array($name, ['get', 'post', 'put', 'patch', 'delete', 'options', 'any'], true) => 1,
+            default => null,
+        };
+
+        return $position === null ? null : $this->callArgument($call, $position, 'action');
     }
 
     /**
@@ -2405,8 +2509,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The method a route chain registers when it accepts a request CSRF checks, or null:
-     * post, put, patch, delete and any, and match() listing such a verb. resource() is
-     * judged by resourceState().
+     * post, put, patch, delete and any, and match() listing such a verb in its first argument
+     * or the one named methods:. resource() is judged by resourceState().
      *
      * @param  array<string, non-empty-list<Expr\MethodCall|Expr\StaticCall>>  $calls  Chain calls by lowercase name
      */
@@ -2419,9 +2523,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         if (isset($calls['match'])) {
-            $first = $calls['match'][0]->args[0] ?? null;
-            $methods = $first instanceof Node\Arg
-                ? $this->entryNames($this->wrapped($first->value))
+            $first = $this->callArgument($calls['match'][0], 0, 'methods');
+            $methods = $first !== null
+                ? $this->entryNames($this->wrapped($first))
                 : [];
             $methods = array_map(strtoupper(...), array_filter($methods, is_string(...)));
 

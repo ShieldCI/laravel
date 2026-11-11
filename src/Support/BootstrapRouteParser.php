@@ -52,7 +52,7 @@ class BootstrapRouteParser
      * reads the assignments, so a caller reading the same tree can follow
      * $limited = Route::middleware(...); $limited->group(...) to the registrar it holds.
      *
-     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of login-throttling, csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public const HELD_VALUE = 'shieldci.heldValue';
 
@@ -497,9 +497,10 @@ class BootstrapRouteParser
     }
 
     /**
-     * The entries a group's attribute array lists under $key, such as 'middleware' or
-     * 'excluded_middleware': each item of an array value, or the value itself, an array or
-     * a value held in a variable read as the one it holds (see {@see self::HELD_VALUE}).
+     * The entries a group's attribute array, or a route's action array, lists under $key, such
+     * as 'middleware' or 'excluded_middleware': each item of an array value, or the value
+     * itself, an array or a value held in a variable read as the one it holds (see
+     * {@see self::HELD_VALUE}).
      *
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return array<Node\Expr>
@@ -2268,8 +2269,10 @@ class BootstrapRouteParser
     /**
      * The value a variable holds where it is read (see {@see self::HELD_VALUE}), or the
      * expression itself.
+     *
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
-    private static function heldValue(Node\Expr $node): Node\Expr
+    public static function heldValue(Node\Expr $node): Node\Expr
     {
         $value = $node instanceof Node\Expr\Variable ? $node->getAttribute(self::HELD_VALUE) : null;
 

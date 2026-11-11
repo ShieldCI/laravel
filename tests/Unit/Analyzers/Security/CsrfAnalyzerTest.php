@@ -6186,6 +6186,158 @@ PHP);
         $this->assertPassed($result);
     }
 
+    // ==================== Middleware in a Route's Action Array ====================
+
+    /**
+     * @dataProvider actionArrayApplyingCsrfProvider
+     */
+    #[DataProvider('actionArrayApplyingCsrfProvider')]
+    public function test_passes_route_whose_action_array_applies_csrf(string $route): void
+    {
+        // Route::middleware() reads the action's 'middleware' key as the route's own middleware
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\n{$route}\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function actionArrayApplyingCsrfProvider(): array
+    {
+        return [
+            'web as a string' => ["Route::post('/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+            'web in a list' => ["Route::put('/invoices/{id}', ['middleware' => ['auth', 'web'], 'uses' => 'InvoiceController@update']);"],
+            'positional closure' => ["Route::patch('/invoices/{id}', ['middleware' => 'web', fn () => 'patched']);"],
+            'closure under uses' => ["Route::delete('/invoices/{id}', ['middleware' => 'web', 'uses' => fn () => 'deleted']);"],
+            'match, action third' => ["Route::match(['put', 'post'], '/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+            'any' => ["Route::any('/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@handle']);"],
+            'CSRF class' => ["Route::post('/invoices', ['middleware' => \\App\\Http\\Middleware\\VerifyCsrfToken::class, 'uses' => 'InvoiceController@store']);"],
+            'held in a variable' => ["\$action = ['middleware' => 'web', 'uses' => 'InvoiceController@store'];\nRoute::post('/invoices', \$action);"],
+            'named action argument' => ["Route::post(uri: '/invoices', action: ['middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+            'after registrar attributes' => ["Route::prefix('billing')->name('billing.')->post('/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+            // RouteRegistrar::compileAction() merges the action over the registrar's attributes
+            'replacing registrar middleware' => ["Route::middleware('auth')->post('/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+            // An action middleware that cannot be read keeps the registrar's alongside it
+            'unreadable action middleware' => ["Route::middleware('web')->post('/invoices', ['middleware' => \$stack, 'uses' => 'InvoiceController@store']);"],
+            'unreadable entry in the action middleware' => ["Route::middleware('web')->post('/invoices', ['middleware' => ['auth', STACK], 'uses' => 'InvoiceController@store']);"],
+            // compileAction() turns a callable list into uses and controller before merging, so the registrar's attributes stay
+            'controller callable list after registrar web' => ["Route::middleware('web')->post('/invoices', [InvoiceController::class, 'store']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider actionArrayWithoutCsrfProvider
+     */
+    #[DataProvider('actionArrayWithoutCsrfProvider')]
+    public function test_reports_route_whose_action_array_does_not_apply_web(string $route): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\n{$route}\n");
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringContainsString('no "web" middleware detected', $result->getIssues()[0]->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function actionArrayWithoutCsrfProvider(): array
+    {
+        return [
+            'uses only' => ["Route::post('/invoices', ['uses' => 'InvoiceController@store']);"],
+            'name and uses' => ["Route::post('/invoices', ['as' => 'invoices.store', 'uses' => 'InvoiceController@store']);"],
+            'controller callable list' => ["Route::post('/invoices', [InvoiceController::class, 'store']);"],
+            'other middleware' => ["Route::post('/invoices', ['middleware' => 'auth', 'uses' => 'InvoiceController@store']);"],
+            // Only the action argument is read: second for a verb, third for match()
+            'array after the action' => ["Route::post('/invoices', 'InvoiceController@store', ['middleware' => 'web']);"],
+            'match array after the action' => ["Route::match(['post'], '/invoices', 'InvoiceController@store', ['middleware' => 'web']);"],
+            // RouteRegistrar::compileAction() merges the action over the registrar's attributes
+            'replacing registrar web' => ["Route::middleware('web')->post('/invoices', ['middleware' => 'auth', 'uses' => 'InvoiceController@store']);"],
+            // array_merge() replaces the registrar's list with an empty one, so no middleware is left
+            'empty list replacing registrar web' => ["Route::middleware('web')->post('/invoices', ['middleware' => [], 'uses' => 'InvoiceController@store']);"],
+            // RouteAction::parse() keeps only uses and controller of an action Reflector::isCallable() accepts
+            'controller callable with further keys' => ["Route::post('/invoices', [InvoiceController::class, 'store', 'middleware' => 'web']);"],
+            // Not a list, so compileAction() merges it over the registrar's attributes before RouteAction::parse() drops them all
+            'controller callable with further keys after registrar web' => ["Route::middleware('web')->post('/invoices', [InvoiceController::class, 'store', 'middleware' => 'web']);"],
+            'named match methods' => ["Route::match(uri: '/invoices', action: ['uses' => 'InvoiceController@store'], methods: ['post']);"],
+        ];
+    }
+
+    public function test_reports_custom_file_route_whose_action_array_excludes_web(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::post('/invoices', ['middleware' => 'web', 'excluded_middleware' => ['web'], 'uses' => 'InvoiceController@store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route in custom route file missing CSRF protection - the CSRF middleware is excluded from it', $result->getIssues()[0]->message);
+    }
+
+    /**
+     * @dataProvider webPhpActionArrayExclusionProvider
+     */
+    #[DataProvider('webPhpActionArrayExclusionProvider')]
+    public function test_reports_web_php_route_whose_action_array_excludes_csrf(string $route): void
+    {
+        $result = $this->analyzeRouteFiles(['routes/web.php' => "<?php\n\nuse App\\Http\\Middleware\\VerifyCsrfToken;\n\n{$route}\n"]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('POST route excludes the CSRF middleware through withoutMiddleware() or excluded_middleware', $issue->message);
+        $this->assertSame(5, $issue->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function webPhpActionArrayExclusionProvider(): array
+    {
+        return [
+            'web' => ["Route::post('/invoices', ['excluded_middleware' => ['web'], 'uses' => 'InvoiceController@store']);"],
+            'CSRF class' => ["Route::post('/invoices', ['excluded_middleware' => [VerifyCsrfToken::class], 'uses' => 'InvoiceController@store']);"],
+            'web as a string' => ["Route::post('/invoices', ['excluded_middleware' => 'web', 'uses' => 'InvoiceController@store']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider webPhpActionArrayKeepingCsrfProvider
+     */
+    #[DataProvider('webPhpActionArrayKeepingCsrfProvider')]
+    public function test_passes_web_php_route_whose_action_array_keeps_csrf(string $route): void
+    {
+        $this->assertPassed($this->analyzeRouteFiles(['routes/web.php' => "<?php\n\n{$route}\n"]));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function webPhpActionArrayKeepingCsrfProvider(): array
+    {
+        return [
+            // A GET route is not state-changing, so CSRF does not guard it
+            'GET route' => ["Route::get('/invoices', ['excluded_middleware' => ['web'], 'uses' => 'InvoiceController@index']);"],
+            'other exclusion' => ["Route::post('/invoices', ['excluded_middleware' => ['throttle'], 'uses' => 'InvoiceController@store']);"],
+            // RouteRegistrar::compileAction() merges the action over the registrar's attributes
+            'replacing registrar exclusion' => ["Route::withoutMiddleware('web')->post('/invoices', ['excluded_middleware' => ['throttle'], 'uses' => 'InvoiceController@store']);"],
+            'empty list replacing registrar exclusion' => ["Route::withoutMiddleware('web')->post('/invoices', ['excluded_middleware' => [], 'uses' => 'InvoiceController@store']);"],
+            // An exclusion that cannot be read removes nothing the analyzer can name, and still replaces the registrar's
+            'unreadable exclusion replacing registrar exclusion' => ["Route::withoutMiddleware('web')->post('/invoices', ['excluded_middleware' => \$skipped, 'uses' => 'InvoiceController@store']);"],
+        ];
+    }
+
+    public function test_passes_match_route_whose_named_methods_are_not_state_changing(): void
+    {
+        // The methods: argument is read by name, wherever it is written
+        $this->assertPassed($this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::match(uri: '/invoices', action: ['uses' => 'InvoiceController@index'], methods: ['get', 'head']);
+PHP));
+    }
+
     /**
      * @param  array<string, string>  $files
      */

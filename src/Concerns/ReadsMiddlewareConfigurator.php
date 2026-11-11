@@ -56,7 +56,7 @@ trait ReadsMiddlewareConfigurator
     /**
      * The value of a call argument, given by name or by position.
      */
-    private function callArgument(Expr\MethodCall $call, int $position, string $name): ?Expr
+    private function callArgument(Expr\MethodCall|Expr\StaticCall $call, int $position, string $name): ?Expr
     {
         foreach ($call->args as $index => $arg) {
             if (! $arg instanceof Node\Arg) {

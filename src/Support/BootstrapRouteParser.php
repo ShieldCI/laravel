@@ -39,6 +39,7 @@ use ShieldCI\Concerns\ResolvesClassNames;
  * with class names resolved against the imports of the file that declares the group.
  *
  * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>, bindings: array<int, string>}
+ * @phpstan-type RouterHold 'router'|'registrar'|'name'|null
  */
 class BootstrapRouteParser
 {
@@ -55,6 +56,31 @@ class BootstrapRouteParser
      * @internal An implementation detail of login-throttling, csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
     public const HELD_VALUE = 'shieldci.heldValue';
+
+    /**
+     * The node attribute a walk sets on a route verb call made on the router, such as
+     * $r->post(...) after $r = app('router'), or $guest->post(...) after
+     * $guest = Route::middleware(...): true when the chain it is called on starts at the
+     * router itself (see {@see self::routerHold()}), which carries no middleware of its own,
+     * so the chain's calls are all it has; false when it starts at a registrar, such as
+     * Route::middleware(...) or a variable holding one; null when the walk has no evidence
+     * the chain starts at the router, such as a $router it recorded no value for, so a
+     * caller reading the same tree can tell which method calls register routes.
+     *
+     * @internal An implementation detail of login-throttling, outside this package's backward-compatibility promise.
+     */
+    public const ROUTE_ON_ROUTER = 'shieldci.routeOnRouter';
+
+    /**
+     * What a walk knows a variable holds (see {@see self::routerHold()}): the router itself,
+     * a registrar, or the router only by the name $router, which isRouteRoot() reads as the
+     * router and the route verbs a walk marks do not.
+     */
+    private const HOLDS_ROUTER = 'router';
+
+    private const HOLDS_REGISTRAR = 'registrar';
+
+    private const HOLDS_NAME = 'name';
 
     /**
      * The RouteRegistrar methods that set one of its attributes and return the registrar,
@@ -1058,7 +1084,7 @@ class BootstrapRouteParser
      * {@see self::HELD_VALUE} attribute.
      *
      * @param  list<MethodCall|StaticCall>  $groups  The group calls enclosing $node, outermost first
-     * @param  array<string, true>  $routers  Variables that hold the router in this function scope
+     * @param  array<string, RouterHold>  $routers  Variables that hold the router in this function scope (see {@see self::routerHold()}), null for one the scope assigned something else, which isset() skips as it skips an absent one
      * @param  array<string, non-empty-list<Node\Expr>>  $paths  Variables that hold route paths in this function scope
      * @param  array<string, Node\Expr>  $values  Variables whose value is known in this function scope
      * @param  ?string  $dir  The directory of the file being walked; null records no loads
@@ -1073,7 +1099,7 @@ class BootstrapRouteParser
             $scopeValues = $this->functionVariables($node, $values);
             if (! $node instanceof Node\Expr\ArrowFunction) {
                 // An imported variable the function writes any other way is not read either
-                $writes = $this->pathBindings($node->getStmts() ?? [], $this->references($node));
+                $writes = $this->pathBindings($node->getStmts() ?? [], $this->references($node), routers: $scope);
                 $walk['bindings'] += $writes['bindings'];
                 $scopePaths = $writes['disabled'] ? [] : array_diff_key($scopePaths, $writes['untracked']);
                 $scopeValues = $writes['disabled'] ? [] : array_diff_key($scopeValues, $writes['untracked']);
@@ -1090,11 +1116,22 @@ class BootstrapRouteParser
         }
 
         if ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
-            if ($this->chainOnRouter($node->expr, $routers)) {
-                $routers[$node->var->name] = true;
-            } else {
-                unset($routers[$node->var->name]);
+            $routers[$node->var->name] = $this->routerHold($node->expr, $routers);
+        } else {
+            // Bound any other way, such as by foreach, list(), ??=, a reference, catch, global
+            // or static, a variable is no longer known to hold the router, though its name
+            // may still make it one (see isRouteRoot())
+            foreach ($this->writtenVariables($node, $routers) as $variable) {
+                if (is_string($variable->name) && isset($routers[$variable->name])) {
+                    $routers[$variable->name] = self::HOLDS_NAME;
+                }
             }
+        }
+
+        if ($node instanceof MethodCall && $node->name instanceof Identifier && $node->name->toLowerString() !== 'group'
+            && in_array($node->name->toLowerString(), self::REGISTRAR_READS, true)) {
+            $hold = $this->routerHold($node->var, $routers, rootOnly: true);
+            $node->setAttribute(self::ROUTE_ON_ROUTER, $hold === self::HOLDS_ROUTER || $hold === self::HOLDS_REGISTRAR ? $hold === self::HOLDS_ROUTER : null);
         }
 
         // The value is read before the variable is written
@@ -1102,6 +1139,16 @@ class BootstrapRouteParser
         if ($node instanceof Node\Stmt\Expression && isset($walk['bindings'][spl_object_id($node)])) {
             $value = $node->expr instanceof Node\Expr\Assign ? $node->expr->expr : ($this->registrarUpdate($node->expr)[1] ?? $node->expr);
             $bound = [$walk['bindings'][spl_object_id($node)], $this->assignedPaths($value, $paths), $value];
+        }
+
+        // A file it requires or includes may write any variable of the scope, so none is
+        // known to hold the router past it, as pathBindings() reads none
+        if ($node instanceof Include_) {
+            foreach ($routers as $name => $hold) {
+                if ($hold !== null) {
+                    $routers[$name] = self::HOLDS_NAME;
+                }
+            }
         }
 
         if ($node instanceof Include_ && $dir !== null) {
@@ -1398,10 +1445,14 @@ class BootstrapRouteParser
      * @param  array<string, true>  $references  Variables that are references on entry, which a callee may write
      * @param  bool  $globals  Whether \$GLOBALS or a function declared in the scope may reach its variables as globals, as they may a file's own unless the file is a route file
      * @param  bool  $fileScope  Whether the scope is a file's own, whose variables \$GLOBALS anywhere in it may reach
+     * @param  array<string, mixed>  $routers  Variables that hold the router or a registrar on entry, such as a group callback's router (see {@see self::functionRouters()})
      * @return array{bindings: array<int, string>, untracked: array<string, true>, disabled: bool}
      */
-    private function pathBindings(array $statements, array $references = [], bool $globals = true, bool $fileScope = false): array
+    private function pathBindings(array $statements, array $references = [], bool $globals = true, bool $fileScope = false, array $routers = []): array
     {
+        // The variables holding the router or a registrar so far, in statement order, so a
+        // route or registrar made off one is read as one (see registrarChain())
+        $known = $routers;
         $candidates = [];
         $assigned = [];
         $updates = [];
@@ -1414,7 +1465,12 @@ class BootstrapRouteParser
                 $candidates[spl_object_id($statement)] = $name;
                 $assigned[spl_object_id($statement)] = $statement->expr->expr;
                 $direct[spl_object_id($statement->expr)] = true;
-                $holdsRegistrar[$name] = $this->registrarChain($statement->expr->expr);
+                $holdsRegistrar[$name] = $this->registrarChain($statement->expr->expr, $known);
+                if ($this->chainOnRouter($statement->expr->expr, $known)) {
+                    $known[$name] = true;
+                } else {
+                    unset($known[$name]);
+                }
             } elseif ($statement instanceof Node\Stmt\Expression && ($update = $this->registrarUpdate($statement->expr)) !== null
                 && $update[0]->var instanceof Node\Expr\Variable && is_string($update[0]->var->name) && ($holdsRegistrar[$update[0]->var->name] ?? false)) {
                 // $r->middleware(...); changes the registrar $r holds, as if it were
@@ -1569,7 +1625,7 @@ class BootstrapRouteParser
      * a root {@see self::isRouteRoot()} knows, such as app('router') or a variable holding
      * the router, or Route::getFacadeRoot().
      *
-     * @param  array<string, true>  $routers
+     * @param  array<string, mixed>  $routers
      */
     private function isRouterItself(Node\Expr $expr, array $routers): bool
     {
@@ -1582,11 +1638,15 @@ class BootstrapRouteParser
      * Whether an expression is a registrar or a route the router hands back: a chain on the
      * router (see {@see self::chainOnRouter()}) with a call that sets a registrar attribute
      * (see {@see self::REGISTRAR_ATTRIBUTES}) or registers a route, such as
-     * Route::middleware(...) or Route::post(...), not the router itself.
+     * Route::middleware(...) or Route::post(...), not the router itself. A variable among
+     * $routers is the router for this, such as a group callback's router or one assigned
+     * app('router') earlier in the scope, so $route = $r->post(...) holds a route.
+     *
+     * @param  array<string, mixed>  $routers
      */
-    private function registrarChain(Node\Expr $expr): bool
+    private function registrarChain(Node\Expr $expr, array $routers = []): bool
     {
-        if (! $this->chainOnRouter($expr, [])) {
+        if (! $this->chainOnRouter($expr, $routers)) {
             return false;
         }
 
@@ -1816,7 +1876,7 @@ class BootstrapRouteParser
      * the router or the application builder (see {@see self::callTakesValues()}) are only
      * read.
      *
-     * @param  array<string, true>  $routers  Variables that hold the router
+     * @param  array<string, mixed>  $routers  Variables that hold the router
      * @return list<Node\Expr\Variable>
      */
     private function writtenVariables(Node $node, array $routers = []): array
@@ -1867,7 +1927,7 @@ class BootstrapRouteParser
      * registrar and a route does: one made on the router (see {@see self::chainOnRouter()}),
      * or on the application builder Application::configure() starts.
      *
-     * @param  array<string, true>  $routers
+     * @param  array<string, mixed>  $routers
      */
     private function callTakesValues(Node\Expr\CallLike $call, array $routers): bool
     {
@@ -1923,26 +1983,33 @@ class BootstrapRouteParser
      * The variables that hold the router inside a function: parameters typed Router or
      * Registrar, the first parameter of a group callback, which Laravel calls with the
      * router, and router variables a closure captures through use(). An arrow function
-     * sees its parent's variables by value.
+     * sees its parent's variables by value. Each holds what {@see self::routerHold()}
+     * says: the parameters the router itself, a captured variable what it held outside,
+     * and an arrow function's variable another parameter shadows the router by name only.
      *
-     * @param  array<string, true>  $outer  The router variables of the enclosing scope
-     * @return array<string, true>
+     * @param  array<string, RouterHold>  $outer  The router variables of the enclosing scope
+     * @return array<string, RouterHold>
      */
     private function functionRouters(Node\FunctionLike $function, array $outer, bool $callback): array
     {
         $routers = $function instanceof Node\Expr\ArrowFunction ? $outer : [];
         if ($function instanceof Node\Expr\Closure) {
             foreach ($function->uses as $use) {
-                if (is_string($use->var->name) && isset($outer[$use->var->name])) {
-                    $routers[$use->var->name] = true;
+                if (is_string($use->var->name) && array_key_exists($use->var->name, $outer)) {
+                    $routers[$use->var->name] = $outer[$use->var->name];
                 }
             }
         }
 
         foreach ($function->getParams() as $index => $param) {
-            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)
-                && (($index === 0 && $callback) || $this->namesRouterClass($param->type))) {
-                $routers[$param->var->name] = true;
+            if (! $param->var instanceof Node\Expr\Variable || ! is_string($param->var->name)) {
+                continue;
+            }
+            if (($index === 0 && $callback) || $this->namesRouterClass($param->type)) {
+                $routers[$param->var->name] = self::HOLDS_ROUTER;
+            } elseif (isset($routers[$param->var->name])) {
+                // Any other parameter shadows the variable an arrow function sees
+                $routers[$param->var->name] = self::HOLDS_NAME;
             }
         }
 
@@ -1997,7 +2064,7 @@ class BootstrapRouteParser
      * at the end of a chain the router starts (see {@see self::chainOnRouter()}). The name
      * is matched case-insensitively, as PHP calls methods.
      *
-     * @param  array<string, true>  $routers  Variables that hold the router in this scope
+     * @param  array<string, mixed>  $routers  Variables that hold the router in this scope
      *
      * @phpstan-assert-if-true MethodCall|StaticCall $node
      */
@@ -2014,22 +2081,79 @@ class BootstrapRouteParser
      * static call it starts at, is the router (see {@see self::isRouteRoot()}). A chain
      * on Route::middleware(...) holds the router's registrar, whose calls register routes.
      *
-     * @param  array<string, true>  $routers
+     * @param  array<string, mixed>  $routers
      */
     private function chainOnRouter(Node $node, array $routers): bool
     {
+        return $this->routerHold($node, $routers) !== null;
+    }
+
+    /**
+     * What a call chain made on the router (see {@see self::chainOnRouter()}) holds, from
+     * evidence only: the router itself, a root {@see self::isRouterItself()} knows other
+     * than by a name, such as app('router') or $this->app['router'], or a variable the walk
+     * recorded as the router, such as a group callback's first parameter or one assigned
+     * app('router'), with no call made on it; a registrar, such as Route::middleware(...),
+     * $r->middleware(...) or a variable recorded as one; or the router only by the name
+     * isRouteRoot() reads it by, a $router or $this->router the walk recorded no value for,
+     * which group detection reads as the router and the route verbs a walk marks do not.
+     * Null when the chain is not made on the router. With $rootOnly, what its root holds,
+     * whatever calls are made on it.
+     *
+     * @param  array<string, mixed>  $routers
+     * @return RouterHold
+     */
+    private function routerHold(Node $node, array $routers, bool $rootOnly = false): ?string
+    {
+        $called = false;
+        $other = false;
         while (true) {
             if ($this->isRouteRoot($node, $routers)) {
-                return true;
+                // A call that hands back anything but a registrar, such as getRoutes(), leaves the router
+                if ($other) {
+                    return self::HOLDS_NAME;
+                }
+                $hold = match (true) {
+                    $node instanceof Node\Expr\Variable => is_string($node->name) ? ($routers[$node->name] ?? self::HOLDS_NAME) : self::HOLDS_NAME,
+                    $node instanceof Node\Expr\PropertyFetch && $node->var instanceof Node\Expr\Variable && $node->var->name === 'this' => self::HOLDS_NAME,
+                    default => self::HOLDS_ROUTER,
+                };
+                $hold = in_array($hold, [self::HOLDS_ROUTER, self::HOLDS_REGISTRAR], true) ? $hold : self::HOLDS_NAME;
+
+                return $called && ! $rootOnly && $hold === self::HOLDS_ROUTER ? self::HOLDS_REGISTRAR : $hold;
             }
             if ($node instanceof MethodCall) {
+                $other = $other || ! $this->returnsRegistrar($node);
                 $node = $node->var;
+                $called = true;
 
                 continue;
             }
 
-            return $node instanceof StaticCall && $this->isRouteRoot($node->class, $routers);
+            if (! $node instanceof StaticCall || ! $this->isRouteRoot($node->class, $routers)) {
+                return null;
+            }
+            if ($other) {
+                return self::HOLDS_NAME;
+            }
+            if ($this->isRouterItself($node, $routers)) {
+                return $called && ! $rootOnly ? self::HOLDS_REGISTRAR : self::HOLDS_ROUTER;
+            }
+
+            return $this->returnsRegistrar($node) ? self::HOLDS_REGISTRAR : self::HOLDS_NAME;
         }
+    }
+
+    /**
+     * Whether a call on the router or a registrar hands back a registrar: one that sets a
+     * registrar attribute (see {@see self::REGISTRAR_ATTRIBUTES}), a where...() constraint,
+     * attribute() or group(), as RouteRegistrar and Router::__call() return it.
+     */
+    private function returnsRegistrar(MethodCall|StaticCall $call): bool
+    {
+        $name = $call->name instanceof Identifier ? $call->name->toLowerString() : '';
+
+        return in_array($name, self::REGISTRAR_ATTRIBUTES, true) || in_array($name, ['attribute', 'group'], true) || str_starts_with($name, 'where');
     }
 
     /**
@@ -2040,7 +2164,7 @@ class BootstrapRouteParser
      * app() or Container::getInstance()) through ['router'], ->router, ->make(...),
      * ->get(...) or ->makeWith(...), given 'router', Router::class or Registrar::class.
      *
-     * @param  array<string, true>  $routers
+     * @param  array<string, mixed>  $routers
      */
     private function isRouteRoot(Node $root, array $routers): bool
     {

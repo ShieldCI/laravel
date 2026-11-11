@@ -30,6 +30,7 @@ use ShieldCI\Support\MiddlewareThrottleDetector;
  *
  * @phpstan-type RouteGroup array{start: int, end: int, middleware: list<string>, excluded: list<string>, controller: ?string, registration: bool, scope: string}
  * @phpstan-type RegisteredMiddleware array{class: string, names: list<string>, only: array<int, string>|null, except: array<int, string>}
+ * @phpstan-type RouteCall array{verbs: list<string>, uri: string, written: bool, chained: bool, offset: int}
  */
 class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 {
@@ -331,15 +332,17 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     /**
      * Check route files for login routes without throttling.
      *
-     * Each file is judged as part of the middleware group it is registered under:
-     * routes/api.php and files registered in the 'api' group are matched with the
-     * API route patterns and get the 'api' group's middleware, every other file the
-     * web patterns and the 'web' group's. A route is covered by a throttle on the
-     * global stack ($globalThrottled), by one its group, its file's registration or
-     * its own statement applies and none of them excludes by name (see
-     * middlewareThrottles()), or by a class its statement names that throttles login
-     * itself (see routeClassesThrottle()). Login rate limiting elsewhere in the code
-     * covers no route.
+     * Login routes are read from each file's AST (see routeMiddleware() and
+     * firstLoginRoute()), keyed and reported by the line their verb is written on, as is
+     * the middleware that reaches them. Each file is judged as part of the middleware
+     * group it is registered under: routes/api.php and files registered in the 'api'
+     * group are judged by the API rules (see isLoginRoute()) and get the 'api' group's
+     * middleware, every other file the web rules and the 'web' group's. A route is
+     * covered by a throttle on the global stack ($globalThrottled), by one its group,
+     * its file's registration or its own statement applies and none of them excludes by
+     * name (see middlewareThrottles()), or by a class its statement names that throttles
+     * login itself (see routeClassesThrottle()). Login rate limiting elsewhere in the
+     * code covers no route.
      *
      * Returns the controllers that throttled login routes point at, so the
      * controller check does not report a controller whose route is already
@@ -381,10 +384,13 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
                 $isApiRoute = $file->getFilename() === 'api.php' || isset($apiFiles[$normalizedPath]);
                 $fileMiddleware = $isApiRoute || ! isset($fileGroups[$normalizedPath]) ? $this->resolvedMiddlewareNames($isApiRoute ? 'api' : 'web') : [];
-                $content = $this->readCode($filePath);
-                if ($content === null) {
+                // The source as written, which a route's URI is read from, and without
+                // comments, which the Auth::routes() and controller scans read
+                $source = FileParser::readFile($filePath);
+                if ($source === null) {
                     continue;
                 }
+                $content = FileParser::stripAllComments($source);
 
                 // Comment-free source, split so index $i is line $i + 1: stripAllComments()
                 // keeps every newline, so line numbers match the file and the AST ranges.
@@ -402,8 +408,9 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $this->trackFileImports($ast);
 
                 // Middleware each route statement and each route group applies and
-                // excludes, so a throttling middleware covers the routes it reaches.
-                [$statementMiddleware, $groupMiddleware, $routeActions, $chainedRoutes] = $this->routeMiddleware($ast, $bootstrapParser->routerGroupCalls($ast), $bootstrapParser);
+                // excludes, so a throttling middleware covers the routes it reaches, and
+                // the routes the file registers.
+                [$statementMiddleware, $groupMiddleware, $routeActions, $routeCalls] = $this->routeMiddleware($ast, $bootstrapParser->routerGroupCalls($ast), $bootstrapParser, $source);
                 array_push($groupMiddleware, ...$fileGroups[$normalizedPath] ?? []);
 
                 // $lines is 0-based; findings report $lineNumber + 1, which is the
@@ -440,31 +447,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         }
                     }
 
-                    // Check for login-related routes
-                    // Web routes: /login, /signin, /auth, /authenticate
-                    // API routes: /api/login, /api/auth, /api/token, /oauth/token, /sanctum/token
-                    // For API files: token/oauth only match on POST/any/match (not GET — those
-                    // are management endpoints like /token/verify, not credential submission).
-                    // For web files GET never matches: a GET login route renders the form,
-                    // and the credentials arrive on the POST.
-                    $routeUri = null;
-                    if ($isApiRoute) {
-                        if (preg_match('/Route::(post|any|match)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate|token|oauth)[^"\']*)["\']/', $line, $m)) {
-                            $routeUri = $m[2];
-                        } elseif (preg_match('/Route::(get|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
-                            $routeUri = $m[2];
-                        }
-                    } elseif (preg_match('/Route::(post|any|match|resource|controller)\s*\(["\']([^"\']*(?:login|signin|auth|authenticate)[^"\']*)["\']/', $line, $m)) {
-                        $routeUri = $m[2];
-                    }
-
-                    // A verb chained after another Route:: call, Route::middleware(...)->post(...),
-                    // judged by the same verb and URI rules. routeMiddleware() reads the
-                    // middleware on both sides of its verb.
-                    $chained = $chainedRoutes[$lineNumber + 1] ?? null;
-                    if ($routeUri === null && $chained !== null && $this->isLoginRoute($chained['verb'], $chained['uri'], $isApiRoute)) {
-                        $routeUri = $chained['uri'];
-                    }
+                    // The login route registered on this line, if any (see firstLoginRoute()):
+                    // /login, /signin, /auth or /authenticate in any file, and /token or
+                    // /oauth on a POST in an API file
+                    $routeUri = $this->firstLoginRoute($routeCalls[$lineNumber + 1] ?? [], $isApiRoute);
 
                     if ($routeUri !== null) {
                         // Skip endpoints matched only on the broad 'auth'/'oauth'
@@ -485,8 +471,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                         $routeThrottled = $globalThrottled
                             || $this->middlewareThrottles($lineNumber + 1, $statementMiddleware, $groupMiddleware, $fileMiddleware, $action);
 
+                        // The action's controller too, which a route written over more lines than
+                        // controllersReferencedByRoute() reads names out of its reach
                         if ($routeThrottled) {
-                            foreach ($this->controllersReferencedByRoute($lines, $lineNumber) as $controller) {
+                            foreach ([...$this->controllersReferencedByRoute($lines, $lineNumber), ...$this->actionClasses($action)] as $controller) {
                                 $coveredControllers[$controller] = true;
                             }
                         }
@@ -517,11 +505,47 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a route with this verb and URI takes login credentials, by the rules
-     * the Route::verb( text match applies: in an API file, a POST/any/match URI
-     * with a login, auth or token keyword, or a GET/resource URI with a login or
-     * auth one; in a web file, a POST/any/match/resource URI with a login or auth
-     * keyword.
+     * The URI of the login route a line registers (see isLoginRoute()), or null when it
+     * registers none. Findings are keyed by line, so a line reports one route: one
+     * written as a Route::verb('...') call, an API file's POST and any() before its GET,
+     * resource() and controller(), then the last one chained after another Route:: call,
+     * then any other, each other group in the order they are written. A line whose first
+     * login route is a logout, sign-out or identity read (see checkRouteFiles()) reports
+     * none.
+     *
+     * @param  list<RouteCall>  $calls  The routes registered on the line (see routeMiddleware())
+     */
+    private function firstLoginRoute(array $calls, bool $isApiRoute): ?string
+    {
+        $first = null;
+        $firstRank = null;
+        foreach ($calls as $call) {
+            $verbs = array_values(array_filter($call['verbs'], fn (string $verb): bool => $this->isLoginRoute($verb, $call['uri'], $isApiRoute)));
+            if ($verbs === []) {
+                continue;
+            }
+
+            $rank = [match (true) {
+                $call['written'] => $isApiRoute && ! in_array($verbs[0], ['post', 'any'], true) ? 1 : 0,
+                $call['chained'] => 2,
+                default => 3,
+            }, $call['chained'] ? -$call['offset'] : $call['offset']];
+            if ($firstRank === null || $rank < $firstRank) {
+                $first = $call['uri'];
+                $firstRank = $rank;
+            }
+        }
+
+        return $first;
+    }
+
+    /**
+     * Whether a route with this verb and URI takes login credentials: in an API file,
+     * a POST/any/match URI with a login, auth or token keyword, or a
+     * GET/resource/controller URI with a login or auth one; in a web file, a
+     * POST/any/match/resource/controller URI with a login or auth keyword. A
+     * match() route is judged by each method it lists (see routeCallVerbs()), and a
+     * controller() one is only ever Route::controller('...') given a string.
      */
     private function isLoginRoute(string $verb, string $uri, bool $isApiRoute): bool
     {
@@ -529,10 +553,10 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         if ($isApiRoute) {
             return (in_array($verb, ['post', 'any', 'match'], true) && ($login || preg_match('/token|oauth/', $uri) === 1))
-                || (in_array($verb, ['get', 'resource'], true) && $login);
+                || (in_array($verb, ['get', 'resource', 'controller'], true) && $login);
         }
 
-        return in_array($verb, ['post', 'any', 'match', 'resource'], true) && $login;
+        return in_array($verb, ['post', 'any', 'match', 'resource', 'controller'], true) && $login;
     }
 
     /**
@@ -546,24 +570,35 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * A group also records the controller a Route::controller(...) group names,
      * since its routes reach that controller. The third list is each route's
      * action (see routeAction()), keyed like the statements. The fourth is the
-     * routes whose verb is chained after another Route:: call, which no
-     * Route::post( text match finds, with their verb and URI, keyed the same way.
+     * routes the file registers whose URI is a string literal, keyed the same way:
+     * on the Route facade (see registersOnFacade()), on a chain that starts at it, or on
+     * the router or a registrar held in a variable (see
+     * BootstrapRouteParser::ROUTE_ON_ROUTER), each with the verbs it answers (see
+     * routeCallVerbs()) and its URI (see routeUri()). A route on a variable whose
+     * middleware this cannot read, one the router hands a registrar it may have changed,
+     * is left out, as no throttle it may carry can be ruled out, and so is one on a variable
+     * or the router that shares its line with another route, or whose chain starts at
+     * another class (see chainStartsAtOtherClass()).
      *
      * Reads the import table, so trackFileImports() must have seen the route file. Only
      * the group calls in $routerGroups are route groups (see
-     * BootstrapRouteParser::routerGroupCalls()).
+     * BootstrapRouteParser::routerGroupCalls()), and only a tree that call has walked
+     * carries the receivers it reads.
      *
      * @param  array<Node>  $ast
      * @param  array<int, true>  $routerGroups
-     * @return array{0: array<int, array{middleware: list<string>, excluded: list<string>}>, 1: list<RouteGroup>, 2: array<int, array{class: ?string, method: ?string}>, 3: array<int, array{verb: string, uri: string}>}
+     * @param  string  $source  The file as written, which the AST positions index
+     * @return array{0: array<int, array{middleware: list<string>, excluded: list<string>}>, 1: list<RouteGroup>, 2: array<int, array{class: ?string, method: ?string}>, 3: array<int, list<RouteCall>>}
      */
-    private function routeMiddleware(array $ast, array $routerGroups, BootstrapRouteParser $bootstrapParser): array
+    private function routeMiddleware(array $ast, array $routerGroups, BootstrapRouteParser $bootstrapParser, string $source): array
     {
         $statements = [];
         $groups = [];
         $actions = [];
-        $chained = [];
+        $routes = [];
         $verbs = [];
+        $receiverRoutes = [];
+        $reported = [];
 
         foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $call) {
             if (! $call instanceof Node\Expr\MethodCall || ! $call->name instanceof Node\Identifier) {
@@ -593,19 +628,24 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $this->collectGroupMiddleware($call->args, $middleware, $excluded, $controller, $groups, $bootstrapParser);
             }
 
-            // Route::middleware(...)->post(...): a verb chained after another Route:: call
-            if (in_array($method, self::ROUTE_VERBS, true) && $this->chainStartsAtRoute($call->var)) {
+            // Route::middleware(...)->post(...), a verb chained after another Route:: call,
+            // or $router->post(...) / $guest->post(...) on a variable holding the router or a
+            // registrar
+            $onRouter = $call->getAttribute(BootstrapRouteParser::ROUTE_ON_ROUTER);
+            $chained = $this->chainStartsAtRoute($call->var);
+            if (in_array($method, self::ROUTE_VERBS, true) && $chained) {
                 $line = $call->name->getStartLine();
                 [$middleware, $excluded] = $this->chainMiddleware($call->var, $bootstrapParser);
                 $statements[$line] ??= ['middleware' => [], 'excluded' => []];
                 array_push($statements[$line]['middleware'], ...$middleware);
                 array_push($statements[$line]['excluded'], ...$excluded);
                 $this->recordRouteAction($call, $method, $line, $actions);
-
-                $uri = $call->args[$method === 'match' ? 1 : 0] ?? null;
-                if ($uri instanceof Node\Arg && $uri->value instanceof Node\Scalar\String_) {
-                    $chained[$line] = ['verb' => $method, 'uri' => $uri->value->value];
-                }
+                // A chain on the facade is read whatever its middleware, as it always was, and
+                // its URI as a plain string literal; its URI and action now by name too, and a
+                // match() by the methods it lists (see routeCallVerbs())
+                $this->recordRouteCall($call, $method, false, true, $source, $routes);
+            } elseif (in_array($method, self::ROUTE_VERBS, true) && is_bool($onRouter) && ! $this->chainStartsAtOtherClass($call->var)) {
+                $receiverRoutes[] = [$call, $method, $onRouter];
             }
         }
 
@@ -623,6 +663,42 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
                 $verbs[$call->name->getStartLine()] = ($verbs[$call->name->getStartLine()] ?? 0) + 1;
                 $this->recordRouteAction($call, $method, $call->name->getStartLine(), $actions);
             }
+
+            if ((in_array($method, self::ROUTE_VERBS, true) || $method === 'controller') && $this->registersOnFacade($call)) {
+                $line = $call->name->getStartLine();
+                $recorded = count($routes[$line] ?? []);
+                $this->recordRouteCall($call, $method, true, false, $source, $routes);
+                // A Route::controller('...') route is one the line reports too
+                if ($method === 'controller' && count($routes[$line] ?? []) > $recorded) {
+                    $reported[$line] = ($reported[$line] ?? 0) + 1;
+                }
+            }
+
+            // So is Auth::routes()
+            if ($method === 'routes' && $call->class instanceof Node\Name && strcasecmp($call->class->getLast(), 'Auth') === 0) {
+                $reported[$call->name->getStartLine()] = ($reported[$call->name->getStartLine()] ?? 0) + 1;
+            }
+        }
+
+        // A route on the router or a registrar held in a variable is read only alone on its
+        // line, Auth::routes() and Route::controller('...') counted with the verbs: statements
+        // and actions are keyed by line, so its middleware and its action would reach another
+        // route there. Its middleware is read unless the variable's value cannot be, as no
+        // throttle it may carry can be ruled out.
+        foreach ($receiverRoutes as [$call, $method, $onRouter]) {
+            if (! $call->name instanceof Node\Identifier || ($verbs[$line = $call->name->getStartLine()] ?? 0) + ($reported[$line] ?? 0) !== 1) {
+                continue;
+            }
+
+            [$middleware, $excluded, , $unread] = $this->chainMiddleware($call->var, $bootstrapParser, $onRouter);
+            if ($unread) {
+                continue;
+            }
+            $statements[$line] ??= ['middleware' => [], 'excluded' => []];
+            array_push($statements[$line]['middleware'], ...$middleware);
+            array_push($statements[$line]['excluded'], ...$excluded);
+            $this->recordRouteAction($call, $method, $line, $actions);
+            $this->recordRouteCall($call, $method, false, false, $source, $routes);
         }
 
         // Statements are keyed by line, so with two routes on a line, on any receiver, an
@@ -633,22 +709,164 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        return [$statements, $groups, $actions, $chained];
+        return [$statements, $groups, $actions, $routes];
     }
 
     /**
      * Records the action a route verb call names, under the line its verb is on.
-     * Route::match() takes its methods first, the others their URI. A resource
-     * route names its controller with no method: its routes reach several.
+     * Route::match() takes its methods first, the others their URI, each by position
+     * or by name (see routeArgument()). A resource route names its controller with no
+     * method: its routes reach several.
      *
      * @param  array<int, array{class: ?string, method: ?string}>  $actions
      */
     private function recordRouteAction(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, int $line, array &$actions): void
     {
-        $action = $call->args[$verb === 'match' ? 2 : 1] ?? null;
-        if ($action instanceof Node\Arg && ($routeAction = $this->routeAction($action->value)) !== null) {
+        $action = match ($verb) {
+            'match' => self::routeArgument($call, 2, 'action'),
+            'resource' => self::routeArgument($call, 1, 'controller'),
+            default => self::routeArgument($call, 1, 'action'),
+        };
+        if ($action !== null && ($routeAction = $this->routeAction($action->value)) !== null) {
             $actions[$line] = $verb === 'resource' ? ['class' => $routeAction['class'], 'method' => null] : $routeAction;
         }
+    }
+
+    /**
+     * Records the route a verb call registers, under the line its verb is on, when its
+     * URI can be read (see routeUri()) and so can the methods a match() call lists (see
+     * routeCallVerbs()). A static call whose URI comes first by position is the
+     * Route::post('...') form a written route takes. Every URI but that of a verb chained
+     * after a Route facade call is read as written (see routeUri()).
+     *
+     * @param  bool  $chained  Whether the verb is chained after a Route facade call
+     * @param  array<int, list<RouteCall>>  $routes
+     */
+    private function recordRouteCall(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, bool $static, bool $chained, string $source, array &$routes): void
+    {
+        $uri = match ($verb) {
+            'match' => self::routeArgument($call, 1, 'uri'),
+            'resource' => self::routeArgument($call, 0, 'name'),
+            'controller' => self::routeArgument($call, 0, 'controller'),
+            default => self::routeArgument($call, 0, 'uri'),
+        };
+        $written = $static && $verb !== 'match' && $uri !== null && $uri->name === null;
+        $text = $uri !== null ? $this->routeUri($uri->value, ! $chained, $source) : null;
+        $verbs = $this->routeCallVerbs($call, $verb, $chained);
+        if ($text === null || $verbs === null || ! $call->name instanceof Node\Identifier) {
+            return;
+        }
+
+        $routes[$call->name->getStartLine()][] = ['verbs' => $verbs, 'uri' => $text, 'written' => $written, 'chained' => $chained, 'offset' => $call->getStartFilePos()];
+    }
+
+    /**
+     * The verbs a route call answers, lowercase: its own, or for match() each method its
+     * first argument lists, a string or a list of strings, by position or by name, or
+     * a variable holding one (see heldValue()). Null when a match() call's methods
+     * cannot be read, unless it is chained after a Route facade call, which stays
+     * the match route it always was.
+     *
+     * @return list<string>|null
+     */
+    private function routeCallVerbs(Node\Expr\MethodCall|Node\Expr\StaticCall $call, string $verb, bool $chained): ?array
+    {
+        if ($verb !== 'match') {
+            return [$verb];
+        }
+
+        $methods = self::routeArgument($call, 0, 'methods');
+        $value = $methods !== null ? self::heldValue($methods->value) : null;
+        $items = $value instanceof Node\Expr\Array_ ? $value->items : [$value];
+        $verbs = [];
+        foreach ($items as $item) {
+            $method = $item instanceof Node\Expr\ArrayItem && ! $item->unpack ? $item->value : $item;
+            if (! $method instanceof Node\Scalar\String_) {
+                return $chained ? ['match'] : null;
+            }
+            $verbs[] = strtolower($method->value);
+        }
+
+        return $verbs;
+    }
+
+    /**
+     * The URI a route call's argument gives. One read $asWritten is read as the
+     * Route::post('...') text match always read it: the string literal it starts with,
+     * the leftmost operand of a concatenation, from its opening quote to the next quote,
+     * as written, interpolation and escapes included; a heredoc for its value. A verb
+     * chained after a Route facade call keeps the reading it always had: a plain string
+     * literal, for its value.
+     *
+     * @param  string  $source  The file as written, which the AST positions index
+     */
+    private function routeUri(Node\Expr $uri, bool $asWritten, string $source): ?string
+    {
+        if (! $asWritten) {
+            return $uri instanceof Node\Scalar\String_ ? $uri->value : null;
+        }
+
+        while ($uri instanceof Node\Expr\BinaryOp\Concat) {
+            $uri = $uri->left;
+        }
+        $literal = $uri instanceof Node\Scalar\InterpolatedString || $uri instanceof Node\Scalar\String_;
+        if ($literal && in_array($uri->getAttribute('kind'), [Node\Scalar\String_::KIND_SINGLE_QUOTED, Node\Scalar\String_::KIND_DOUBLE_QUOTED], true)) {
+            $text = substr($source, $uri->getStartFilePos() + 1, max(0, $uri->getEndFilePos() - $uri->getStartFilePos() - 1));
+
+            return substr($text, 0, strcspn($text, '"\''));
+        }
+
+        return $uri instanceof Node\Scalar\String_ ? $uri->value : null;
+    }
+
+    /**
+     * Whether a method chain, followed through a variable that holds part of it (see
+     * heldValue()), starts at a static call on a class other than the Route facade (see
+     * namesRouteFacade()), such as one imported as App\Support\Route under another name.
+     */
+    private function chainStartsAtOtherClass(Node\Expr $node): bool
+    {
+        $node = self::heldValue($node);
+        while ($node instanceof Node\Expr\MethodCall) {
+            $node = self::heldValue($node->var);
+        }
+
+        return $node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name && ! $this->namesRouteFacade($node->class);
+    }
+
+    /**
+     * A route call's argument, by its parameter's name or, when no argument names it, by
+     * its position among the positional ones, which PHP requires first.
+     */
+    private static function routeArgument(Node\Expr\MethodCall|Node\Expr\StaticCall $call, int $position, string $name): ?Node\Arg
+    {
+        foreach ($call->args as $index => $arg) {
+            if ($arg instanceof Node\Arg && ! $arg->unpack && ($arg->name !== null ? $arg->name->toString() === $name : $index === $position)) {
+                return $arg;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a static call is made on the Route facade: a class whose name ends in
+     * Route as written, as the Route::post( text match always read it, or one the file
+     * imports as Illuminate\Support\Facades\Route under another name.
+     */
+    private function registersOnFacade(Node\Expr\StaticCall $call): bool
+    {
+        return $call->class instanceof Node\Name
+            && (str_ends_with($call->class->toString(), 'Route') || $this->namesRouteFacade($call->class));
+    }
+
+    /**
+     * Whether a class name is the Route facade: Route as written, or a name the file's
+     * imports resolve to Illuminate\Support\Facades\Route.
+     */
+    private function namesRouteFacade(Node\Name $class): bool
+    {
+        return $class->getLast() === 'Route' || $this->resolvedClassFqn($class) === 'Illuminate\\Support\\Facades\\Route';
     }
 
     /**
@@ -675,8 +893,8 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Whether a method chain starts with a Route:: call, so a verb called on it
-     * registers a route.
+     * Whether a method chain starts with a call on the Route facade (see
+     * namesRouteFacade()), so a verb called on it registers a route.
      */
     private function chainStartsAtRoute(Node\Expr $node): bool
     {
@@ -686,7 +904,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
 
         return $node instanceof Node\Expr\StaticCall
             && $node->class instanceof Node\Name
-            && $node->class->getLast() === 'Route';
+            && $this->namesRouteFacade($node->class);
     }
 
     /**
@@ -1108,11 +1326,12 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
      * only a method. An ->attribute(...) call is read as the call it stands for (see
      * BootstrapRouteParser::attributeStandIn()). The fourth says whether that middleware call names one this cannot
      * read, or, with no middleware call, the chain starts at a variable whose value this
-     * cannot read.
+     * cannot read, unless $routerItself says the variable holds the router itself (see
+     * BootstrapRouteParser::ROUTE_ON_ROUTER), which carries no middleware.
      *
      * @return array{0: list<string>, 1: list<string>, 2: ?string, 3: bool}
      */
-    private function chainMiddleware(Node\Expr $node, BootstrapRouteParser $bootstrapParser): array
+    private function chainMiddleware(Node\Expr $node, BootstrapRouteParser $bootstrapParser, bool $routerItself = false): array
     {
         $middleware = null;
         $unread = false;
@@ -1146,7 +1365,7 @@ class LoginThrottlingAnalyzer extends AbstractFileAnalyzer
         }
 
         // A chain that starts at a variable whose value cannot be read may hold any middleware
-        $unread = $unread || ($middleware === null && $node instanceof Node\Expr\Variable);
+        $unread = $unread || ($middleware === null && $node instanceof Node\Expr\Variable && ! $routerItself);
 
         return [$middleware ?? [], $excluded, $controller, $unread];
     }

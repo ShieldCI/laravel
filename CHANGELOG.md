@@ -4,19 +4,31 @@
 
 ### Changed
 - `login-throttling` grades an api file passed to `group()` through a path variable by the API rules, which can fail a default `fail_on: high` build (#578)
-- `config-outside-config` scans projects checked out under a `tests/` or `config/` directory instead of skipping them (#582)
+- `config-outside-config` scans projects checked out under a `tests/`, `config/`, `vendor/`, `database/seeders/` or `database/factories/` directory instead of skipping them, which can fail a default `fail_on: high` build (#582)
 - `autoloader-optimization` reports an unoptimized Composer autoloader at High, which can fail a default `fail_on: high` build (#584)
 - `config-outside-config` reports loopback and private-IP URLs written with userinfo, such as `http://user@127.0.0.1` (#585)
 - `csrf-protection`, `login-throttling` and `authentication-authorization` apply only the last `middleware()` call before `group()`, which can fail a default `fail_on: high` build (#588)
-- `login-throttling` stops crediting throttles Laravel does not apply, such as one removed by `api(remove:)`, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` applies only the last `middleware()` call a `Route::middleware()` chain makes before a verb such as `post()`, which can fail a default `fail_on: high` build (#588)
+- `login-throttling` stops crediting a throttle removed by `api(remove:)` or `removeFromGroup()`, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` reads only the leading array of `->middleware(['auth'], 'throttle:5,1')`, as Laravel does, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` no longer gives the web group's throttle to a route file registered by a group that does not name `web`, such as `Route::prefix('hooks')->group(...)`, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` drops a parameterless `ThrottleRequestsWithRedis` when a route excludes `ThrottleRequests`, as Laravel does, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` applies a route's and its groups' middleware exclusions to the throttle its controller registers, which can fail a default `fail_on: high` build (#595)
+- `login-throttling` grades `routes/api.php` by the API rules when it is registered through positional `withRouting()` arguments, `withRouting(api: $file)` or a provider path method, which can fail a default `fail_on: high` build (#595)
+- `csrf-protection`, `login-throttling` and `authentication-authorization` read `->attribute('withoutMiddleware', ...)` as a `withoutMiddleware()` call and report the routes it uncovers, which can fail a default `fail_on: high` build (#599)
 - `csrf-protection` reports Laravel 13 routes excluding the `ValidateCsrfToken` a Kernel web group lists, which can fail a default `fail_on: high` build (#602)
 
 ### Fixed
 - `csrf-protection` reads route files passed to `group()` through a path variable instead of reporting their POST routes (#578)
 - `config-outside-config` no longer reports prefixed snake_case identifiers, such as `api_response_cache_key`, as API keys (#582)
 - `config-outside-config` no longer reports public hosts that start with `localhost` or a private IP, such as `localhost.run` (#585)
+- `login-throttling` compares a class string with a leading backslash as written, so `withoutMiddleware('\Illuminate\Routing\Middleware\ThrottleRequests:5,1')` no longer removes `throttle:5,1` (#595)
 - `csrf-protection`, `login-throttling` and `authentication-authorization` apply the middleware a route registrar held in a variable carries (#595, #599)
+- `authentication-authorization` recognises groups on a router variable, `app('router')` or a group callback's router parameter, and `group` in any case, instead of reporting the routes they protect (#599)
 - `csrf-protection` no longer reports Laravel 11/12 routes excluding `ValidateCsrfToken` when the Kernel web group runs `VerifyCsrfToken` (#602)
+- `csrf-protection` no longer reports a route excluding a CSRF class when the Kernel's global `$middleware` runs CSRF, since `withoutMiddleware()` only filters route middleware (#602)
+- `csrf-protection` no longer reports a route excluding a CSRF class the web group lists with parameters, such as `csrf:strict`, unless the exclusion names the same `Class:params` string (#602)
+- `csrf-protection` no longer assumes a `bootstrap/app.php` web-group class without a parent extends `VerifyCsrfToken`, so excluding it is no longer reported (#602)
 
 ## v1.22.0
 

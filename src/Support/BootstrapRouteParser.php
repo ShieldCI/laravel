@@ -2002,14 +2002,13 @@ class BootstrapRouteParser
         }
 
         foreach ($function->getParams() as $index => $param) {
-            if (! $param->var instanceof Node\Expr\Variable || ! is_string($param->var->name)) {
-                continue;
-            }
-            if (($index === 0 && $callback) || $this->namesRouterClass($param->type)) {
-                $routers[$param->var->name] = self::HOLDS_ROUTER;
-            } elseif (isset($routers[$param->var->name])) {
-                // Any other parameter shadows the variable an arrow function sees
-                $routers[$param->var->name] = self::HOLDS_NAME;
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                if (($index === 0 && $callback) || $this->namesRouterClass($param->type)) {
+                    $routers[$param->var->name] = self::HOLDS_ROUTER;
+                } elseif (isset($routers[$param->var->name])) {
+                    // Any other parameter shadows the variable an arrow function sees
+                    $routers[$param->var->name] = self::HOLDS_NAME;
+                }
             }
         }
 

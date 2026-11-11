@@ -19,6 +19,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\BootstrapRouteParser;
+use ShieldCI\Support\ClassHierarchyIndex;
 
 /**
  * Detects missing authentication and authorization protection.
@@ -34,6 +35,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
     use DetectsLaravelVersion;
     use ResolvesClassNames;
+
+    /**
+     * The parameters of ApplicationBuilder::withRouting(), in order.
+     */
+    private const WITH_ROUTING_PARAMETERS = ['using', 'web', 'api', 'commands', 'channels', 'pages', 'health', 'apiPrefix', 'then'];
 
     /**
      * @var array<string>
@@ -90,6 +96,27 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * @var array<string, array{total: int, authenticated: int}>
      */
     private array $routeAuthStats = [];
+
+    /**
+     * Per controller method, how many of the routes reaching it carry auth middleware,
+     * counted alike whether or not the route's URI is public: a public_routes entry says
+     * a route may go unauthenticated, not that the auth middleware it carries is gone.
+     * Read beside $routeAuthStats['total'] by the Auth::user() null check only.
+     *
+     * @var array<string, int>
+     */
+    private array $routeAuthCarried = [];
+
+    /**
+     * Controller methods a route reaches without auth for a reason other than its URI being
+     * listed as public: a guest route, a route that removes auth, which strips the
+     * controller's own middleware too, or a GET-only route without auth middleware. Read by
+     * the Auth::user() null check only, which lets controller-level auth protect a method
+     * public only through public_routes.
+     *
+     * @var array<string, true>
+     */
+    private array $routeOpenControllerMethods = [];
 
     /**
      * File-level URI prefixes the framework applies when registering whole route
@@ -245,7 +272,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Determine whether a collected route is public via any of its URI candidates
      * (full composed path, AST-visible composition, own declared segment).
      *
-     * @param  array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}  $route
+     * @param  array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int}  $route
      */
     private function isRoutePublic(array $route): bool
     {
@@ -269,6 +296,8 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      *   ending ->group(base_path('routes/X.php')) or a list of such files,
      *   including custom route files
      * - convention fallback: routes/api.php → 'api'
+     * - then, for a file none of the above maps, the registrations the route parser
+     *   follows (see {@see self::extractFollowedRoutePrefixes()})
      *
      * A wrong or missing guess is harmless: routes are matched against all
      * their URI candidates, including the AST-visible composition.
@@ -289,7 +318,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
         $map['api.php'] ??= 'api';
 
-        return $map;
+        // Fills only the files the literal reading leaves unmapped, so a public_routes
+        // pattern written for the prefix that reading gives a file keeps matching
+        return $map + $this->extractFollowedRoutePrefixes();
     }
 
     /**
@@ -494,6 +525,429 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
+     * Per-file prefixes from the registrations the route parser follows, as csrf-protection
+     * and login-throttling read them (see BootstrapRouteParser::getExternalRouteFileLoads()):
+     * route files loaded by a group on the router, as a path argument, a list of them or a
+     * variable holding them, or require'd inside a group's closure, in bootstrap/app.php and
+     * every file under app/Providers/, with a variable holding a registrar followed to the
+     * calls that built it. A file takes the prefixes of the groups loading it, composed as
+     * Laravel composes them (see {@see self::composeGroupPrefixes()}).
+     *
+     * Only registrations Laravel runs count: in bootstrap/app.php, those inside the routing
+     * callback withRouting() runs (see {@see self::withRoutingCallback()}); under
+     * app/Providers/, those in a service provider's boot(), register() or map(), or a method
+     * of the same class they call (see {@see self::providerRegistrationCalls()}). The api:
+     * files withRouting() registers under apiPrefix are added (see
+     * {@see self::extractFollowedApiPrefixes()}).
+     *
+     * The map is keyed by basename, so only a file directly under routes/ is recorded: a
+     * nested routes/partners/web.php would otherwise lend its prefix to routes/web.php.
+     *
+     * Precedence follows {@see self::resolveRouteFileBasePrefixes()}: api: files, then the
+     * routing callback, then the providers. Within one file the later registration wins;
+     * providers giving one file different prefixes give it none, as the order Laravel
+     * registers providers in is not read.
+     *
+     * @return array<string, string>
+     */
+    private function extractFollowedRoutePrefixes(): array
+    {
+        $routesDir = realpath($this->buildPath('routes'));
+        if ($routesDir === false) {
+            return [];
+        }
+        $routesDir = str_replace('\\', '/', $routesDir);
+
+        $routeParser = new BootstrapRouteParser($this->getBasePath(), $this->parser);
+        // The walk annotates the parser's cached trees, so it runs before bootstrap/app.php is read
+        $loads = $routeParser->getExternalRouteFileLoads();
+
+        $bootstrap = $this->getBasePath().'/bootstrap/app.php';
+        $ast = is_file($bootstrap) ? $this->parser->parseFile($bootstrap) : [];
+
+        $api = [];
+        $registrationCalls = [$bootstrap => []];
+        foreach ($this->parser->findMethodCalls($ast, 'withRouting') as $call) {
+            if (! ($call instanceof Node\Expr\MethodCall)) {
+                continue;
+            }
+
+            $api += $this->extractFollowedApiPrefixes($call);
+
+            $callback = $this->withRoutingCallback($call);
+            if ($callback !== null) {
+                $registrationCalls[$bootstrap] += $this->callIds([$callback]);
+            }
+        }
+
+        $then = [];
+        $bySource = [];
+        foreach ($loads as $load) {
+            $calls = $load['calls'];
+            if ($calls === [] || $this->normalizedDirname($load['file']) !== $routesDir) {
+                continue;
+            }
+
+            $source = $load['source'];
+            $registrationCalls[$source] ??= $this->providerRegistrationCalls($source);
+            if (! isset($registrationCalls[$source][spl_object_id($calls[0])])) {
+                continue;
+            }
+
+            $prefix = $this->composeGroupPrefixes($routeParser, $calls, '');
+            if ($prefix === null || $prefix === '') {
+                continue;
+            }
+
+            if ($source === $bootstrap) {
+                $then[basename($load['file'])] = $prefix;
+            } else {
+                $bySource[$source][basename($load['file'])] = $prefix;
+            }
+        }
+
+        $providers = [];
+        $conflicts = [];
+        foreach ($bySource as $prefixes) {
+            foreach ($prefixes as $basename => $prefix) {
+                if (isset($providers[$basename]) && $providers[$basename] !== $prefix) {
+                    $conflicts[$basename] = true;
+                }
+                $providers[$basename] = $prefix;
+            }
+        }
+
+        return $api + $then + array_diff_key($providers, $conflicts);
+    }
+
+    /**
+     * A path's directory, with separators normalized as the route parser normalizes paths.
+     */
+    private function normalizedDirname(string $path): string
+    {
+        return dirname(str_replace('\\', '/', $path));
+    }
+
+    /**
+     * The calls under the given nodes, by spl_object_id().
+     *
+     * @param  array<Node>  $nodes
+     * @return array<int, true>
+     */
+    private function callIds(array $nodes): array
+    {
+        $ids = [];
+        foreach ($this->parser->findNodes($nodes, Node\Expr\CallLike::class) as $call) {
+            $ids[spl_object_id($call)] = true;
+        }
+
+        return $ids;
+    }
+
+    /**
+     * The calls, by spl_object_id(), a file under app/Providers/ makes when Laravel runs its
+     * service providers: those in a provider's boot() and register(), which Laravel calls,
+     * and, in a RouteServiceProvider, in map(), which RouteServiceProvider::loadRoutes()
+     * calls, and in each method of the same class one of those calls on $this, self or
+     * static, at any depth. A class is a provider when a class it extends, as the file's
+     * declarations read, is named *ServiceProvider, and a RouteServiceProvider when one is
+     * named RouteServiceProvider. A method reached any other way, such as through a
+     * callable array, is not read.
+     *
+     * @return array<int, true>
+     */
+    private function providerRegistrationCalls(string $file): array
+    {
+        $ast = is_file($file) ? $this->parser->parseFile($file) : [];
+        $classes = array_filter(
+            $this->parser->findNodes($ast, Node\Stmt\Class_::class),
+            fn (Node $class): bool => $class instanceof Node\Stmt\Class_,
+        );
+
+        $hierarchy = new ClassHierarchyIndex;
+        foreach ($classes as $class) {
+            if ($class->namespacedName instanceof Node\Name) {
+                $hierarchy->record($class->namespacedName->toString(), $class->extends !== null ? $this->resolvedName($class->extends) : null, []);
+            }
+        }
+
+        $ids = [];
+        foreach ($classes as $class) {
+            if (! $this->extendsClassNamed($class, $hierarchy, '/ServiceProvider$/i')) {
+                continue;
+            }
+            $entries = $this->extendsClassNamed($class, $hierarchy, '/^RouteServiceProvider$/i') ? ['boot', 'register', 'map'] : ['boot', 'register'];
+
+            $methods = [];
+            foreach ($class->getMethods() as $method) {
+                $methods[$method->name->toLowerString()] = $method;
+            }
+
+            $pending = array_values(array_intersect($entries, array_keys($methods)));
+            $reached = array_fill_keys($pending, true);
+            while ($pending !== []) {
+                $method = $methods[array_pop($pending)];
+                foreach ($this->parser->findNodes([$method], Node\Expr\CallLike::class) as $call) {
+                    $ids[spl_object_id($call)] = true;
+
+                    $callee = $this->ownMethodCallee($call);
+                    if ($callee !== null && isset($methods[$callee]) && ! isset($reached[$callee])) {
+                        $reached[$callee] = true;
+                        $pending[] = $callee;
+                    }
+                }
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * The method, lowercase, a call makes on the object or class it is made in:
+     * $this->name(...), self::name(...) or static::name(...). Null for any other call.
+     */
+    private function ownMethodCallee(Node $call): ?string
+    {
+        if ($call instanceof Node\Expr\MethodCall
+            && $call->var instanceof Node\Expr\Variable && $call->var->name === 'this'
+            && $call->name instanceof Node\Identifier) {
+            return $call->name->toLowerString();
+        }
+
+        if ($call instanceof Node\Expr\StaticCall
+            && $call->class instanceof Node\Name && in_array($call->class->toLowerString(), ['self', 'static'], true)
+            && $call->name instanceof Node\Identifier) {
+            return $call->name->toLowerString();
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether a class extends, directly or through classes the file declares, a class
+     * whose short name matches $pattern, such as /ServiceProvider$/i for
+     * Illuminate\Support\ServiceProvider or
+     * Illuminate\Foundation\Support\Providers\RouteServiceProvider. The class's own name
+     * is not read.
+     */
+    private function extendsClassNamed(Node\Stmt\Class_ $class, ClassHierarchyIndex $hierarchy, string $pattern): bool
+    {
+        $parent = $class->extends !== null ? $this->resolvedName($class->extends) : null;
+        $seen = [];
+        while ($parent !== null && ! isset($seen[ClassHierarchyIndex::key($parent)])) {
+            $seen[ClassHierarchyIndex::key($parent)] = true;
+            $segments = explode('\\', $parent);
+            if (preg_match($pattern, end($segments)) === 1) {
+                return true;
+            }
+            $parent = $hierarchy->parentOf($parent);
+        }
+
+        return false;
+    }
+
+    /**
+     * A name as the route parser's walk resolved it, without a leading backslash.
+     */
+    private function resolvedName(Node\Name $name): string
+    {
+        $resolved = $name->getAttribute('resolvedName');
+
+        return ltrim(($resolved instanceof Node\Name ? $resolved : $name)->toString(), '\\');
+    }
+
+    /**
+     * The api: route files withRouting() registers, each under its apiPrefix, or 'api'
+     * when no apiPrefix is given: a path, or each path of a list, as
+     * ApplicationBuilder::buildRoutingCallback() reads both, a variable holding either read
+     * as its value. None when the apiPrefix given cannot be read, or when withRouting() runs
+     * a using: callback in place of its own, which never registers api: (a then: callback
+     * makes it build its own again).
+     *
+     * @return array<string, string>
+     */
+    private function extractFollowedApiPrefixes(Node\Expr\MethodCall $call): array
+    {
+        $then = $this->withRoutingArgument($call, 'then');
+        $using = $this->withRoutingArgument($call, 'using');
+        if (($then === null || $this->isNullLiteral($then)) && $using !== null && ! $this->isNullLiteral($using)) {
+            return [];
+        }
+
+        $api = $this->withRoutingArgument($call, 'api');
+        $files = $api !== null ? $this->extractRouteFileBasenames($api) : [];
+        if ($files === []) {
+            return [];
+        }
+
+        $apiPrefix = $this->withRoutingArgument($call, 'apiPrefix');
+        if ($apiPrefix === null) {
+            return array_fill_keys($files, 'api');
+        }
+
+        $apiPrefix = BootstrapRouteParser::heldValue($apiPrefix);
+
+        return $apiPrefix instanceof Node\Scalar\String_ ? array_fill_keys($files, trim($apiPrefix->value, '/')) : [];
+    }
+
+    /**
+     * The routing callback withRouting() runs, as ApplicationBuilder::withRouting() picks
+     * it: its then: callback when one is given, as it then builds its own routing callback
+     * and never calls using:, otherwise its using: callback. A callback held in a variable
+     * is read as the closure the variable holds. Null when it is neither a closure nor an
+     * arrow function.
+     */
+    private function withRoutingCallback(Node\Expr\MethodCall $call): Node\Expr\Closure|Node\Expr\ArrowFunction|null
+    {
+        $then = $this->withRoutingArgument($call, 'then');
+        $callback = $then !== null && ! $this->isNullLiteral($then) ? $then : $this->withRoutingArgument($call, 'using');
+        $callback = $callback !== null ? BootstrapRouteParser::heldValue($callback) : null;
+
+        return $callback instanceof Node\Expr\Closure || $callback instanceof Node\Expr\ArrowFunction ? $callback : null;
+    }
+
+    /**
+     * The value withRouting() is given for parameter $name, by name or at its position
+     * in ApplicationBuilder::withRouting(), or null when it is not given.
+     */
+    private function withRoutingArgument(Node\Expr\MethodCall $call, string $name): ?Node\Expr
+    {
+        $position = array_search($name, self::WITH_ROUTING_PARAMETERS, true);
+
+        foreach ($call->args as $index => $arg) {
+            if (! ($arg instanceof Node\Arg) || $arg->unpack) {
+                continue;
+            }
+
+            if ($arg->name !== null ? $arg->name->toString() === $name : $index === $position) {
+                return $arg->value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Whether an expression is the null literal, which withRouting() reads as no argument.
+     */
+    private function isNullLiteral(Node\Expr $expr): bool
+    {
+        return $expr instanceof Node\Expr\ConstFetch && $expr->name->toLowerString() === 'null';
+    }
+
+    /**
+     * Extract the basenames of the route files directly under routes/ a withRouting file
+     * argument names: a path, or each path of a list, a variable holding either read as
+     * its value. A path is a string literal, a __DIR__.'/../routes/api.php' style concat or
+     * a base_path('routes/api.php') call.
+     *
+     * @return list<string>
+     */
+    private function extractRouteFileBasenames(Node\Expr $expr): array
+    {
+        $expr = BootstrapRouteParser::heldValue($expr);
+
+        $entries = [$expr];
+        if ($expr instanceof Node\Expr\Array_) {
+            $entries = [];
+            foreach ($expr->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    $entries[] = BootstrapRouteParser::heldValue($item->value);
+                }
+            }
+        }
+
+        $basenames = [];
+        foreach ($entries as $entry) {
+            $path = null;
+            if ($entry instanceof Node\Scalar\String_) {
+                $path = $entry->value;
+            } elseif ($entry instanceof Node\Expr\BinaryOp\Concat && $entry->right instanceof Node\Scalar\String_) {
+                $path = $entry->right->value;
+            } elseif ($this->extractBasePathRouteFile($entry) !== null && $entry instanceof Node\Expr\FuncCall
+                && ($arg = $entry->args[0]->value ?? null) instanceof Node\Scalar\String_) {
+                $path = $arg->value;
+            }
+
+            if ($path !== null && str_ends_with($path, '.php')
+                && preg_match('~(^|/)routes$~', $this->normalizedDirname($path)) === 1) {
+                $basenames[] = basename($path);
+            }
+        }
+
+        return $basenames;
+    }
+
+    /**
+     * The prefix the given group calls, outermost first, register their routes under, with
+     * $prefix the one they are registered within: each group's prefix appended to the one
+     * before it, as RouteGroup::formatPrefix() merges a group's attributes into the group
+     * stack. A group that sets none keeps the prefix before it. Null when a group's prefix
+     * cannot be read (see {@see self::groupLayerPrefix()}).
+     *
+     * @param  list<Node\Expr\MethodCall|Node\Expr\StaticCall>  $calls
+     */
+    private function composeGroupPrefixes(BootstrapRouteParser $routeParser, array $calls, string $prefix): ?string
+    {
+        foreach ($calls as $call) {
+            $layer = $this->groupLayerPrefix($routeParser, $call);
+            if ($layer === null) {
+                return null;
+            }
+            if ($layer !== '') {
+                $prefix = trim($prefix, '/').'/'.trim($layer, '/');
+            }
+        }
+
+        return trim($prefix, '/');
+    }
+
+    /**
+     * The prefix one group call on the router sets, '' when it sets none, or null when it
+     * cannot be read.
+     *
+     * A ->group() on a registrar: the argument of the last prefix() call among the calls
+     * that built it, as the route parser reads them (see
+     * BootstrapRouteParser::groupChain()), following a variable holding the registrar, as
+     * RouteRegistrar::attribute() overwrites the prefix on each call. A group() made on the
+     * router itself, Route::group([...], ...) or $router->group([...], ...): the last
+     * 'prefix' key of its attribute array, as PHP keeps the last value an array literal
+     * gives one key. Only Router::group() takes attributes: RouteRegistrar::group() takes
+     * the routes alone. A chain that starts at a class named Route other than the Route
+     * facade or its global alias registers nothing, and cannot be read either.
+     */
+    private function groupLayerPrefix(BootstrapRouteParser $routeParser, Node\Expr\MethodCall|Node\Expr\StaticCall $groupCall): ?string
+    {
+        $chain = $routeParser->groupChain($groupCall);
+
+        $root = $chain[0];
+        if ($root instanceof Node\Expr\StaticCall && $root->class instanceof Node\Name
+            && ! in_array(strtolower($this->resolvedName($root->class)), ['illuminate\\support\\facades\\route', 'route'], true)) {
+            return null;
+        }
+
+        if (count($chain) > 1) {
+            foreach (array_reverse(array_slice($chain, 0, -1)) as $current) {
+                if ($current->name instanceof Node\Identifier && $current->name->toLowerString() === 'prefix') {
+                    $arg = $current->args[0] ?? null;
+
+                    return $arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_ ? $arg->value->value : null;
+                }
+            }
+
+            return '';
+        }
+
+        $prefixes = $routeParser->groupAttributeEntries($groupCall->args, 'prefix');
+        if ($prefixes === []) {
+            return '';
+        }
+        $prefix = end($prefixes);
+
+        return $prefix instanceof Node\Scalar\String_ ? $prefix->value : null;
+    }
+
+    /**
      * Build route-level authentication statistics per controller method.
      *
      * Uses PHP-Parser AST via RouteAuthVisitor so that all valid PHP formatting
@@ -531,6 +985,16 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     $this->routeAuthStats[$method] = ['total' => 0, 'authenticated' => 0];
                 }
                 $this->routeAuthStats[$method]['total']++;
+
+                // Auth removed at any level is stripped from the controller's middleware too
+                // (Router::gatherRouteMiddleware()); a group-level removal opens the method
+                // here only on a public URI, where master already counts the method public
+                $removesAuth = $this->routeDirectRemoveHasAuth($route['removed']);
+                if (! $removesAuth && ! $isGuestRoute && $this->isRouteMiddlewareAuthenticated($route['middleware'])) {
+                    $this->routeAuthCarried[$method] = ($this->routeAuthCarried[$method] ?? 0) + 1;
+                } elseif ($hasExplicitAuthRemoval || $isGuestRoute || $route['http_methods'] === ['GET'] || ($isPublicUri && $removesAuth)) {
+                    $this->routeOpenControllerMethods[$method] = true;
+                }
 
                 // Explicit public signals win
                 if ($isPublicUri || $hasExplicitAuthRemoval || $isGuestRoute) {
@@ -780,7 +1244,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * non-whitelisted groups continue to be flagged.
      *
      * @param  array{middleware: list<string>, inherited_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}  $group
-     * @param  list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>  $routes
+     * @param  list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int}>  $routes
      */
     private function groupContainsOnlyPublicRoutes(array $group, array $routes): bool
     {
@@ -1541,15 +2005,33 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         $shortKey = "{$className}::{$methodName}";
         $fqcnKey = $namespace !== '' ? "{$namespace}\\{$className}::{$methodName}" : $shortKey;
 
-        // Intentionally public (guest route, unauthenticated GET) → do not suppress
-        if (isset($this->publicControllerMethods[$fqcnKey])
-                || isset($this->publicControllerMethods[$shortKey])) {
+        // Every route to this class's method carries auth middleware, whether or not its URI
+        // is listed as public, so the user is never null here. Read only when routes name the
+        // class itself: a short name alone may be another class, which master's route-level
+        // test below already reads as it reads it. Routes under the short name must carry
+        // auth too, as they may reach this method.
+        $carried = isset($this->routeAuthStats[$fqcnKey]);
+        foreach (array_unique([$fqcnKey, $shortKey]) as $key) {
+            if (isset($this->routeAuthStats[$key])) {
+                $carried = $carried && ($this->routeAuthCarried[$key] ?? 0) === $this->routeAuthStats[$key]['total'];
+            }
+        }
+        if ($carried) {
+            return true;
+        }
+
+        // Reached without auth on purpose (guest route, auth removed, unauthenticated GET) → do not suppress
+        if (isset($this->routeOpenControllerMethods[$fqcnKey])
+                || isset($this->routeOpenControllerMethods[$shortKey])) {
             return false;
         }
 
-        // Route-level: every known route to this method is authenticated
+        // Route-level: every known route to this method is authenticated. A method public
+        // only through public_routes skips this, as such a route never counts as authenticated
+        // here, and falls through to the controller's own auth
+        $isPublic = isset($this->publicControllerMethods[$fqcnKey]) || isset($this->publicControllerMethods[$shortKey]);
         $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$shortKey] ?? null;
-        if ($stats !== null && $stats['total'] > 0
+        if (! $isPublic && $stats !== null && $stats['total'] > 0
                 && $stats['authenticated'] === $stats['total']) {
             return true;
         }
@@ -1960,7 +2442,16 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     private array $prefixStack = [];
 
     /**
-     * @var list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     * The middleware each open group excludes, through ->withoutMiddleware() or an
+     * 'excluded_middleware' attribute, kept in lockstep with $middlewareStack. Read only into
+     * each route's 'removed' list.
+     *
+     * @var list<list<string>>
+     */
+    private array $excludedStack = [];
+
+    /**
+     * @var list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int}>
      */
     private array $collectedRoutes = [];
 
@@ -1987,7 +2478,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     ) {}
 
     /**
-     * @return list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, line: int}>
+     * @return list<array{uri: string, match_uris: list<string>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int}>
      */
     public function getCollectedRoutes(): array
     {
@@ -2010,6 +2501,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             $own = $this->extractGroupMiddleware($node);
             $this->middlewareStack[] = $own;
             $this->prefixStack[] = $this->extractGroupPrefix($node);
+            $this->excludedStack[] = [...$own['remove'], ...$this->extractGroupExcludedMiddleware($node)];
 
             $this->collectedGroups[] = [
                 'middleware' => $own['add'],
@@ -2029,6 +2521,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         if ($this->isGroupNode($node)) {
             array_pop($this->middlewareStack);
             array_pop($this->prefixStack);
+            array_pop($this->excludedStack);
         }
 
         // Process route calls at the Stmt\Expression boundary so we see the
@@ -2137,6 +2630,31 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         }
 
         return ['add' => $add, 'remove' => $remove];
+    }
+
+    /**
+     * The middleware a group's attribute array excludes under 'excluded_middleware', read
+     * from the first argument as {@see self::extractGroupMiddleware()} reads 'middleware'.
+     *
+     * @return list<string>
+     */
+    private function extractGroupExcludedMiddleware(Node $node): array
+    {
+        $firstArg = ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) ? ($node->args[0]->value ?? null) : null;
+        if (! ($firstArg instanceof Node\Expr\Array_)) {
+            return [];
+        }
+
+        $excluded = [];
+        foreach ($firstArg->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem
+                && $item->key instanceof Node\Scalar\String_
+                && $item->key->value === 'excluded_middleware') {
+                $excluded = array_merge($excluded, $this->extractMiddlewareValue($item->value));
+            }
+        }
+
+        return $excluded;
     }
 
     /**
@@ -2287,6 +2805,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             'is_closure' => $isClosure,
             'middleware' => array_values($effective),
             'direct_remove' => $directRemove,
+            'removed' => array_values(array_unique([...array_merge(...$this->excludedStack), ...$directRemove])),
             'line' => $current->getStartLine(),
         ];
     }

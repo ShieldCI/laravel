@@ -6,6 +6,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
 use PhpParser\Node;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\FrameworkOverrideAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
@@ -229,22 +230,50 @@ PHP;
         $this->assertStringContainsString('Application', $issues[0]->message);
     }
 
-    public function test_detects_http_kernel_extension(): void
+    public function test_does_not_flag_the_default_laravel_9_and_10_kernels(): void
     {
-        $code = <<<'PHP'
+        // The laravel/laravel 9.x and 10.x skeletons ship both files, and an app upgraded to
+        // 11+ may keep them, so extending the Foundation Kernels is the framework's own design.
+        $http = <<<'PHP'
 <?php
 
 namespace App\Http;
 
-use Illuminate\Foundation\Http\Kernel;
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
 
-class CustomKernel extends Kernel
+class Kernel extends HttpKernel
 {
     protected $middleware = [];
+    protected $middlewareGroups = [];
+    protected $middlewareAliases = [];
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+        $console = <<<'PHP'
+<?php
+
+namespace App\Console;
+
+use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Foundation\Console\Kernel as ConsoleKernel;
+
+class Kernel extends ConsoleKernel
+{
+    protected function schedule(Schedule $schedule): void
+    {
+    }
+
+    protected function commands(): void
+    {
+        $this->load(__DIR__.'/Commands');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Kernel.php' => $http,
+            'app/Console/Kernel.php' => $console,
+        ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -252,9 +281,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $issues = $result->getIssues();
-        $this->assertEquals('high', $issues[0]->severity->value);
+        $this->assertPassed($result);
     }
 
     public function test_detects_router_extension(): void
@@ -813,6 +840,81 @@ PHP;
         $this->assertPassed($result); // Should pass because vendor is excluded
     }
 
+    public function test_still_analyses_a_checkout_whose_path_contains_a_tests_segment(): void
+    {
+        // The exclusions match the project-relative path, so a directory named tests
+        // above the base path must not hide the whole project.
+        $outer = $this->uniqueTempPath();
+        $root = $outer.'/tests/myapp';
+
+        try {
+            mkdir($root.'/app/Http', 0755, true);
+            file_put_contents($root.'/app/Http/CustomRouter.php', <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Routing\Router;
+
+class CustomRouter extends Router
+{
+}
+PHP);
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($root);
+            $analyzer->setPaths(['.']);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('Illuminate\Routing\Router', $result);
+        } finally {
+            $this->removeDirectory($outer);
+        }
+    }
+
+    /**
+     * @dataProvider nestedExcludedPathProvider
+     */
+    #[DataProvider('nestedExcludedPathProvider')]
+    public function test_ignores_nested_test_and_vendor_directories(string $path): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace Foo;
+
+use Illuminate\Http\Request;
+
+class CustomRequest extends Request
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([$path => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nestedExcludedPathProvider(): array
+    {
+        return [
+            'nested tests' => ['packages/foo/tests/CustomRequest.php'],
+            'nested Tests' => ['packages/foo/Tests/CustomRequest.php'],
+            'nested vendor' => ['packages/foo/vendor/bar/CustomRequest.php'],
+        ];
+    }
+
     // Recommendation Tests
 
     public function test_provides_specific_recommendation_for_request(): void
@@ -957,6 +1059,37 @@ PHP;
         $this->assertEquals('high', $issues[0]->severity->value);
     }
 
+    public function test_custom_never_extend_list_can_still_flag_a_kernel(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http;
+
+use Illuminate\Foundation\Http\Kernel as HttpKernel;
+
+class Kernel extends HttpKernel
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Http/Kernel.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'framework-override' => [
+                'never_extend' => ['Illuminate\\Foundation\\Http\\Kernel'],
+            ],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Illuminate\Foundation\Http\Kernel', $result);
+        $this->assertEquals('high', $result->getIssues()[0]->severity->value);
+    }
+
     public function test_supports_custom_ok_to_extend_list(): void
     {
         $code = <<<'PHP'
@@ -1004,14 +1137,14 @@ namespace App\Http;
 
 use App\Billing\Ledger;
 use App\Legacy\Ledger;
-use Illuminate\Foundation\Http\Kernel;
+use Illuminate\Routing\Router;
 
-class CustomKernel extends Kernel
+class CustomRouter extends Router
 {
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Http/CustomRouter.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1025,22 +1158,22 @@ PHP;
 
     public function test_colliding_imports_keep_the_first_spelling(): void
     {
-        // The second Kernel is the project's own, which is not flagged, so a last-wins
+        // The second Router is the project's own, which is not flagged, so a last-wins
         // resolution would pass this file.
         $code = <<<'PHP'
 <?php
 
 namespace App\Http;
 
-use Illuminate\Foundation\Http\Kernel;
-use App\Legacy\Kernel;
+use Illuminate\Routing\Router;
+use App\Legacy\Router;
 
-class CustomKernel extends Kernel
+class CustomRouter extends Router
 {
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Http/CustomRouter.php' => $code]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -1049,7 +1182,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('Illuminate\Foundation\Http\Kernel', $result);
+        $this->assertHasIssueContaining('Illuminate\Routing\Router', $result);
     }
 
     public function test_does_not_replace_names_in_the_shared_parse_cache(): void
@@ -1059,19 +1192,19 @@ PHP;
 
 namespace App\Http;
 
-use Illuminate\Foundation\Http\Kernel;
+use Illuminate\Routing\Router;
 
-class CustomKernel extends Kernel
+class CustomRouter extends Router
 {
 }
 PHP;
 
-        $tempDir = $this->createTempDirectory(['Http/CustomKernel.php' => $code]);
+        $tempDir = $this->createTempDirectory(['Http/CustomRouter.php' => $code]);
 
         // Parse first and keep the nodes, so what is inspected afterwards is the very tree the
         // analyzer was handed. The cache key is the path as spelled, so setPaths() has to name
         // 'Http' rather than '.', or the analyzer would parse a tree of its own.
-        $path = $tempDir.'/Http/CustomKernel.php';
+        $path = $tempDir.'/Http/CustomRouter.php';
         $ast = $this->parser->parseFile($path);
 
         /** @var array<int, Node\Stmt\Class_> $classes */
@@ -1089,6 +1222,6 @@ PHP;
         $parent = $classes[0]->extends;
         $this->assertNotNull($parent);
         $this->assertSame(Node\Name::class, $parent::class);
-        $this->assertSame('Kernel', $parent->toString());
+        $this->assertSame('Router', $parent->toString());
     }
 }

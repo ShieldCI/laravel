@@ -28,9 +28,9 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     // Classes that should NEVER be extended (High severity)
     private const NEVER_EXTEND = [
         // Core Foundation
+        // Not the Http or Console Kernel: the Laravel 9 and 10 skeletons extend both, and an
+        // app upgraded to 11+ may keep those files.
         'Illuminate\\Foundation\\Application',
-        'Illuminate\\Foundation\\Http\\Kernel',
-        'Illuminate\\Foundation\\Console\\Kernel',
 
         // HTTP Layer
         'Illuminate\\Http\\Request',
@@ -169,10 +169,13 @@ class FrameworkOverrideAnalyzer extends AbstractFileAnalyzer
     /**
      * Determine if a file should be analyzed.
      * Excludes test files and vendor packages.
+     *
+     * Matches the project-relative path, so a checkout under a directory named tests is
+     * still analyzed. The leading slash lets a root-level tests/ or vendor/ match too.
      */
     private function shouldAnalyze(string $file): bool
     {
-        $normalized = str_replace('\\', '/', $file);
+        $normalized = '/'.ltrim(str_replace('\\', '/', $this->getRelativePath($file)), '/');
 
         // Ignore test directories
         if (str_contains($normalized, '/tests/') ||

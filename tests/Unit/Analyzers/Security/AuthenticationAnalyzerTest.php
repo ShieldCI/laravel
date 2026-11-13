@@ -10,6 +10,7 @@ use ShieldCI\Analyzers\Security\AuthenticationAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class AuthenticationAnalyzerTest extends AnalyzerTestCase
@@ -1652,13 +1653,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Route group is flagged, but individual routes with their own auth middleware should pass
-        // However, the route group itself will be flagged
-        $this->assertFalse($result->isSuccess());
-        $issues = $result->getIssues();
-        // Should only flag the route group, not the individual routes
-        $this->assertCount(1, $issues);
-        $this->assertHasIssueContaining('Route group without authentication middleware', $result);
+        // Every route in the group carries auth of its own, so the group leaves none open
+        $this->assertPassed($result);
     }
 
     public function test_handles_nested_route_groups(): void
@@ -3288,43 +3284,146 @@ PHP;
         $this->assertHasIssueContaining('UpdatePostRequest::authorize() returns true without authorization checks', $result);
     }
 
-    public function test_passes_form_request_without_authorize_method(): void
+    public function test_flags_form_request_without_authorize_method_in_unprotected_action(): void
     {
-        $formRequest = <<<'PHP'
+        $result = $this->analyzeFormRequestWithoutAuthorize("Route::post('/members/remove', [MembershipController::class, 'destroy']);");
+
+        // FormRequest::passesAuthorization() authorizes every request when authorize() is absent
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('RemoveMemberRequest has no authorize() method, so every request is authorized', $result);
+        $issues = array_values(array_filter(
+            $result->getIssues(),
+            fn ($issue) => str_contains($issue->message, 'RemoveMemberRequest'),
+        ));
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    public function test_passes_form_request_without_authorize_method_in_protected_action(): void
+    {
+        $result = $this->analyzeFormRequestWithoutAuthorize(
+            "Route::middleware('auth')->group(function () {\n    Route::post('/members/remove', [MembershipController::class, 'destroy']);\n});"
+        );
+
+        // The route carries auth, so the FormRequest is not the only gate
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_form_request_without_authorize_method_whose_parent_may_declare_one(): void
+    {
+        $parent = <<<'PHP'
 <?php
 
 namespace App\Http\Requests;
 
 use Illuminate\Foundation\Http\FormRequest;
 
-class StorePostRequest extends FormRequest
+abstract class TeamFormRequest extends FormRequest
 {
-    // No authorize() method - defaults to false (secure)
-
-    public function rules()
+    public function authorize(): bool
     {
-        return [
-            'title' => 'required|string',
-        ];
+        return $this->user()?->belongsToTeam($this->route('team')) ?? false;
     }
 }
 PHP;
 
-        $routes = '<?php';
+        $result = $this->analyzeFormRequestWithoutAuthorize(
+            "Route::post('/members/remove', [MembershipController::class, 'destroy']);",
+            'TeamFormRequest',
+            ['app/Http/Requests/TeamFormRequest.php' => $parent],
+        );
+
+        // The route and controller findings stand; the FormRequest one would be a guess
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('RemoveMemberRequest', $issue->message);
+        }
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_passes_form_request_without_authorize_method_using_a_trait(): void
+    {
+        $trait = <<<'PHP'
+<?php
+
+namespace App\Http\Requests\Concerns;
+
+trait AuthorizesTeamOwners
+{
+    public function authorize(): bool
+    {
+        return $this->user()?->ownsTeam($this->route('team')) === true;
+    }
+}
+PHP;
+
+        $result = $this->analyzeFormRequestWithoutAuthorize(
+            "Route::post('/members/remove', [MembershipController::class, 'destroy']);",
+            'FormRequest',
+            ['app/Http/Requests/Concerns/AuthorizesTeamOwners.php' => $trait],
+            'use Concerns\AuthorizesTeamOwners;',
+        );
+
+        // A trait may declare authorize(); the route and controller findings stand
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('RemoveMemberRequest', $issue->message);
+        }
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    /**
+     * Analyze a MembershipController::destroy() taking a FormRequest that declares no
+     * authorize() method, extends $parent and declares $members, reached by the routes
+     * $routes registers in routes/web.php.
+     *
+     * @param  array<string, string>  $files
+     */
+    private function analyzeFormRequestWithoutAuthorize(string $routes, string $parent = 'FormRequest', array $files = [], string $members = ''): ResultInterface
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\RemoveMemberRequest;
+
+class MembershipController extends Controller
+{
+    public function destroy(RemoveMemberRequest $request)
+    {
+    }
+}
+PHP;
+
+        $formRequest = <<<PHP
+<?php
+
+namespace App\\Http\\Requests;
+
+use Illuminate\\Foundation\\Http\\FormRequest;
+
+class RemoveMemberRequest extends {$parent}
+{
+    {$members}
+
+    public function rules(): array
+    {
+        return ['member_id' => 'required|integer'];
+    }
+}
+PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Http/Requests/StorePostRequest.php' => $formRequest,
-            'routes/web.php' => $routes,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\MembershipController;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+            'app/Http/Controllers/MembershipController.php' => $controller,
+            'app/Http/Requests/RemoveMemberRequest.php' => $formRequest,
+            ...$files,
         ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['app']);
 
-        $result = $analyzer->analyze();
-
-        // Should pass - missing authorize() defaults to false (secure)
-        $this->assertPassed($result);
+        return $analyzer->analyze();
     }
 
     public function test_passes_form_request_with_authorization_logic(): void
@@ -5006,25 +5105,48 @@ class DeleteUserRequest extends FormRequest
 }
 PHP;
 
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Requests\DeleteUserRequest;
+
+class UserController extends Controller
+{
+    public function destroy(DeleteUserRequest $request)
+    {
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\UserController;
+use Illuminate\Support\Facades\Route;
+
+Route::delete('/users/{user}', [UserController::class, 'destroy']);
+PHP;
+
         $tempDir = $this->createTempDirectory([
             'app/Http/Requests/DeleteUserRequest.php' => $code,
+            'app/Http/Controllers/UserController.php' => $controller,
+            'routes/web.php' => $routes,
         ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
+        $analyzer->setPaths(['app']);
 
         $result = $analyzer->analyze();
-        $issues = array_filter(
+        $issues = array_values(array_filter(
             $result->getIssues(),
             fn ($i) => str_contains($i->message, 'authorize()')
-        );
+        ));
 
-        if (empty($issues)) {
-            $this->markTestSkipped('No FormRequest authorization issue detected — adjust fixture if needed.');
-        }
-
-        $issue = reset($issues);
+        $this->assertCount(1, $issues);
+        $issue = $issues[0];
         $this->assertStringNotContainsString('$this->', $issue->recommendation);
         $this->assertStringNotContainsString('->can(', $issue->recommendation);
         $this->assertStringContainsString('Gate or Policy', $issue->recommendation);
@@ -5723,6 +5845,8 @@ PHP], 'routes/ops.php', 'ops'],
      */
     public static function unappliedRouteFileRegistrationProvider(): array
     {
+        $bothProviders = "<?php\n\nreturn [\n    App\\Providers\\AProvider::class,\n    App\\Providers\\BProvider::class,\n];\n";
+
         return [
             // Only Router::group() reads an attribute array.
             'group() attribute array on a property that is not the router' => [['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
@@ -5787,11 +5911,14 @@ PHP], 'routes/ops.php', 'ops'],
                 'App\\Menu\\Route',
             )], 'routes/ops.php', 'ops'],
             // Laravel's provider order is not read, so neither prefix is guessed.
+            // Both providers are listed, so each URL is required
             'two providers giving one file different prefixes, the first listed' => [[
+                'bootstrap/providers.php' => $bothProviders,
                 'app/Providers/AProvider.php' => self::appProvider("Route::prefix('one')->group(base_path('routes/ops.php'));", '', 'AProvider'),
                 'app/Providers/BProvider.php' => self::appProvider("Route::prefix('two')->group(base_path('routes/ops.php'));", '', 'BProvider'),
             ], 'routes/ops.php', 'one'],
             'two providers giving one file different prefixes, the second listed' => [[
+                'bootstrap/providers.php' => $bothProviders,
                 'app/Providers/AProvider.php' => self::appProvider("Route::prefix('one')->group(base_path('routes/ops.php'));", '', 'AProvider'),
                 'app/Providers/BProvider.php' => self::appProvider("Route::prefix('two')->group(base_path('routes/ops.php'));", '', 'BProvider'),
             ], 'routes/ops.php', 'two'],
@@ -5804,33 +5931,153 @@ PHP], 'routes/ops.php', 'ops'],
     }
 
     /**
-     * @dataProvider literalRegistrationPrecedenceProvider
+     * @dataProvider routeFileServedAtSeveralUrlsProvider
      *
      * @param  array<string, string>  $registration
+     * @param  list<string>  $publicRoutes
      */
-    #[DataProvider('literalRegistrationPrecedenceProvider')]
-    public function test_route_file_prefix_read_from_literal_registrations_keeps_precedence(array $registration, string $routeFile, string $prefix): void
+    #[DataProvider('routeFileServedAtSeveralUrlsProvider')]
+    public function test_route_file_route_is_public_only_when_every_url_it_is_served_at_is_listed(array $registration, string $routeFile, array $publicRoutes, bool $public): void
     {
-        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, ["/{$prefix}/leads"]);
+        $result = $this->analyzeRegisteredRouteFile($registration, $routeFile, $publicRoutes);
 
-        // A file the literal reading maps keeps that prefix, so a pattern written for it keeps matching
-        $this->assertPassed($result);
+        if ($public) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
     }
 
     /**
-     * @return array<string, array{array<string, string>, string, string}>
+     * @return array<string, array{array<string, string>, string, list<string>, bool}>
      */
-    public static function literalRegistrationPrecedenceProvider(): array
+    public static function routeFileServedAtSeveralUrlsProvider(): array
     {
+        // The provider is listed, so each URL it registers is required
+        $listed = ['bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\RouteServiceProvider::class,\n];\n"];
+        $configListed = ['config/app.php' => "<?php\n\nreturn [\n    'providers' => [\n        App\\Providers\\RouteServiceProvider::class,\n    ],\n];\n"];
+        $twoPrefixes = $listed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+            "Route::prefix('partners')->group(base_path('routes/leads.php'));\n        Route::prefix('suppliers')->group(base_path('routes/leads.php'));",
+        )];
+        $requiredTwice = $listed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+            "Route::middleware('web')->group(function () {\n            require base_path('routes/leads.php');\n        });\n        Route::prefix('ops')->group(function () {\n            require base_path('routes/leads.php');\n        });",
+        )];
+        $nested = $listed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+            "Route::prefix('partners')->group(fn () => Route::prefix('v2')->group(base_path('routes/leads.php')));",
+        )];
+        $nestedInRoutes = $listed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+            "\$this->routes(function () {\n            Route::prefix('partners')->group(fn () => Route::prefix('v2')->group(base_path('routes/leads.php')));\n        });",
+        )];
+        $apiBasePath = ['bootstrap/app.php' => self::bootstrapApp(
+            '',
+            "web: __DIR__.'/../routes/web.php',\n        api: base_path('routes/api.php'),\n        apiPrefix: 'v1',",
+        )];
+        $apiList = ['bootstrap/app.php' => self::bootstrapApp(
+            '',
+            "web: __DIR__.'/../routes/web.php',\n        api: [base_path('routes/api.php')],\n        apiPrefix: 'v1',",
+        )];
+        $apiConcatList = ['bootstrap/app.php' => self::bootstrapApp(
+            '',
+            "api: [__DIR__.'/../routes/api.php'],\n        apiPrefix: 'mobile-api',",
+        )];
+        $thenTwice = ['bootstrap/app.php' => self::bootstrapApp(
+            '',
+            "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('partners')->group(base_path('routes/partners.php'));\n            \$suppliers = Route::prefix('suppliers');\n            \$suppliers->group(base_path('routes/partners.php'));\n        },",
+        )];
+
+        $v1Api = ['bootstrap/app.php' => self::bootstrapApp(
+            '',
+            "web: __DIR__.'/../routes/web.php',\n        api: __DIR__.'/../routes/api.php',\n        apiPrefix: 'v1',",
+        ), 'routes/web.php' => '<?php'];
+        $listedApp = ['bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n"];
+        $stockRouteServiceProvider = self::routeServiceProvider(
+            "\$this->routes(function () {\n            Route::middleware('api')->prefix('api')->group(base_path('routes/api.php'));\n            Route::middleware('web')->group(base_path('routes/web.php'));\n        });",
+        );
+        $abstractProvider = fn (string $subclassBoot): string => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\nuse Illuminate\\Support\\ServiceProvider;\n\nabstract class LegacyRoutes extends ServiceProvider\n{\n    public function boot(): void\n    {\n        Route::prefix('ops')->group(base_path('routes/api.php'));\n    }\n}\n\nclass AppServiceProvider extends LegacyRoutes\n{\n    public function boot(): void\n    {\n        {$subclassBoot}\n    }\n}\n";
+
         return [
-            'routes/api.php convention beside an api: list' => [['bootstrap/app.php' => self::bootstrapApp(
+            'two prefixed registrations, the later one listed' => [$twoPrefixes, 'routes/leads.php', ['/suppliers/leads'], false],
+            'two prefixed registrations, the earlier one listed' => [$twoPrefixes, 'routes/leads.php', ['/partners/leads'], false],
+            'two prefixed registrations, both listed' => [$twoPrefixes, 'routes/leads.php', ['/partners/leads', '/suppliers/leads'], true],
+            'required unprefixed and under a prefix, the prefixed one listed' => [$requiredTwice, 'routes/leads.php', ['/ops/leads'], false],
+            'required unprefixed and under a prefix, both listed' => [$requiredTwice, 'routes/leads.php', ['/leads', '/ops/leads'], true],
+            'nested prefixes, the composed url listed' => [$nested, 'routes/leads.php', ['/partners/v2/leads'], true],
+            'nested prefixes, the inner prefix alone listed' => [$nested, 'routes/leads.php', ['/v2/leads'], false],
+            'nested prefixes in routes(), the composed url listed' => [$nestedInRoutes, 'routes/leads.php', ['/partners/v2/leads'], true],
+            'nested prefixes in routes(), the inner prefix alone listed' => [$nestedInRoutes, 'routes/leads.php', ['/v2/leads'], false],
+            'api: base_path() under apiPrefix, the apiPrefix url listed' => [$apiBasePath, 'routes/api.php', ['/v1/leads'], true],
+            'api: base_path() under apiPrefix, the conventional url listed' => [$apiBasePath, 'routes/api.php', ['/api/leads'], false],
+            'api: list under apiPrefix, the apiPrefix url listed' => [$apiList, 'routes/api.php', ['/v1/leads'], true],
+            'api: concat list under apiPrefix, the apiPrefix url listed' => [$apiConcatList, 'routes/api.php', ['/mobile-api/leads'], true],
+            'api: concat list under apiPrefix, the conventional url listed' => [$apiConcatList, 'routes/api.php', ['/api/leads'], false],
+            'api: string path under apiPrefix, the apiPrefix url listed' => [['bootstrap/app.php' => self::bootstrapApp(
                 '',
-                "api: [__DIR__.'/../routes/api.php'],\n        apiPrefix: 'mobile-api',",
-            )], 'routes/api.php', 'api'],
-            'then: chain beside a later registrar variable group' => [['bootstrap/app.php' => self::bootstrapApp(
+                "web: __DIR__.'/../routes/web.php',\n        api: __DIR__.'/../routes/api.php',\n        apiPrefix: 'v1',",
+            )], 'routes/api.php', ['/v1/leads'], true],
+            'api: base_path() of another file under apiPrefix, the apiPrefix url listed' => [['bootstrap/app.php' => self::bootstrapApp(
                 '',
-                "web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('partners')->group(base_path('routes/partners.php'));\n            \$suppliers = Route::prefix('suppliers');\n            \$suppliers->group(base_path('routes/partners.php'));\n        },",
-            )], 'routes/partners.php', 'partners'],
+                "web: __DIR__.'/../routes/web.php',\n        api: base_path('routes/mobile.php'),\n        apiPrefix: 'v1',",
+            )], 'routes/mobile.php', ['/v1/leads'], true],
+            'then: chain and registrar variable group, one listed' => [$thenTwice, 'routes/partners.php', ['/partners/leads'], false],
+            'then: chain and registrar variable group, both listed' => [$thenTwice, 'routes/partners.php', ['/partners/leads', '/suppliers/leads'], true],
+            // Only the providers Laravel registers add a URL
+            'leftover RouteServiceProvider bootstrap/providers.php does not list' => [$v1Api + [
+                'bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n",
+                'app/Providers/AppServiceProvider.php' => self::appProvider(''),
+                'app/Providers/RouteServiceProvider.php' => $stockRouteServiceProvider,
+            ], 'routes/api.php', ['/v1/leads'], true],
+            'leftover RouteServiceProvider bootstrap/providers.php does not list, its url alone listed' => [$v1Api + [
+                'bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n",
+                'app/Providers/AppServiceProvider.php' => self::appProvider(''),
+                'app/Providers/RouteServiceProvider.php' => $stockRouteServiceProvider,
+            ], 'routes/api.php', ['/api/leads'], false],
+            'RouteServiceProvider bootstrap/providers.php lists' => [$v1Api + [
+                'bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    App\\Providers\\RouteServiceProvider::class,\n];\n",
+                'app/Providers/AppServiceProvider.php' => self::appProvider(''),
+                'app/Providers/RouteServiceProvider.php' => $stockRouteServiceProvider,
+            ], 'routes/api.php', ['/v1/leads'], false],
+            'provider config/app.php does not list' => [[
+                'config/app.php' => "<?php\n\nuse Illuminate\\Support\\ServiceProvider;\n\nreturn [\n    'name' => 'App',\n    'providers' => ServiceProvider::defaultProviders()->merge([\n        App\\Providers\\RouteServiceProvider::class,\n    ])->toArray(),\n];\n",
+                'app/Providers/RouteServiceProvider.php' => $stockRouteServiceProvider,
+                'app/Providers/LegacyServiceProvider.php' => self::appProvider("Route::prefix('legacy')->group(base_path('routes/api.php'));", '', 'LegacyServiceProvider'),
+            ], 'routes/api.php', ['/api/leads'], true],
+            'registration after an early return in boot()' => [$v1Api + [
+                'app/Providers/AppServiceProvider.php' => self::appProvider("return;\n        Route::prefix('ops')->group(base_path('routes/api.php'));"),
+            ], 'routes/api.php', ['/v1/leads'], true],
+            'registration in a closure boot() never calls' => [$v1Api + [
+                'app/Providers/AppServiceProvider.php' => self::appProvider("\$later = fn () => Route::prefix('ops')->group(base_path('routes/api.php'));"),
+            ], 'routes/api.php', ['/v1/leads'], true],
+            'registration in a closure boot() calls' => [$v1Api + $listedApp + [
+                'app/Providers/AppServiceProvider.php' => self::appProvider("\$later = fn () => Route::prefix('ops')->group(base_path('routes/api.php'));\n        \$later();"),
+            ], 'routes/api.php', ['/v1/leads'], false],
+            'abstract provider boot() its subclass overrides' => [$v1Api + [
+                'app/Providers/AppServiceProvider.php' => $abstractProvider(''),
+            ], 'routes/api.php', ['/v1/leads'], true],
+            'abstract provider boot() its subclass calls' => [$v1Api + $listedApp + [
+                'app/Providers/AppServiceProvider.php' => $abstractProvider('parent::boot();'),
+            ], 'routes/api.php', ['/v1/leads'], false],
+            // A registration a proven provider makes only on some branch of its code may not run
+            'proven provider registering in exclusive branches' => [$configListed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "if (config('app.legacy_leads')) {\n            Route::prefix('legacy')->group(base_path('routes/leads.php'));\n        } else {\n            Route::prefix('partners')->group(base_path('routes/leads.php'));\n        }",
+            )], 'routes/leads.php', ['/partners/leads'], true],
+            'proven provider registering unconditionally beside a branch, the branch url listed' => [$configListed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "Route::prefix('partners')->group(base_path('routes/leads.php'));\n        if (config('app.legacy_leads')) {\n            Route::prefix('legacy')->group(base_path('routes/leads.php'));\n        }",
+            )], 'routes/leads.php', ['/legacy/leads'], false],
+            'proven provider registering in a ternary operand' => [$configListed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "config('app.legacy_leads') ? Route::prefix('legacy')->group(base_path('routes/leads.php')) : Route::prefix('partners')->group(base_path('routes/leads.php'));",
+            )], 'routes/leads.php', ['/partners/leads'], true],
+            // RouteServiceProvider::loadRoutes() calls map() only when routes() was not given a callback
+            'proven RouteServiceProvider declaring map() beside routes()' => [$configListed + [
+                'app/Providers/RouteServiceProvider.php' => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider as ServiceProvider;\nuse Illuminate\\Support\\Facades\\Route;\n\nclass RouteServiceProvider extends ServiceProvider\n{\n    public function boot(): void\n    {\n        \$this->routes(function () {\n            Route::prefix('partners')->group(base_path('routes/leads.php'));\n        });\n    }\n\n    public function map(): void\n    {\n        Route::prefix('legacy')->group(base_path('routes/leads.php'));\n    }\n}\n",
+            ], 'routes/leads.php', ['/partners/leads'], true],
+            'routes/api.php registered by nothing keeps the api convention' => [[], 'routes/api.php', ['/api/leads'], true],
+            // A registration whose attributes cannot be read adds no URL, rather than one without a prefix
+            'prefixed registration beside one with unread attributes' => [$listed + ['app/Providers/RouteServiceProvider.php' => self::routeServiceProvider(
+                "Route::prefix('partners')->group(base_path('routes/leads.php'));\n        Route::group(config('routing.suppliers'), base_path('routes/leads.php'));",
+            )], 'routes/leads.php', ['/partners/leads'], true],
         ];
     }
 
@@ -6326,5 +6573,412 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    // ==========================================
+    // Routes registered on registrars, variables and nested exclusions
+    // ==========================================
+
+    /**
+     * @dataProvider unauthenticatedRouteProvider
+     */
+    #[DataProvider('unauthenticatedRouteProvider')]
+    public function test_reports_an_unauthenticated_route(string $routes): void
+    {
+        $result = $this->analyzeWebRoutes($routes);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unauthenticatedRouteProvider(): array
+    {
+        return [
+            'registrar chain with non-auth middleware' => ["Route::middleware('throttle:6,1')->post('/orders', fn () => 'ok');"],
+            // RouteRegistrar::attribute() replaces the middleware on each call
+            'registrar chain whose last middleware() call drops auth' => ["Route::middleware('auth')->middleware('throttle:6,1')->post('/orders', fn () => 'ok');"],
+            'registrar chain with unreadable middleware' => ["Route::middleware(\$guard)->post('/orders', fn () => 'ok');"],
+            // Router::resolveMiddleware() drops excluded middleware whichever group adds it
+            'outer group excluding auth an inner group adds' => ["Route::withoutMiddleware('auth')->group(function () {\n    Route::middleware('auth')->group(function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'outer group excluding auth an inner array group adds' => ["Route::withoutMiddleware('auth')->group(function () {\n    Route::group(['middleware' => 'auth'], function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'inner excluded_middleware attribute under a fluent auth group' => ["Route::middleware('auth')->group(function () {\n    Route::group(['excluded_middleware' => ['auth']], function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'inner excluded_middleware attribute under an array auth group' => ["Route::group(['middleware' => 'auth'], function () {\n    Route::group(['excluded_middleware' => ['auth']], function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'excluded_middleware beside middleware in one group' => ["Route::group(['middleware' => 'auth', 'excluded_middleware' => 'auth'], function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'group closure router parameter' => ["Route::group([], function (\$router) {\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'group closure router parameter with non-auth middleware' => ["Route::middleware('web')->group(function (\$router) {\n    \$router->middleware('throttle:6,1')->post('/members', fn () => 'ok');\n});"],
+            'registrar variable' => ["\$admin = Route::prefix('admin');\n\$admin->post('/users', fn () => 'ok');"],
+            'registrar variable inside a group closure' => ["Route::middleware('web')->group(function () {\n    \$admin = Route::prefix('admin')->middleware('throttle:6,1');\n    \$admin->post('/users', fn () => 'ok');\n});"],
+            'route assigned to a variable' => ["\$route = Route::post('/admin/users', fn () => 'ok');"],
+            // Router::loadRoutes() calls an arrow function group callback with the router too
+            'arrow function group body' => ["Route::prefix('x')->group(fn () => Route::post('/orders', fn () => 'ok'));"],
+            'arrow function group body under an outer exclusion' => ["Route::withoutMiddleware('auth')->group(fn () => Route::middleware('auth')->group(fn () => Route::post('/orders', fn () => 'ok')));"],
+            'arrow function group body with a registrar chain' => ["Route::prefix('x')->group(fn () => Route::middleware('throttle:6,1')->post('/orders', fn () => 'ok'));"],
+            'arrow function group body on its router parameter' => ["Route::middleware('web')->group(fn (\$router) => \$router->post('/orders', fn () => 'ok'));"],
+            // Router::resolveMiddleware() drops excluded middleware from the route's own too
+            'group exclusion of the auth a route adds' => ["Route::withoutMiddleware('auth')->group(function () {\n    Route::post('/orders', fn () => 'ok')->middleware('auth');\n});"],
+            'group exclusion of the auth a registrar route adds' => ["Route::withoutMiddleware('auth')->group(function () {\n    Route::middleware('auth')->post('/orders', fn () => 'ok');\n});"],
+            'registrar middleware held in a variable without auth' => ["\$middleware = ['throttle:6,1'];\nRoute::middleware(\$middleware)->post('/orders', fn () => 'ok');"],
+            'registrar middleware held in a variable read from config' => ["\$middleware = config('routing.orders');\nRoute::middleware(\$middleware)->post('/orders', fn () => 'ok');"],
+            'group closure router parameter beside an arrow function shadowing it' => ["Route::middleware('web')->group(function (\$router) {\n    \$names = array_map(fn (\$router) => strtoupper(\$router), ['members']);\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'group attribute excluded_middleware held in a variable' => ["\$open = ['auth'];\nRoute::group(['middleware' => 'auth', 'excluded_middleware' => \$open], function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'variable inside a group middleware list without auth' => ["\$throttle = 'throttle:6,1';\nRoute::middleware(['web', \$throttle])->group(function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'route assigned to a variable inside a group closure' => ["Route::prefix('admin')->group(function () {\n    \$route = Route::post('/users', fn () => 'ok')->name('users.store');\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider authenticatedOrUnreadRouteProvider
+     *
+     * @param  list<string>  $publicRoutes
+     */
+    #[DataProvider('authenticatedOrUnreadRouteProvider')]
+    public function test_does_not_report_an_authenticated_public_or_unread_route(string $routes, array $publicRoutes = []): void
+    {
+        $result = $this->analyzeWebRoutes($routes, $publicRoutes);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1?: list<string>}>
+     */
+    public static function authenticatedOrUnreadRouteProvider(): array
+    {
+        return [
+            'registrar chain with auth middleware' => ["Route::middleware('auth')->post('/orders', fn () => 'ok');"],
+            'registrar chain with auth in a middleware list' => ["Route::middleware(['throttle:6,1', 'auth:sanctum'])->post('/orders', fn () => 'ok');"],
+            'registrar chain adding auth on the route' => ["Route::middleware('throttle:6,1')->post('/orders', fn () => 'ok')->middleware('auth');"],
+            'registrar chain inside an auth group' => ["Route::middleware('auth')->group(function () {\n    Route::middleware('throttle:6,1')->post('/orders', fn () => 'ok');\n});"],
+            'registrar chain prefix on a public url' => ["Route::prefix('shop')->post('/orders', fn () => 'ok');", ['/shop/orders']],
+            'registrar chain prefix in a prefixed group on a public url' => ["Route::prefix('v1')->group(function () {\n    Route::prefix('shop')->post('/orders', fn () => 'ok');\n});", ['/shop/v1/orders']],
+            'registrar chain excluding auth on the route' => ["Route::middleware('auth')->group(function () {\n    Route::withoutMiddleware('auth')->post('/webhooks', fn () => 'ok');\n});"],
+            'outer group excluding other middleware' => ["Route::withoutMiddleware('throttle')->group(function () {\n    Route::middleware('auth')->group(function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'inner excluded_middleware of other middleware' => ["Route::middleware('auth')->group(function () {\n    Route::group(['excluded_middleware' => ['throttle']], function () {\n        Route::post('/orders', fn () => 'ok');\n    });\n});"],
+            'group closure router parameter in an auth group' => ["Route::middleware('auth')->group(function (\$router) {\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'registrar variable with auth' => ["\$admin = Route::middleware('auth');\n\$admin->post('/users', fn () => 'ok');"],
+            'registrar variable given auth later' => ["\$admin = Route::prefix('admin');\n\$admin->middleware('auth');\n\$admin->post('/users', fn () => 'ok');"],
+            'registrar variable prefix on a public url' => ["\$admin = Route::prefix('admin');\n\$admin->post('/users', fn () => 'ok');", ['/admin/users']],
+            'route assigned to a variable with auth' => ["\$route = Route::post('/admin/users', fn () => 'ok')->middleware('auth');"],
+            'route assigned to a variable given auth later' => ["\$route = Route::post('/admin/users', fn () => 'ok');\n\$route->middleware('auth');"],
+            'route assigned to a variable inside an auth group' => ["Route::middleware('auth')->group(function () {\n    \$route = Route::post('/users', fn () => 'ok');\n});"],
+            'arrow function group body in an auth group' => ["Route::middleware('auth')->group(fn () => Route::post('/orders', fn () => 'ok'));"],
+            'arrow function group body on its router parameter in an auth group' => ["Route::middleware('auth')->group(fn (\$router) => \$router->post('/orders', fn () => 'ok'));"],
+            'group exclusion of other middleware beside a route adding auth' => ["Route::withoutMiddleware('throttle')->group(function () {\n    Route::post('/orders', fn () => 'ok')->middleware('auth');\n});"],
+            // A route carrying its own auth leaves no unprotected route in its group
+            'public route beside a registrar route with auth in a static group' => ["Route::group(['prefix' => 'hooks'], function () {\n    Route::post('/stripe', fn () => 'ok');\n    Route::middleware('auth')->post('/orders', fn () => 'ok');\n});", ['/hooks/stripe']],
+            'public route beside an assigned route with auth in a static group' => ["Route::group(['prefix' => 'hooks'], function () {\n    Route::post('/stripe', fn () => 'ok');\n    \$route = Route::post('/orders', fn () => 'ok')->middleware('auth');\n});", ['/hooks/stripe']],
+            'route with its own auth in a static group' => ["Route::group(['prefix' => 'admin'], function () {\n    Route::post('/users', fn () => 'ok')->middleware('auth');\n});"],
+            'registrar middleware held in a variable' => ["\$middleware = ['auth', 'verified'];\nRoute::middleware(\$middleware)->post('/orders', fn () => 'ok');"],
+            'group middleware held in a variable' => ["\$middleware = 'auth';\nRoute::middleware(\$middleware)->group(function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            // RouteRegistrar's can attribute becomes can: middleware on each route
+            'registrar can attribute' => ["Route::can('manage-users')->post('/users', fn () => 'ok');"],
+            'group registrar can attribute' => ["Route::can('manage-users')->group(function () {\n    Route::post('/users', fn () => 'ok');\n});"],
+            'route can() call' => ["Route::put('/posts/{post}', fn () => 'ok')->can('update', 'post');"],
+            'outer router read inside an arrow function' => ["Route::middleware('web')->group(function (\$router) {\n    \$names = array_map(fn () => strtoupper(\$router), ['members']);\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'group attribute middleware held in a variable' => ["\$middleware = ['web', 'auth'];\nRoute::group(['middleware' => \$middleware], function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            // PHP matches method names case-insensitively
+            'route middleware() call in another case' => ["Route::post('/orders', fn () => 'ok')->Middleware('auth');"],
+            'group registrar middleware() call in another case' => ["Route::Middleware('auth')->group(function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'registrar middleware() call in another case' => ["Route::prefix('shop')->MIDDLEWARE('auth')->post('/orders', fn () => 'ok');"],
+            'variable inside a group middleware list' => ["\$auth = 'auth';\nRoute::middleware(['web', \$auth])->group(function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'variable inside a registrar middleware list' => ["\$auth = 'auth';\nRoute::middleware(['web', \$auth])->post('/orders', fn () => 'ok');"],
+            'variable inside a group attribute middleware list' => ["\$auth = 'auth';\nRoute::group(['middleware' => ['web', \$auth]], function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            'group attribute array held in a variable' => ["\$attributes = ['middleware' => 'auth'];\nRoute::group(\$attributes, function () {\n    Route::post('/orders', fn () => 'ok');\n});"],
+            // Only variables known to hold the router or a registrar are read
+            'router variable outside any group closure' => ["\$router->post('/members', fn () => 'ok');"],
+            'group closure router parameter reassigned' => ["Route::middleware('web')->group(function (\$router) {\n    \$router = app(\\App\\Routing\\Menu::class);\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'group closure router parameter handed on' => ["Route::middleware('web')->group(function (\$router) {\n    configure(\$router);\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'group closure router parameter beside a require' => ["Route::middleware('web')->group(function (\$router) {\n    require __DIR__.'/members.php';\n    \$router->post('/members', fn () => 'ok');\n});"],
+            'first parameter of a closure that is not a group callback' => ["Route::middleware('web')->group(function () {\n    collect(['members'])->each(function (\$router) {\n        \$router->post('/members', fn () => 'ok');\n    });\n});"],
+            'non-router second parameter of a group closure' => ["Route::middleware('web')->group(function (\$router, \$menu) {\n    \$menu->post('/members', fn () => 'ok');\n});"],
+            'registrar variable beside a require' => ["\$admin = Route::prefix('admin');\nrequire __DIR__.'/admin.php';\n\$admin->post('/users', fn () => 'ok');"],
+            'registrar variable reassigned in a branch' => ["\$admin = Route::prefix('admin');\nif (app()->isLocal()) {\n    \$admin = Route::prefix('local');\n}\n\$admin->post('/users', fn () => 'ok');"],
+            'variable holding another object' => ["\$menu = new \\App\\Menu\\Builder;\n\$menu->post('/members', fn () => 'ok');"],
+        ];
+    }
+
+    public function test_reports_a_route_in_an_arrow_function_group_body_once(): void
+    {
+        $result = $this->analyzeWebRoutes("Route::prefix('x')->group(fn () => Route::post('/orders', fn () => 'ok'));");
+
+        $routeIssues = array_filter(
+            $result->getIssues(),
+            fn ($issue) => $issue->message === 'POST closure route without authentication middleware',
+        );
+        $this->assertCount(1, $routeIssues);
+    }
+
+    /**
+     * @dataProvider providerRegistrationProvider
+     *
+     * @param  array<string, string>  $files
+     * @param  list<string>  $publicRoutes
+     */
+    #[DataProvider('providerRegistrationProvider')]
+    public function test_route_file_url_a_provider_registers_is_required_only_when_the_provider_provably_runs(array $files, array $publicRoutes, bool $public): void
+    {
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory($files));
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        if ($public) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, list<string>, bool}>
+     */
+    public static function providerRegistrationProvider(): array
+    {
+        $appProvider = fn (string $register): array => ['app/Providers/AppServiceProvider.php' => self::provider('AppServiceProvider', $register, '//')];
+
+        $parent = self::webhookApp('');
+        $parent['bootstrap/providers.php'] = "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    App\\Providers\\WebhookServiceProvider::class,\n];\n";
+        $parent['app/Providers/BaseWebhookServiceProvider.php'] = self::provider('BaseWebhookServiceProvider', '//', "Route::prefix('webhooks')->group(base_path('routes/webhooks.php'));");
+        $parent['app/Providers/WebhookServiceProvider.php'] = "<?php\n\nnamespace App\\Providers;\n\nclass WebhookServiceProvider extends BaseWebhookServiceProvider\n{\n}\n";
+
+        // A listed child overriding its unlisted concrete parent's boot() without parent::boot()
+        $overriding = self::webhookApp('');
+        $overriding['bootstrap/providers.php'] = "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    App\\Providers\\TenantWebhookServiceProvider::class,\n];\n";
+        $overriding['app/Providers/TenantWebhookServiceProvider.php'] = "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass TenantWebhookServiceProvider extends WebhookServiceProvider\n{\n    public function boot(): void\n    {\n        Route::prefix('tenant')->group(base_path('routes/webhooks.php'));\n    }\n}\n";
+
+        $module = self::webhookApp('');
+        $module['bootstrap/providers.php'] = "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    Modules\\Webhooks\\WebhooksServiceProvider::class,\n];\n";
+        $module['modules/Webhooks/WebhooksServiceProvider.php'] = "<?php\n\nnamespace Modules\\Webhooks;\n\nuse Illuminate\\Support\\ServiceProvider;\n\nclass WebhooksServiceProvider extends ServiceProvider\n{\n    public function register(): void\n    {\n        \$this->app->register(\\App\\Providers\\WebhookServiceProvider::class);\n    }\n}\n";
+
+        return [
+            'registered through withProviders()' => [self::webhookApp("    ->withProviders([\\App\\Providers\\WebhookServiceProvider::class])\n") + $appProvider('//'), ['/webhooks/stripe'], true],
+            'registered by a listed provider by class constant' => [self::webhookApp('') + $appProvider('$this->app->register(WebhookServiceProvider::class);'), ['/webhooks/stripe'], true],
+            'registered by a listed provider as an instance' => [self::webhookApp('') + $appProvider('$this->app->register(new WebhookServiceProvider($this->app));'), ['/webhooks/stripe'], true],
+            'registered by a listed provider by class constant, the unprefixed url listed' => [self::webhookApp('') + $appProvider('$this->app->register(WebhookServiceProvider::class);'), ['/stripe'], true],
+            'concrete parent of a listed provider' => [$parent + $appProvider('//'), ['/webhooks/stripe'], true],
+            // An unproven registration gives an optional URL: with no required one, any URL matching suffices
+            'registered from a module provider this does not read' => [$module + $appProvider('//'), ['/webhooks/stripe'], true],
+            'registered under a name built at runtime' => [self::webhookApp('') + $appProvider("\$this->app->register(__NAMESPACE__.'\\\\'.'Webhook'.'ServiceProvider');"), ['/webhooks/stripe'], true],
+            'unlisted concrete parent whose boot() the listed child overrides' => [$overriding + $appProvider('//'), ['/tenant/stripe'], true],
+            'listed child overriding its parent boot(), the parent url listed' => [$overriding + $appProvider('//'), ['/webhooks/stripe'], false],
+        ];
+    }
+
+    public function test_reads_each_controller_once_however_many_form_requests_it_checks(): void
+    {
+        // The parses of the controller with one FormRequest lacking authorize(), then with four
+        $this->assertSame($this->controllerParsesForFormRequests(1), $this->controllerParsesForFormRequests(4));
+    }
+
+    /**
+     * How many times an analysis parses a controller whose action takes one of $count
+     * FormRequests that declare no authorize() method.
+     */
+    private function controllerParsesForFormRequests(int $count): int
+    {
+        $files = ['routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/members', [App\\Http\\Controllers\\MemberController::class, 'store']);\n"];
+        $files['app/Http/Controllers/MemberController.php'] = "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse App\\Http\\Requests\\Request0;\n\nclass MemberController extends Controller\n{\n    public function store(Request0 \$request) {}\n}\n";
+        for ($i = 0; $i < $count; $i++) {
+            $files["app/Http/Requests/Request{$i}.php"] = "<?php\n\nnamespace App\\Http\\Requests;\n\nuse Illuminate\\Foundation\\Http\\FormRequest;\n\nclass Request{$i} extends FormRequest\n{\n    public function rules(): array { return []; }\n}\n";
+        }
+
+        $parser = new class extends AstParser
+        {
+            /** @var array<string, int> */
+            public array $parses = [];
+
+            public function parseFile(string $filePath): array
+            {
+                $this->parses[$filePath] = ($this->parses[$filePath] ?? 0) + 1;
+
+                return parent::parseFile($filePath);
+            }
+        };
+
+        $analyzer = new AuthenticationAnalyzer($parser, new Repository([]));
+        $analyzer->setBasePath($dir = $this->createTempDirectory($files));
+        $analyzer->setPaths(['app']);
+        $analyzer->analyze();
+
+        return $parser->parses[$dir.'/app/Http/Controllers/MemberController.php'] ?? 0;
+    }
+
+    public function test_an_unreadable_directory_beside_the_providers_does_not_error(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root reads a directory whatever its mode');
+        }
+
+        $files = self::webhookApp('');
+        $files['bootstrap/providers.php'] = "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n    App\\Providers\\WebhookServiceProvider::class,\n];\n";
+        $files['app/Providers/AppServiceProvider.php'] = self::provider('AppServiceProvider', '//', '//');
+        $files['bootstrap/cache/packages.php'] = "<?php\n\nreturn [];\n";
+        $dir = $this->createTempDirectory($files);
+        chmod($dir.'/bootstrap/cache', 0000);
+
+        try {
+            $analyzer = $this->createAnalyzer([
+                'authentication-authorization' => [
+                    'public_routes' => ['/webhooks/stripe'],
+                ],
+            ]);
+            $analyzer->setBasePath($dir);
+            $analyzer->setPaths(['routes']);
+
+            $this->assertPassed($analyzer->analyze());
+        } finally {
+            chmod($dir.'/bootstrap/cache', 0755);
+        }
+    }
+
+    public function test_reports_no_authorize_method_only_on_the_form_request_a_controller_imports(): void
+    {
+        $result = $this->analyzeSameNamedFormRequests(
+            "Route::middleware('auth')->put('/admin/users/{user}', [App\\Http\\Controllers\\Admin\\UserController::class, 'update']);\nRoute::put('/invites/{user}', [App\\Http\\Controllers\\Invites\\UserController::class, 'update'])->middleware('signed');",
+        );
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('has no authorize() method', $issue->message);
+        }
+    }
+
+    public function test_reports_no_authorize_method_on_the_form_request_an_unprotected_controller_imports(): void
+    {
+        $result = $this->analyzeSameNamedFormRequests(
+            "Route::put('/admin/users/{user}', [App\\Http\\Controllers\\Admin\\UserController::class, 'update']);\nRoute::middleware('auth')->put('/invites/{user}', [App\\Http\\Controllers\\Invites\\UserController::class, 'update']);",
+        );
+
+        $issues = array_values(array_filter(
+            $result->getIssues(),
+            fn ($issue) => str_contains($issue->message, 'has no authorize() method'),
+        ));
+        $this->assertCount(1, $issues);
+        $this->assertNotNull($issues[0]->location);
+        $this->assertStringContainsString('Requests/Admin/UpdateUserRequest.php', $issues[0]->location->file);
+    }
+
+    /**
+     * Analyze two UserController::update() actions, under Admin and Invites, each taking an
+     * UpdateUserRequest of its own namespace: Admin's declares no authorize(), Invites's
+     * does. Routes are $routes.
+     */
+    private function analyzeSameNamedFormRequests(string $routes): ResultInterface
+    {
+        $request = fn (string $ns, string $authorize): string => "<?php\n\nnamespace App\\Http\\Requests\\{$ns};\n\nuse Illuminate\\Foundation\\Http\\FormRequest;\n\nclass UpdateUserRequest extends FormRequest\n{\n{$authorize}    public function rules(): array { return []; }\n}\n";
+        $controller = fn (string $ns): string => "<?php\n\nnamespace App\\Http\\Controllers\\{$ns};\n\nuse App\\Http\\Requests\\{$ns}\\UpdateUserRequest;\n\nclass UserController\n{\n    public function update(UpdateUserRequest \$request) {}\n}\n";
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($this->createTempDirectory([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+            'app/Http/Controllers/Admin/UserController.php' => $controller('Admin'),
+            'app/Http/Controllers/Invites/UserController.php' => $controller('Invites'),
+            'app/Http/Requests/Admin/UpdateUserRequest.php' => $request('Admin', ''),
+            'app/Http/Requests/Invites/UpdateUserRequest.php' => $request('Invites', "    public function authorize(): bool { return \$this->hasValidSignature(); }\n"),
+        ]));
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * A service provider named $class running $register in register() and $boot in boot().
+     */
+    private static function provider(string $class, string $register, string $boot): string
+    {
+        return "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\nuse Illuminate\\Support\\ServiceProvider;\n\nclass {$class} extends ServiceProvider\n{\n    public function register(): void\n    {\n        {$register}\n    }\n\n    public function boot(): void\n    {\n        {$boot}\n    }\n}\n";
+    }
+
+    /**
+     * An application whose bootstrap/providers.php lists only AppServiceProvider, with a
+     * WebhookServiceProvider registering routes/webhooks.php under 'webhooks', and
+     * $bootstrapChain called on the application builder.
+     *
+     * @return array<string, string>
+     */
+    private static function webhookApp(string $bootstrapChain): array
+    {
+        return [
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        health: '/up',\n    )\n{$bootstrapChain}    ->create();\n",
+            'bootstrap/providers.php' => "<?php\n\nreturn [\n    App\\Providers\\AppServiceProvider::class,\n];\n",
+            'routes/web.php' => "<?php\n",
+            'routes/webhooks.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/stripe', fn () => response()->noContent());\n",
+            'app/Providers/WebhookServiceProvider.php' => self::provider('WebhookServiceProvider', '//', "Route::prefix('webhooks')->group(base_path('routes/webhooks.php'));"),
+        ];
+    }
+
+    public function test_a_reused_analyzer_reports_what_a_fresh_one_reports(): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+class AccountController extends Controller
+{
+    public function store()
+    {
+    }
+}
+PHP;
+
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\AccountController;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/accounts', [AccountController::class, 'store']);
+PHP;
+
+        $first = $this->createTempDirectory([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/AccountController.php' => $controller,
+        ]);
+        $second = $this->createTempDirectory([
+            'app/Http/Controllers/AccountController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($first);
+        $analyzer->setPaths(['app']);
+        // The GET route makes store() intentionally public in the first project
+        $this->assertPassed($analyzer->analyze());
+
+        $analyzer->setBasePath($second);
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Sensitive method AccountController::store() without authentication check', $result);
+    }
+
+    /**
+     * Analyze routes/web.php running $routes, with $publicRoutes listed as public.
+     *
+     * @param  list<string>  $publicRoutes
+     */
+    private function analyzeWebRoutes(string $routes, array $publicRoutes = []): ResultInterface
+    {
+        $analyzer = $this->createAnalyzer([
+            'authentication-authorization' => [
+                'public_routes' => $publicRoutes,
+            ],
+        ]);
+        $analyzer->setBasePath($this->createTempDirectory([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ]));
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
     }
 }

@@ -431,7 +431,7 @@ class BootstrapRouteParser
      * @param  array<Node>  $args  Raw argument list; only plain Args carry a value.
      * @return list<Node\Expr\Closure|Node\Expr\ArrowFunction>
      *
-     * @internal An implementation detail of login-throttling and of this class itself, outside this package's backward-compatibility promise.
+     * @internal An implementation detail of authentication-authorization, login-throttling and of this class itself, outside this package's backward-compatibility promise.
      */
     public function closureArguments(array $args): array
     {

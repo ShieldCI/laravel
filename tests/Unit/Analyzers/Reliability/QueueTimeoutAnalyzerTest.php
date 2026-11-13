@@ -727,49 +727,6 @@ PHP;
 
     /** @test */
     #[Test]
-    public function test_uses_connection_specific_timeout_from_queue_config(): void
-    {
-        // Test custom timeout in connection config (non-standard but supported)
-        $queueConfig = <<<'PHP'
-<?php
-
-return [
-    'default' => 'database',
-    'connections' => [
-        'database' => [
-            'driver' => 'database',
-            'table' => 'jobs',
-            'queue' => 'default',
-            'timeout' => 120,  // Custom timeout in connection config
-            'retry_after' => 125, // Only 5 second buffer - should fail
-        ],
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/queue.php' => $queueConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // Should fail because 120 + 10 >= 125
-        $this->assertFailed($result);
-
-        $issues = $result->getIssues();
-        $metadata = $issues[0]->metadata;
-
-        // Should use the custom timeout
-        $this->assertSame(120, $metadata['timeout']);
-        $this->assertSame('connection_config', $metadata['timeout_source']);
-        $this->assertSame(5, $metadata['actual_buffer']); // 125 - 120
-    }
-
-    /** @test */
-    #[Test]
     public function test_database_driver_includes_detection_warning(): void
     {
         // Database drivers should include warning about default timeout assumption
@@ -890,7 +847,6 @@ PHP;
         $this->assertArrayHasKey('timeout_source', $metadata);
         $this->assertIsString($metadata['timeout_source']);
         $this->assertContains($metadata['timeout_source'], [
-            'connection_config',
             'horizon_config',
             'shieldci_config',
             'default_assumption',
@@ -1110,7 +1066,10 @@ PHP;
     #[Test]
     public function test_skips_custom_driver_without_retry_after(): void
     {
-        // A third-party connector's retry_after default is unknown, so there is nothing to grade.
+        // A third-party connector's retry_after default is unknown, so there is nothing to grade,
+        // even against a worker timeout that no assumed default could clear.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['custom' => 120]]);
+
         $queueConfig = <<<'PHP'
 <?php
 
@@ -1119,7 +1078,6 @@ return [
         'custom' => [
             'driver' => 'custom-driver',
             'queue' => 'default',
-            'timeout' => 120,
         ],
     ],
 ];
@@ -1173,6 +1131,8 @@ PHP;
     public function test_skips_connection_with_non_numeric_retry_after(): void
     {
         // The queue passes a non-numeric retry_after on unconverted, so there is no runtime value to compare.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['database' => 85]]);
+
         $queueConfig = <<<'PHP'
 <?php
 
@@ -1182,7 +1142,6 @@ return [
             'driver' => 'database',
             'queue' => 'default',
             'retry_after' => 'ninety',
-            'timeout' => 85,
         ],
     ],
 ];
@@ -1555,6 +1514,364 @@ PHP;
 
         // retry_after 30 would fail against the 60s timeout if it were graded.
         $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider connectionLevelTimeoutKeyProvider
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    #[DataProvider('connectionLevelTimeoutKeyProvider')]
+    public function test_ignores_a_timeout_key_on_the_queue_connection(array $connection): void
+    {
+        // No worker reads this key: Redis and Database connectors ignore it, and Beanstalkd
+        // passes it to Pheanstalk as the socket timeout. The worker still runs at 60s.
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => ['c' => $connection]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(60, $metadata['timeout']);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+    }
+
+    /**
+     * @return array<string, array{array<string, mixed>}>
+     */
+    public static function connectionLevelTimeoutKeyProvider(): array
+    {
+        return [
+            'beanstalkd socket timeout' => [
+                ['driver' => 'beanstalkd', 'host' => 'localhost', 'queue' => 'default', 'retry_after' => 60, 'timeout' => 5],
+            ],
+            'redis' => [
+                ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 60, 'timeout' => 45],
+            ],
+            'database' => [
+                ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 60, 'timeout' => 45],
+            ],
+        ];
+    }
+
+    /** @test */
+    #[Test]
+    public function test_passes_when_retry_after_clears_the_worker_timeout_whatever_the_connection_timeout_key_says(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 90, 'timeout' => 300],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_points_at_where_the_worker_timeout_is_set(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 60],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('queue:work --timeout', $recommendation);
+        $this->assertStringContainsString('Horizon supervisor', $recommendation);
+        $this->assertStringNotContainsString('decrease the timeout', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_says_an_assumed_timeout_is_an_assumption(): void
+    {
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 65],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringStartsWith('The queue retry_after value must be at least 70 seconds', $recommendation);
+        $this->assertStringContainsString("assumed to be Laravel's default of 60 seconds", $recommendation);
+        $this->assertStringContainsString(
+            'shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts in config/shieldci.php',
+            $recommendation
+        );
+        $this->assertStringContainsString('queue:work --timeout', $recommendation);
+        $this->assertStringNotContainsString('Horizon', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_offers_exactly_two_alternatives_with_a_concrete_timeout(): void
+    {
+        $result = $this->analyzeConnections([
+            'redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 65],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        // The whole span from Solution to Recommended, so a third alternative anywhere in it fails.
+        $this->assertStringContainsString(
+            'Solution: Either increase retry_after to at least 70 seconds, or lower the worker timeout to at most 55 seconds. '.
+            "The worker timeout is the queue:work --timeout option, or the Horizon supervisors' timeouts when Horizon runs the workers. ".
+            'Recommended: retry_after = timeout + 10 seconds (buffer).',
+            $recommendation
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_omits_lowering_the_timeout_when_no_positive_timeout_would_fit(): void
+    {
+        // retry_after 5 minus the 10s buffer leaves no positive timeout, and 0 would mean unlimited.
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 5],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('Solution: Increase retry_after to at least 70 seconds.', $recommendation);
+        $this->assertStringNotContainsString('at most', $recommendation);
+        $this->assertStringNotContainsString('lower', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_says_a_shieldci_timeout_comes_from_the_shieldci_config(): void
+    {
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['database' => 120]]);
+
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 90],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('comes from the ShieldCI connection_timeouts or driver_timeouts config', $recommendation);
+        $this->assertStringContainsString('or lower the worker timeout to at most 80 seconds.', $recommendation);
+        $this->assertStringContainsString('queue:work --timeout', $recommendation);
+        $this->assertStringNotContainsString('assumed', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_names_the_horizon_supervisor_timeout_for_a_horizon_timeout(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                's' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 120],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString("or lower the Horizon supervisors' timeouts to at most 80 seconds.", $recommendation);
+        $this->assertStringNotContainsString('queue:work', $recommendation);
+        $this->assertStringNotContainsString('assumed', $recommendation);
+    }
+
+    /**
+     * @dataProvider unlimitedSupervisorTimeoutProvider
+     *
+     * @param  array<string, array<string, mixed>>  $supervisors
+     */
+    #[DataProvider('unlimitedSupervisorTimeoutProvider')]
+    public function test_fails_a_horizon_supervisor_with_no_timeout_limit(array $supervisors): void
+    {
+        // Horizon passes the supervisor's timeout to the worker as --timeout, and the
+        // worker arms pcntl_alarm(max($timeout, 0)): an alarm of 0 never fires, so no
+        // retry_after can outlast a job on this supervisor.
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => $supervisors,
+        ], ['redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 9999]]);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame("Queue connection 'redis' has improper timeout configuration", $issue->message);
+        $this->assertSame(0, $issue->metadata['timeout']);
+        $this->assertTrue($issue->metadata['timeout_unlimited']);
+        $this->assertArrayNotHasKey('actual_buffer', $issue->metadata);
+        $this->assertArrayNotHasKey('buffer_deficit', $issue->metadata);
+        $this->assertStringContainsString('has no timeout limit (a timeout of 0 or less, or an empty value)', $issue->recommendation);
+        $this->assertStringContainsString('never time out', $issue->recommendation);
+        $this->assertStringNotContainsString('must be at least', $issue->recommendation);
+    }
+
+    /**
+     * @return array<string, array{array<string, array<string, mixed>>}>
+     */
+    public static function unlimitedSupervisorTimeoutProvider(): array
+    {
+        return [
+            'zero' => [['s' => ['connection' => 'redis', 'timeout' => 0]]],
+            'zero beside 600' => [[
+                'a' => ['connection' => 'redis', 'timeout' => 0],
+                'b' => ['connection' => 'redis', 'timeout' => 600],
+            ]],
+            '600 beside zero' => [[
+                'a' => ['connection' => 'redis', 'timeout' => 600],
+                'b' => ['connection' => 'redis', 'timeout' => 0],
+            ]],
+            'negative' => [['s' => ['connection' => 'redis', 'timeout' => -5]]],
+            'zero string' => [['s' => ['connection' => 'redis', 'timeout' => '0']]],
+            // An unset env() leaves null: Horizon writes --timeout= and the worker reads it as 0.
+            'null' => [['s' => ['connection' => 'redis', 'timeout' => null]]],
+            // HORIZON_TIMEOUT= gives '', also written as --timeout=; false prints the same way.
+            'empty string' => [['s' => ['connection' => 'redis', 'timeout' => '']]],
+            'false' => [['s' => ['connection' => 'redis', 'timeout' => false]]],
+        ];
+    }
+
+    /** @test */
+    #[Test]
+    public function test_unmatched_environment_warning_holds_for_an_unlimited_timeout(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                's' => ['connection' => 'redis', 'timeout' => 0],
+            ],
+        ], environment: 'testing');
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertTrue($metadata['timeout_unlimited']);
+        $this->assertIsString($metadata['detection_warning']);
+        $this->assertStringContainsString("No Horizon environment matches 'testing'", $metadata['detection_warning']);
+        $this->assertStringNotContainsString('largest timeout', $metadata['detection_warning']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_omits_lowering_the_timeout_when_retry_after_equals_the_buffer(): void
+    {
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 10],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('Solution: Increase retry_after to at least 70 seconds. Recommended:', $recommendation);
+        $this->assertStringNotContainsString('at most', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_offers_a_one_second_timeout_when_retry_after_is_one_past_the_buffer(): void
+    {
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 11],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertStringContainsString(
+            'Solution: Either increase retry_after to at least 70 seconds, or lower the worker timeout to at most 1 second. ',
+            $result->getIssues()[0]->recommendation
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function test_recommendation_writes_one_second_in_the_singular(): void
+    {
+        config([
+            'shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['database' => 1],
+            'shieldci.analyzers.reliability.queue-timeout-configuration.minimum_buffer' => 1,
+        ]);
+
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 1],
+        ]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('has a worker timeout of 1 second and retry_after=1 second (buffer: 0 seconds)', $recommendation);
+        $this->assertStringContainsString('Recommended: retry_after = timeout + 1 second (buffer).', $recommendation);
+        $this->assertStringNotContainsString('1 seconds', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_unlimited_recommendation_writes_one_second_in_the_singular(): void
+    {
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.minimum_buffer' => 1]);
+
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                's' => ['connection' => 'redis', 'timeout' => 0],
+            ],
+        ], ['redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 1]]);
+
+        $this->assertFailed($result);
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('(currently 1 second)', $recommendation);
+        $this->assertStringContainsString('plus 1 second (buffer)', $recommendation);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_ignores_a_shieldci_connection_timeout_of_zero(): void
+    {
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['database' => 0]]);
+
+        $result = $this->analyzeConnections([
+            'database' => ['driver' => 'database', 'table' => 'jobs', 'queue' => 'default', 'retry_after' => 65],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(60, $metadata['timeout']);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_a_null_defaults_timeout_survives_an_environment_plan_that_omits_it(): void
+    {
+        // array_replace_recursive keeps the defaults' null, so the merged supervisor still has no limit.
+        $result = $this->analyzeAgainstHorizon([
+            's' => ['connection' => 'redis', 'timeout' => null],
+        ], [
+            'production' => [
+                's' => ['maxProcesses' => 3],
+            ],
+        ], ['redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 9999]]);
+
+        $this->assertFailed($result);
+        $this->assertTrue($result->getIssues()[0]->metadata['timeout_unlimited']);
+    }
+
+    /**
+     * @param  array<string, array<string, mixed>>  $connections
+     */
+    private function analyzeConnections(array $connections): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => $connections], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze();
     }
 
     private const TWO_REDIS_CONNECTIONS = [

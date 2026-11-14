@@ -33,17 +33,11 @@ class ShieldCIClient implements ClientInterface
      * @return array<string, mixed>
      *
      * @throws ConnectionException
+     * @throws \JsonException
      */
     public function sendReport(array $payload): array
     {
-        $response = Http::withToken($this->token)
-            ->timeout(30)
-            ->post("{$this->baseUrl}/api/reports", $payload);
-
-        /** @var array<string, mixed> $data */
-        $data = $response->json() ?? [];
-
-        return $data;
+        return $this->postJson('/api/reports', $payload, 30);
     }
 
     /**
@@ -91,12 +85,35 @@ class ShieldCIClient implements ClientInterface
      * @return array<string, mixed>
      *
      * @throws ConnectionException
+     * @throws \JsonException
      */
     public function sendFailureNotification(array $payload): array
     {
+        return $this->postJson('/api/reports/failure', $payload, 15);
+    }
+
+    /**
+     * POST a JSON payload, encoding it here rather than through Guzzle's json option.
+     *
+     * Guzzle's encoder throws on the first invalid UTF-8 byte, and these payloads quote text
+     * that is not always UTF-8: source fragments in a report, or an exception message the
+     * sanitizer cut mid-character. Invalid bytes become U+FFFD; valid payloads encode exactly
+     * as Guzzle encoded them.
+     *
+     * @param  array<string, mixed>  $payload
+     * @return array<string, mixed>
+     *
+     * @throws ConnectionException
+     * @throws \JsonException
+     */
+    private function postJson(string $path, array $payload, int $timeout): array
+    {
+        $body = json_encode($payload, JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR);
+
         $response = Http::withToken($this->token)
-            ->timeout(15)
-            ->post("{$this->baseUrl}/api/reports/failure", $payload);
+            ->timeout($timeout)
+            ->withBody($body, 'application/json')
+            ->post($this->baseUrl.$path);
 
         /** @var array<string, mixed> $data */
         $data = $response->json() ?? [];

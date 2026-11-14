@@ -359,6 +359,89 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_writes_a_decodable_json_report_when_an_issue_holds_invalid_utf8(): void
+    {
+        config(['shieldci.fail_on' => 'never']);
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('latin1-analyzer', 'Found 1 issue', [
+                new Issue(
+                    message: "Hardcoded label 'caf\xE9'",
+                    location: new Location('/app/Legacy.php', 4),
+                    severity: Severity::High,
+                    recommendation: 'Store the file as UTF-8',
+                ),
+            ]),
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+        ]);
+
+        $outputPath = base_path('tests/shieldci-invalid-utf8.json');
+        @unlink($outputPath);
+
+        $this->artisan('shield:analyze', [
+            '--format' => 'json',
+            '--output' => 'tests/shieldci-invalid-utf8.json',
+        ])->assertSuccessful()->run();
+
+        $decoded = json_decode((string) file_get_contents($outputPath), true);
+        @unlink($outputPath);
+
+        $this->assertIsArray($decoded);
+        $this->assertIsArray($decoded['results']);
+        $byId = array_column($decoded['results'], null, 'analyzer_id');
+        $this->assertSame("Hardcoded label 'caf\u{FFFD}'", $byId['latin1-analyzer']['issues'][0]['message']);
+        $this->assertSame('No issues detected', $byId['clean-analyzer']['message']);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_baselined_invalid_utf8_issue_does_not_suppress_a_different_one(): void
+    {
+        $baselined = new Issue(
+            message: "Hardcoded label 'r\xE9sum\xE9'",
+            location: new Location('/app/First.php', 3),
+            severity: Severity::High,
+            recommendation: 'Store the file as UTF-8',
+        );
+        $introduced = new Issue(
+            message: "Hardcoded label 'caf\xE9'",
+            location: new Location('/app/Second.php', 7),
+            severity: Severity::High,
+            recommendation: 'Store the file as UTF-8',
+        );
+
+        $baselinePath = base_path('tests/shieldci-invalid-utf8-baseline.json');
+        $outputPath = base_path('tests/shieldci-invalid-utf8-report.json');
+        @unlink($baselinePath);
+        @unlink($outputPath);
+        config(['shieldci.baseline_file' => $baselinePath, 'shieldci.fail_on' => 'never']);
+
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('latin1-analyzer', 'Found 1 issue', [$baselined]),
+        ]);
+        $this->artisan('shield:baseline')->assertSuccessful()->run();
+
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('latin1-analyzer', 'Found 2 issues', [$baselined, $introduced]),
+        ]);
+        $this->artisan('shield:analyze', [
+            '--baseline' => true,
+            '--format' => 'json',
+            '--output' => 'tests/shieldci-invalid-utf8-report.json',
+        ])->assertSuccessful()->run();
+
+        $decoded = json_decode((string) file_get_contents($outputPath), true);
+        @unlink($baselinePath);
+        @unlink($outputPath);
+
+        $this->assertIsArray($decoded);
+        $this->assertIsArray($decoded['results'][0]['issues']);
+        $issues = array_values($decoded['results'][0]['issues']);
+        $this->assertCount(1, $issues);
+        $this->assertSame('/app/Second.php', $issues[0]['location']['file']);
+    }
+
+    /** @test */
+    #[Test]
     public function it_fails_the_run_when_the_report_cannot_be_written(): void
     {
         $this->registerTestAnalyzers();
@@ -4579,6 +4662,56 @@ PHP);
 
         // Still reports the failure rather than swallowing it.
         $this->assertStringContainsString('connect failed', $uploaded);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_failure_notification_is_sent_when_truncation_splits_a_multibyte_character(): void
+    {
+        // The sanitizer caps the message at 500 bytes, which can cut a two-byte character in
+        // half and leave a lone lead byte for the encoder.
+        /** @var AnalyzerInterface&MockInterface $throwingAnalyzer */
+        $throwingAnalyzer = Mockery::mock(AnalyzerInterface::class);
+        $throwingAnalyzer->shouldReceive('getId')->andReturn('throwing-analyzer');
+        $throwingAnalyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
+            id: 'throwing-analyzer',
+            name: 'Throwing Analyzer',
+            description: 'An analyzer that throws',
+            category: Category::Security,
+            severity: Severity::High,
+        ));
+        $throwingAnalyzer->shouldReceive('analyze')->andThrow(
+            new RuntimeException(str_repeat('a', 499)."\u{E9} more text")
+        );
+        $throwingAnalyzer->shouldReceive('shouldRun')->andReturn(true);
+        $throwingAnalyzer->shouldReceive('getSkipReason')->andReturn('');
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function () use ($throwingAnalyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect([$throwingAnalyzer]));
+            $manager->shouldReceive('getByCategory')->with(Mockery::any())->andReturn(collect());
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
+
+            return $manager;
+        });
+
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
+        ]);
+
+        $this->artisan('shield:analyze', ['--format' => 'json', '--report' => true])->assertFailed();
+
+        Http::assertSent(function ($request) {
+            return str_contains($request->url(), '/api/reports/failure')
+                && $request['failure_reason'] === 'uncaught_exception'
+                && is_string($request['error_message'])
+                && str_starts_with($request['error_message'], str_repeat('a', 499));
+        });
     }
 
     /** @test */

@@ -126,6 +126,34 @@ class ShieldCIClientTest extends TestCase
 
     /** @test */
     #[Test]
+    public function send_report_posts_a_payload_holding_invalid_utf8(): void
+    {
+        Http::fake([
+            'api.test.shieldci.com/api/reports' => Http::response(['success' => true]),
+        ]);
+
+        $client = new ShieldCIClient;
+        $result = $client->sendReport([
+            'project_id' => 'proj-1',
+            'results' => [['analyzer_id' => 'latin1-analyzer', 'message' => "Scanned caf\xE9.php"]],
+        ]);
+
+        $this->assertEquals(['success' => true], $result);
+
+        Http::assertSent(function ($request) {
+            $body = json_decode($request->body(), true);
+
+            return $request->url() === 'https://api.test.shieldci.com/api/reports'
+                && $request->hasHeader('Content-Type', 'application/json')
+                && is_array($body)
+                && $body['project_id'] === 'proj-1'
+                && $body['results'][0]['analyzer_id'] === 'latin1-analyzer'
+                && $body['results'][0]['message'] === "Scanned caf\u{FFFD}.php";
+        });
+    }
+
+    /** @test */
+    #[Test]
     public function send_report_returns_empty_array_on_null_json(): void
     {
         Http::fake([
@@ -236,6 +264,56 @@ class ShieldCIClientTest extends TestCase
                 && $request['project_id'] === 'proj-1'
                 && $request['status'] === 'failed';
         });
+    }
+
+    /** @test */
+    #[Test]
+    public function send_failure_notification_posts_an_error_message_holding_invalid_utf8(): void
+    {
+        Http::fake([
+            'api.test.shieldci.com/api/reports/failure' => Http::response(['success' => true]),
+        ]);
+
+        $client = new ShieldCIClient;
+        $result = $client->sendFailureNotification([
+            'project_id' => 'proj-1',
+            'error_message' => "Could not parse caf\xE9.php",
+        ]);
+
+        $this->assertEquals(['success' => true], $result);
+
+        Http::assertSentCount(1);
+        Http::assertSent(function ($request) {
+            $body = json_decode($request->body(), true);
+
+            return $request->url() === 'https://api.test.shieldci.com/api/reports/failure'
+                && $request->method() === 'POST'
+                && $request->hasHeader('Content-Type', 'application/json')
+                && is_array($body)
+                && $body['project_id'] === 'proj-1'
+                && $body['error_message'] === "Could not parse caf\u{FFFD}.php";
+        });
+    }
+
+    /** @test */
+    #[Test]
+    public function payloads_holding_valid_utf8_are_encoded_as_guzzle_encoded_them(): void
+    {
+        Http::fake(['*' => Http::response(['success' => true])]);
+
+        $payload = ['path' => 'app/Http/Caf\u{E9}.php', 'nested' => ['score' => 85, 'ratio' => 0.5, 'none' => null]];
+
+        $client = new ShieldCIClient;
+        $client->sendReport($payload);
+        $client->sendFailureNotification($payload);
+
+        Http::assertSentCount(2);
+        foreach (Http::recorded() as [$request]) {
+            // Guzzle's own json option encodes with no flags beyond throwing on error.
+            $this->assertSame(json_encode($payload), $request->body());
+            $this->assertTrue($request->hasHeader('Content-Type', 'application/json'));
+            $this->assertTrue($request->hasHeader('Authorization', 'Bearer test-token'));
+        }
     }
 
     /** @test */

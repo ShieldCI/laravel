@@ -89,6 +89,40 @@ class BaselineCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_writes_a_baseline_for_issues_holding_invalid_utf8(): void
+    {
+        $this->registerMockAnalyzerManager([
+            new Issue(
+                message: "Hardcoded label 'r\xE9sum\xE9'",
+                location: new Location('/app/First.php', 3),
+                severity: Severity::High,
+                recommendation: 'Store the file as UTF-8',
+            ),
+            new Issue(
+                message: "Hardcoded label 'caf\xE9'",
+                location: new Location('/app/Second.php', 7),
+                severity: Severity::High,
+                recommendation: 'Store the file as UTF-8',
+            ),
+        ]);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $this->artisan('shield:baseline')->assertSuccessful();
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+
+        $entries = $content['errors']['test-analyzer'];
+        $this->assertCount(2, $entries);
+        $this->assertSame("Hardcoded label 'r\u{FFFD}sum\u{FFFD}'", $entries[0]['message']);
+        $this->assertSame('/app/Second.php', $entries[1]['path']);
+        $this->assertNotSame($entries[0]['hash'], $entries[1]['hash']);
+        $this->assertNotSame(hash('sha256', ''), $entries[0]['hash']);
+    }
+
+    /** @test */
+    #[Test]
     public function it_supports_ci_mode_flag(): void
     {
         $this->registerMockAnalyzerManager([]);

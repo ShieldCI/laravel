@@ -732,9 +732,21 @@ class Reporter implements ReporterInterface
         return implode(PHP_EOL, $table);
     }
 
+    /**
+     * Results quote source text, which is not always UTF-8 (a code snippet read from an
+     * ISO-8859-1 file, say). A single invalid byte used to fail the whole encode, and the
+     * `?: ''` fallback turned that into an empty report written with no error. Invalid bytes
+     * are now replaced with U+FFFD, and any other encode failure throws instead of emptying
+     * the report.
+     *
+     * @throws \JsonException
+     */
     public function toJson(AnalysisReport $report): string
     {
-        return json_encode($report->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) ?: '';
+        return json_encode(
+            $report->toArray(),
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
+        );
     }
 
     public function toApi(AnalysisReport $report): array

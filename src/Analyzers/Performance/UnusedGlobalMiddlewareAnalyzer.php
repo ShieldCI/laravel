@@ -10,10 +10,10 @@ use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Contracts\Http\Kernel;
 use Illuminate\Http\Middleware\HandleCors;
-use Illuminate\Http\Middleware\TrustHosts;
 use Illuminate\Http\Middleware\TrustProxies;
 use Illuminate\Routing\Router;
 use ReflectionClass;
+use ReflectionMethod;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -23,6 +23,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Concerns\LocatesMiddlewareFile;
+use ShieldCI\Concerns\SanitizesErrorMessages;
 
 /**
  * Detects unused global HTTP middleware in the application.
@@ -31,7 +32,6 @@ use ShieldCI\Concerns\LocatesMiddlewareFile;
  *
  * Checks for:
  * - TrustProxies middleware without configured proxies
- * - TrustHosts middleware without TrustProxies (useless)
  * - CORS middleware without configured paths
  */
 class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
@@ -39,11 +39,18 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     use AnalyzesMiddleware;
     use DetectsLaravelVersion;
     use LocatesMiddlewareFile;
+    use SanitizesErrorMessages;
 
     /**
      * @var array<int, array{name: string, class: string, reason: string, recommendation: string}>
      */
     private array $unusedMiddleware = [];
+
+    /**
+     * Why the registered TrustProxies middleware could not be examined, or null when it
+     * was examined or is not registered. A run-status note rather than an issue.
+     */
+    private ?string $trustProxiesUninspected = null;
 
     public function __construct(
         private Application $app,
@@ -71,16 +78,23 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     protected function runAnalysis(): ResultInterface
     {
         $this->unusedMiddleware = [];
+        $this->trustProxiesUninspected = null;
 
         // Resolved once, and before the checks, because the CORS recommendation
         // names this file too and must not contradict the reported location.
         $middlewareFile = $this->resolveMiddlewareFile();
 
         $this->checkTrustProxiesMiddleware();
-        $this->checkTrustHostsMiddleware();
         $this->checkCorsMiddleware($middlewareFile);
 
         if (count($this->unusedMiddleware) === 0) {
+            // A middleware that was never examined is not a clean bill of health.
+            if ($this->trustProxiesUninspected !== null) {
+                return $this->warning(
+                    'No unused global middleware detected, but '.$this->trustProxiesUninspected
+                );
+            }
+
             return $this->passed('No unused global middleware detected');
         }
 
@@ -119,6 +133,10 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
 
         $summary = sprintf('Found %d unused global middleware', count($this->unusedMiddleware));
 
+        if ($this->trustProxiesUninspected !== null) {
+            $summary .= sprintf(' (%s)', $this->trustProxiesUninspected);
+        }
+
         return $this->resultBySeverity($summary, $issues);
     }
 
@@ -149,73 +167,56 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             return;
         }
 
+        // Both the framework and Fideloper fall back to trustedproxy.proxies whatever the
+        // instance holds, so a configured value means the middleware is in use and there
+        // is no need to build it.
+        $configProxies = $this->config->get('trustedproxy.proxies');
+
+        // Validate config value type
+        if ($configProxies !== null && ! is_string($configProxies) && ! is_array($configProxies)) {
+            $configProxies = null;
+        }
+
+        if ($configProxies !== null) {
+            return;
+        }
+
+        // Only the instantiation and the proxies read are guarded: a failure in either
+        // means the middleware could not be examined, which is recorded rather than read
+        // as "nothing unused".
         try {
-            // Instantiate the middleware and check if proxies are configured
             $middleware = $this->app->make($middlewareClass);
-
-            if (! is_object($middleware)) {
-                return;
-            }
-
-            $proxies = $this->getPropertyValue($middleware, 'proxies');
-
-            // Validate proxies value type
-            if (! is_string($proxies) && ! is_array($proxies) && $proxies !== null) {
-                $proxies = null;
-            }
-
-            // Check config for older Fideloper package
-            $configProxies = $this->config->get('trustedproxy.proxies');
-
-            // Validate config value type
-            if ($configProxies !== null && ! is_string($configProxies) && ! is_array($configProxies)) {
-                $configProxies = null;
-            }
-
-            if (empty($proxies) && $configProxies === null) {
-                $this->addUnusedMiddleware(
-                    class_basename($middlewareClass),
-                    $middlewareClass,
-                    'No proxies are configured',
-                    'Remove TrustProxies middleware from the global middleware stack in app/Http/Kernel.php, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy such as CloudFlare, AWS ALB, or nginx.'
-                );
-            }
         } catch (\Throwable $e) {
-            // Unable to instantiate middleware, skip check
-            return;
-        }
-    }
+            $this->markTrustProxiesUninspected($middlewareClass, $this->describeFailure($e));
 
-    private function checkTrustHostsMiddleware(): void
-    {
-        // In Laravel 11+, TrustHosts is managed via the framework's withMiddleware()->trustHosts()
-        // method, not as a user-registered global middleware. Skip to avoid false positives.
-        if ($this->isLaravel11OrNewer()) {
             return;
         }
 
-        // Only check if TrustHosts is registered
-        if (! $this->appUsesGlobalMiddleware(TrustHosts::class)) {
+        if (! is_object($middleware)) {
+            $this->markTrustProxiesUninspected($middlewareClass, 'the container did not return an object');
+
             return;
         }
 
-        // Check if TrustProxies is also registered AND configured
-        $hasTrustProxies = $this->appUsesGlobalMiddleware(TrustProxies::class)
-            || (class_exists(FideloperTrustProxies::class) && $this->appUsesGlobalMiddleware(FideloperTrustProxies::class));
+        try {
+            $proxies = $this->readConfiguredProxies($middleware);
+        } catch (\Throwable $e) {
+            $this->markTrustProxiesUninspected($middlewareClass, $this->describeFailure($e));
 
-        // Check if TrustProxies is already flagged as unused (meaning it exists but is not configured)
-        $trustProxiesUnused = collect($this->unusedMiddleware)->contains(function ($middleware) {
-            return $middleware['class'] === TrustProxies::class
-                || (class_exists(FideloperTrustProxies::class) && $middleware['class'] === FideloperTrustProxies::class);
-        });
+            return;
+        }
 
-        // If TrustProxies doesn't exist, OR it exists but is unused, then TrustHosts is useless
-        if (! $hasTrustProxies || $trustProxiesUnused) {
+        // Validate proxies value type
+        if (! is_string($proxies) && ! is_array($proxies) && $proxies !== null) {
+            $proxies = null;
+        }
+
+        if (empty($proxies)) {
             $this->addUnusedMiddleware(
-                class_basename(TrustHosts::class),
-                TrustHosts::class,
-                'TrustHosts is useless without TrustProxies',
-                'Remove TrustHosts middleware from the global middleware stack in app/Http/Kernel.php. TrustHosts only works when used together with TrustProxies middleware, as it validates the Host header from trusted proxies.'
+                class_basename($middlewareClass),
+                $middlewareClass,
+                'No proxies are configured',
+                'Remove TrustProxies middleware from the global middleware stack in app/Http/Kernel.php, as no proxies are configured. This middleware runs on every request unnecessarily. Only add it back if you deploy behind a proxy such as CloudFlare, AWS ALB, or nginx.'
             );
         }
     }
@@ -249,6 +250,52 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
                 $this->corsRemovalRecommendation($middlewareFile)
             );
         }
+    }
+
+    /**
+     * Read the proxies the middleware trusts the way the framework does.
+     *
+     * Illuminate's TrustProxies (9.x onward) reads $this->proxies(), so an app may
+     * configure its proxies by overriding that method instead of setting the property.
+     * Fideloper's TrustProxies reads the property directly and never calls a proxies()
+     * method, even one a subclass defines, so only the Illuminate class gets the call.
+     * A throw from the method is left to the caller, which records it.
+     */
+    private function readConfiguredProxies(object $middleware): mixed
+    {
+        if ($middleware instanceof TrustProxies) {
+            // Protected on the framework class; reflection reaches it without
+            // setAccessible() on PHP 8.1+.
+            return (new ReflectionMethod($middleware, 'proxies'))->invoke($middleware);
+        }
+
+        return $this->getPropertyValue($middleware, 'proxies');
+    }
+
+    private function markTrustProxiesUninspected(string $middlewareClass, string $reason): void
+    {
+        $this->trustProxiesUninspected = sprintf(
+            '%s could not be inspected: %s',
+            class_basename($middlewareClass),
+            $reason
+        );
+    }
+
+    /**
+     * The sanitized exception message, or the exception's short class name when the
+     * message is blank, so the note never ends on a dangling colon.
+     */
+    private function describeFailure(\Throwable $e): string
+    {
+        $message = trim($this->sanitizedErrorMessage($e->getMessage()));
+
+        if ($message !== '') {
+            return $message;
+        }
+
+        // An anonymous class name carries "\0<file>:<line>$<n>" after "@anonymous";
+        // class_basename() would answer with that file path, so cut it off first.
+        return class_basename(strstr(get_class($e), "\0", true) ?: get_class($e));
     }
 
     /**
@@ -348,7 +395,7 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
     {
         if ($middlewareFile === null) {
             return 'Remove HandleCors from the global middleware stack, as no CORS paths are configured. '
-                .'In Laravel 11+ that is the withMiddleware() callback in bootstrap/app.php; in Laravel 9/10 it is the $middleware array in app/Http/Kernel.php. '
+                .'In Laravel 11+ it is part of the framework\'s default global stack, so remove it by calling $middleware->remove() with HandleCors inside the withMiddleware() callback in bootstrap/app.php; in Laravel 9/10 delete it from the $middleware array in app/Http/Kernel.php. '
                 .'This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.';
         }
 
@@ -356,6 +403,6 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
             return 'Remove HandleCors middleware from the global middleware stack in app/Http/Kernel.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths that require CORS handling in config/cors.php.';
         }
 
-        return 'Remove HandleCors from the withMiddleware() callback in bootstrap/app.php, as no CORS paths are configured. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.';
+        return 'Remove HandleCors from the global middleware stack, as no CORS paths are configured. It is part of the framework\'s default global stack, so remove it by calling $middleware->remove() with HandleCors inside the withMiddleware() callback in bootstrap/app.php, which also drops it from a use() list. This middleware runs on every request unnecessarily. Only add it back when you configure specific paths in config/cors.php.';
     }
 }

@@ -556,7 +556,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         $result = $this->analyzeOnLaravel10(
-            $this->analyzerWithTrustProxies(get_class($middleware), fn () => $middleware)
+            $this->analyzerWithTrustProxies(TrustProxies::class, fn () => $middleware)
         );
 
         $this->assertPassed($result);
@@ -579,12 +579,12 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         $result = $this->analyzeOnLaravel10(
-            $this->analyzerWithTrustProxies(get_class($middleware), fn () => $middleware)
+            $this->analyzerWithTrustProxies(TrustProxies::class, fn () => $middleware)
         );
 
         $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
-        $this->assertSame(get_class($middleware), $result->getIssues()[0]->metadata['middleware_class'] ?? null);
+        $this->assertSame(TrustProxies::class, $result->getIssues()[0]->metadata['middleware_class'] ?? null);
     }
 
     /**
@@ -609,7 +609,7 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         };
 
         $result = $this->analyzeOnLaravel10(
-            $this->analyzerWithTrustProxies(get_class($middleware), fn () => $middleware)
+            $this->analyzerWithTrustProxies(TrustProxies::class, fn () => $middleware)
         );
 
         $this->assertWarning($result);

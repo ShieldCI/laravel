@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use Illuminate\Console\Command;
+use Illuminate\Contracts\Config\Repository;
 use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
 use Illuminate\Database\Migrations\Migrator;
 use Illuminate\Database\Schema\Blueprint;
@@ -23,6 +24,22 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
     protected function createAnalyzer(): AnalyzerInterface
     {
         return new UpToDateMigrationsAnalyzer;
+    }
+
+    protected function getEnvironmentSetUp($app): void
+    {
+        parent::getEnvironmentSetUp($app);
+
+        // Testbench's default connection differs across Laravel versions (MySQL on 9 and 10),
+        // so pin an in-memory SQLite database for the migrations tables these tests create.
+        /** @var Repository $config */
+        $config = $app->make('config');
+        $config->set('database.default', 'testing');
+        $config->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
+        ]);
     }
 
     /** @test */

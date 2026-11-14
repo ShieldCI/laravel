@@ -4,12 +4,19 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Console\Command;
+use Illuminate\Contracts\Config\Repository;
+use Illuminate\Contracts\Console\Kernel as ConsoleKernel;
+use Illuminate\Database\Migrations\Migrator;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Foundation\Console\Kernel as FoundationConsoleKernel;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\Reliability\UpToDateMigrationsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
-use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
-use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
@@ -19,23 +26,20 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
         return new UpToDateMigrationsAnalyzer;
     }
 
-    /** @test */
-    #[Test]
-    public function test_checks_migration_status(): void
+    protected function getEnvironmentSetUp($app): void
     {
-        $tempDir = $this->createTempDirectory([
-            'database/migrations/.gitkeep' => '',
+        parent::getEnvironmentSetUp($app);
+
+        // Testbench's default connection differs across Laravel versions (MySQL on 9 and 10),
+        // so pin an in-memory SQLite database for the migrations tables these tests create.
+        /** @var Repository $config */
+        $config = $app->make('config');
+        $config->set('database.default', 'testing');
+        $config->set('database.connections.testing', [
+            'driver' => 'sqlite',
+            'database' => ':memory:',
+            'prefix' => '',
         ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // The analyzer should return a valid result
-        // It may pass (no pending migrations) or fail (pending migrations exist)
-        // depending on the actual state of the test database
-        $this->assertInstanceOf(ResultInterface::class, $result);
     }
 
     /** @test */
@@ -61,59 +65,6 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
     {
         // Migration status checks should not run in CI
         $this->assertFalse(UpToDateMigrationsAnalyzer::$runInCI);
-    }
-
-    /** @test */
-    #[Test]
-    public function test_parses_pending_migrations(): void
-    {
-        // Create a test instance to access protected methods via reflection
-        $analyzer = $this->createAnalyzer();
-
-        // Actual format from Laravel's migrate:status --pending command
-        $output = <<<'OUTPUT'
-
-  Migration name .............................................. Batch / Status
-  2024_01_15_000000_create_posts_table ........................... Pending
-  2024_01_16_000000_create_comments_table ........................ Pending
-
-OUTPUT;
-
-        $reflection = new \ReflectionClass($analyzer);
-        $method = $reflection->getMethod('parsePendingMigrations');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($analyzer, $output);
-
-        $this->assertIsArray($result);
-        $this->assertCount(2, $result);
-        $this->assertContains('2024_01_15_000000_create_posts_table', $result);
-        $this->assertContains('2024_01_16_000000_create_comments_table', $result);
-    }
-
-    /** @test */
-    #[Test]
-    public function test_parses_pending_migrations_with_no_matches(): void
-    {
-        $analyzer = $this->createAnalyzer();
-
-        $output = <<<'OUTPUT'
-+------+--------------------------------------------------------------+-------+
-| Ran? | Migration                                                    | Batch |
-+------+--------------------------------------------------------------+-------+
-| Yes  | 2014_10_12_000000_create_users_table                         | 1     |
-+------+--------------------------------------------------------------+-------+
-
-OUTPUT;
-
-        $reflection = new \ReflectionClass($analyzer);
-        $method = $reflection->getMethod('parsePendingMigrations');
-        $method->setAccessible(true);
-
-        $result = $method->invoke($analyzer, $output);
-
-        $this->assertIsArray($result);
-        $this->assertEmpty($result);
     }
 
     /** @test */
@@ -293,34 +244,315 @@ OUTPUT;
 
     /** @test */
     #[Test]
-    public function test_detects_missing_migrations_table(): void
+    public function test_passes_when_every_migration_has_run(): void
     {
-        // This test verifies that the analyzer properly handles the case
-        // where the migrations table doesn't exist. In a real scenario,
-        // Schema::hasTable('migrations') would return false for a fresh
-        // installation. The exact behavior depends on the database state,
-        // but we can verify the code structure is correct by running the analyzer
-        $tempDir = $this->createTempDirectory([
-            'database/migrations/.gitkeep' => '',
+        $this->createMigrationsTable('migrations');
+        $this->recordRan('migrations', '2023_03_01_000000_create_widgets_table');
+        $this->registerMigrationDirectory(['2023_03_01_000000_create_widgets_table']);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertPassed($result);
+        $this->assertSame('All migrations are up to date', $result->getMessage());
+    }
+
+    /** @test */
+    #[Test]
+    public function test_reports_a_pending_migration_and_not_the_ones_that_ran(): void
+    {
+        $this->createMigrationsTable('migrations');
+        $this->recordRan('migrations', '2023_03_01_000000_create_widgets_table');
+        $this->registerMigrationDirectory([
+            '2023_03_01_000000_create_widgets_table',
+            '2023_04_01_000000_create_gadgets_table',
         ]);
 
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Found 1 pending migration(s)', $result->getMessage());
+        $this->assertIssueCount(1, $result);
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Pending migrations detected', $issue->message);
+        $this->assertSame('pending-migrations', $issue->metadata['code']);
+        $this->assertSame(1, $issue->metadata['pending_count']);
+        $this->assertSame(['2023_04_01_000000_create_gadgets_table'], $issue->metadata['pending_migrations']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_lists_pending_migrations_from_every_path_in_name_order(): void
+    {
+        $this->createMigrationsTable('migrations');
+
+        // The application's own database/migrations directory is scanned alongside the
+        // paths packages register on the migrator, as migrate:status does.
+        $databasePath = $this->makeTempDirectory();
+        mkdir($databasePath.'/migrations');
+        file_put_contents($databasePath.'/migrations/2023_06_01_000000_create_sprockets_table.php', $this->migrationStub());
+        $app = $this->app;
+        $this->assertNotNull($app);
+        $app->useDatabasePath($databasePath);
+
+        $this->registerMigrationDirectory(['2023_05_01_000000_create_cogs_table']);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Found 2 pending migration(s)', $result->getMessage());
+        $this->assertSame(
+            ['2023_05_01_000000_create_cogs_table', '2023_06_01_000000_create_sprockets_table'],
+            $result->getIssues()[0]->metadata['pending_migrations']
+        );
+    }
+
+    /** @test */
+    #[Test]
+    public function test_passes_a_fully_migrated_app_whose_migrate_status_has_no_pending_option(): void
+    {
+        // Laravel 9.0's migrate:status declares no --pending option.
+        $this->registerLegacyStatusCommand();
+        $this->createMigrationsTable('migrations');
+        $this->recordRan('migrations', '2023_03_01_000000_create_widgets_table');
+        $this->registerMigrationDirectory(['2023_03_01_000000_create_widgets_table']);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_reports_pending_migrations_when_migrate_status_has_no_pending_option(): void
+    {
+        $this->registerLegacyStatusCommand();
+        $this->createMigrationsTable('migrations');
+        $this->recordRan('migrations', '2023_03_01_000000_create_widgets_table');
+        $this->registerMigrationDirectory([
+            '2023_03_01_000000_create_widgets_table',
+            '2023_04_01_000000_create_gadgets_table',
+        ]);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('pending-migrations', $result->getIssues()[0]->metadata['code']);
+        $this->assertSame(['2023_04_01_000000_create_gadgets_table'], $result->getIssues()[0]->metadata['pending_migrations']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_matches_a_digit_only_migration_name_against_the_ran_list(): void
+    {
+        // A digit-only name becomes an integer array key, but the repository records it as a
+        // string; migrate:status treats it as ran.
+        $this->createMigrationsTable('migrations');
+        $this->recordRan('migrations', '20230101000000');
+
+        $dir = $this->makeTempDirectory();
+        file_put_contents($dir.'/20230101000000.php', $this->migrationStub());
+        $migrator = app('migrator');
+        $this->assertInstanceOf(Migrator::class, $migrator);
+        $migrator->path($dir.'/20230101000000.php');
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_reports_a_migrator_that_fails_to_resolve_instead_of_skipping(): void
+    {
+        $this->createMigrationsTable('migrations');
+        $app = $this->app;
+        $this->assertNotNull($app);
+        $app->singleton('migrator', fn () => throw new \RuntimeException('provider misconfigured'));
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Unable to check migration status', $result->getMessage());
+        $this->assertSame('migration-check-error', $result->getIssues()[0]->metadata['code']);
+        $this->assertHasIssueContaining('provider misconfigured', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_reports_a_migrator_binding_of_the_wrong_type_instead_of_skipping(): void
+    {
+        $app = $this->app;
+        $this->assertNotNull($app);
+        $app->singleton('migrator', fn () => new \stdClass);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Unable to check migration status', $result->getMessage());
+        $this->assertHasIssueContaining('stdClass', $result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_when_no_migrator_is_bound(): void
+    {
+        $app = $this->app;
+        $this->assertNotNull($app);
+        $app->offsetUnset('migrator');
+
         $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
 
-        $result = $analyzer->analyze();
+        $this->assertFalse($analyzer->shouldRun());
+        $this->assertSkipped($analyzer->analyze());
+        $this->assertSame('Laravel migrator not available. Ensure Laravel is properly bootstrapped.', $analyzer->getSkipReason());
+    }
 
-        // The result should be valid (either passed, failed, warning, or error)
-        // depending on whether migrations table exists in test database
-        $this->assertInstanceOf(ResultInterface::class, $result);
+    /**
+     * @dataProvider renamedMigrationsTableConfigProvider
+     */
+    #[Test]
+    #[DataProvider('renamedMigrationsTableConfigProvider')]
+    public function test_passes_with_a_renamed_migrations_table(mixed $migrationsConfig): void
+    {
+        $this->skipArrayFormBeforeLaravel11($migrationsConfig);
 
-        // If the result is failed with code 'migrations-table-missing',
-        // verify the message is correct
-        if ($result->getStatus() === Status::Failed) {
-            $issues = $result->getIssues();
-            if (! empty($issues) && isset($issues[0]->metadata['code']) && $issues[0]->metadata['code'] === 'migrations-table-missing') {
-                $this->assertStringContainsString('migrations table', strtolower($issues[0]->message));
-                $this->assertStringContainsString('migrate:install', $issues[0]->recommendation);
-            }
+        config(['database.migrations' => $migrationsConfig]);
+        $this->createMigrationsTable('ledger_migrations');
+        $this->recordRan('ledger_migrations', '2023_03_01_000000_create_widgets_table');
+        $this->registerMigrationDirectory(['2023_03_01_000000_create_widgets_table']);
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider renamedMigrationsTableConfigProvider
+     */
+    #[Test]
+    #[DataProvider('renamedMigrationsTableConfigProvider')]
+    public function test_reports_a_missing_renamed_migrations_table_by_its_configured_name(mixed $migrationsConfig): void
+    {
+        $this->skipArrayFormBeforeLaravel11($migrationsConfig);
+
+        config(['database.migrations' => $migrationsConfig]);
+
+        // A table under the default name does not stand in for the configured one.
+        $this->createMigrationsTable('migrations');
+
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Migrations table does not exist', $result->getMessage());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('migrations-table-missing', $issue->metadata['code']);
+        $this->assertSame('ledger_migrations', $issue->metadata['table']);
+    }
+
+    /**
+     * @return array<string, array{0: mixed}>
+     */
+    public static function renamedMigrationsTableConfigProvider(): array
+    {
+        return [
+            'string form' => ['ledger_migrations'],
+            'array form' => [['table' => 'ledger_migrations', 'update_date_on_publish' => true]],
+        ];
+    }
+
+    /**
+     * MigrationServiceProvider reads the array form of database.migrations from Laravel 11; before
+     * that it passes the array through as the table name, so the framework's own migrator fails.
+     */
+    private function skipArrayFormBeforeLaravel11(mixed $migrationsConfig): void
+    {
+        if (is_array($migrationsConfig) && version_compare(app()->version(), '11.0.0', '<')) {
+            $this->markTestSkipped('Running on Laravel '.app()->version().', which reads database.migrations only as a string.');
         }
+    }
+
+    /** @test */
+    #[Test]
+    public function test_detects_missing_migrations_table(): void
+    {
+        $result = $this->createAnalyzer()->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame('Migrations table does not exist', $result->getMessage());
+        $this->assertIssueCount(1, $result);
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame('The migrations table has not been created yet', $issue->message);
+        $this->assertStringContainsString('migrate:install', $issue->recommendation);
+        $this->assertSame('migrations', $issue->metadata['table']);
+        $this->assertSame('migrations-table-missing', $issue->metadata['code']);
+    }
+
+    private function createMigrationsTable(string $table): void
+    {
+        Schema::create($table, function (Blueprint $blueprint): void {
+            $blueprint->increments('id');
+            $blueprint->string('migration');
+            $blueprint->integer('batch');
+        });
+    }
+
+    private function recordRan(string $table, string $migration): void
+    {
+        DB::table($table)->insert(['migration' => $migration, 'batch' => 1]);
+    }
+
+    /**
+     * Register a directory of migration files on the migrator, as a package's
+     * loadMigrationsFrom() does.
+     *
+     * @param  list<string>  $names
+     */
+    private function registerMigrationDirectory(array $names): void
+    {
+        $dir = $this->makeTempDirectory();
+
+        foreach ($names as $name) {
+            file_put_contents($dir.'/'.$name.'.php', $this->migrationStub());
+        }
+
+        $migrator = app('migrator');
+        $this->assertInstanceOf(Migrator::class, $migrator);
+        $migrator->path($dir);
+    }
+
+    private function migrationStub(): string
+    {
+        return "<?php\n\nreturn new class extends \\Illuminate\\Database\\Migrations\\Migration\n{\n    public function up(): void {}\n};\n";
+    }
+
+    /**
+     * Replace migrate:status with Laravel 9.0's shape: no --pending option, and a
+     * Ran?/Migration/Batch table in which the word "Pending" never appears.
+     */
+    private function registerLegacyStatusCommand(): void
+    {
+        $kernel = app(ConsoleKernel::class);
+        $this->assertInstanceOf(FoundationConsoleKernel::class, $kernel);
+
+        $kernel->registerCommand(new class extends Command
+        {
+            /** @var string */
+            protected $signature = 'migrate:status {--database=} {--path=*} {--realpath}';
+
+            /** @var string */
+            protected $description = 'Show the status of each migration';
+
+            public function handle(): int
+            {
+                $this->table(['Ran?', 'Migration', 'Batch'], [
+                    ['Yes', '2023_03_01_000000_create_widgets_table', '1'],
+                    ['No', '2023_04_01_000000_create_gadgets_table', ''],
+                ]);
+
+                return 0;
+            }
+        });
     }
 }

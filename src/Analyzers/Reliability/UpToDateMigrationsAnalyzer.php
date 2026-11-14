@@ -4,8 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
-use Illuminate\Support\Facades\Artisan;
-use Illuminate\Support\Facades\Schema;
+use Illuminate\Database\Migrations\Migrator;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -32,29 +31,13 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        // Check if Artisan facade is available
-        if (! class_exists(Artisan::class)) {
-            return false;
-        }
-
-        // Check if Schema facade is available
-        if (! class_exists(Schema::class)) {
-            return false;
-        }
-
-        return true;
+        return $this->migratorIsBound();
     }
 
     public function getSkipReason(): string
     {
-        // Check if Artisan facade is available
-        if (! class_exists(Artisan::class)) {
-            return 'Laravel Artisan facade not available. Ensure Laravel is properly bootstrapped.';
-        }
-
-        // Check if Schema facade is available
-        if (! class_exists(Schema::class)) {
-            return 'Laravel Schema facade not available. Ensure Laravel is properly bootstrapped.';
+        if (! $this->migratorIsBound()) {
+            return 'Laravel migrator not available. Ensure Laravel is properly bootstrapped.';
         }
 
         return 'Unknown reason';
@@ -78,8 +61,11 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
         $migrationsPath = $this->getMigrationsPath();
 
         try {
-            // Check if migrations table exists
-            if (! Schema::hasTable('migrations')) {
+            $migrator = $this->resolveMigrator();
+
+            // The repository is built from config('database.migrations'), so this checks the
+            // configured table rather than assuming it is named "migrations".
+            if (! $migrator->repositoryExists()) {
                 return $this->resultBySeverity(
                     'Migrations table does not exist',
                     [$this->createIssueWithSnippet(
@@ -89,7 +75,7 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                         severity: $this->metadata()->severity,
                         recommendation: 'This appears to be a new installation. Run "php artisan migrate:install" to create the migrations table, then run "php artisan migrate" to execute all migrations.',
                         metadata: [
-                            'table' => 'migrations',
+                            'table' => $this->migrationsTableName(),
                             'exists' => false,
                             'code' => 'migrations-table-missing',
                         ]
@@ -97,26 +83,9 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
                 );
             }
 
-            // Run migrations with --pending flag to check if there are any pending
-            Artisan::call('migrate:status', ['--pending' => true, '--no-interaction' => true]);
+            $pendingMigrations = $this->pendingMigrations($migrator);
 
-            $output = Artisan::output();
-
-            // Validate output is a string
-            if (! is_string($output)) {
-                return $this->error(
-                    'Unable to check migration status - invalid Artisan output',
-                    []
-                );
-            }
-
-            // Parse output to find pending migrations
-            $pendingMigrations = $this->parsePendingMigrations($output);
-
-            // If no pending migrations found, all migrations are up to date
-            // Note: When there are no pending migrations, the output only shows the header
-            // and does NOT contain "Pending" status anywhere
-            if (empty($pendingMigrations)) {
+            if ($pendingMigrations === []) {
                 return $this->passed('All migrations are up to date');
             }
 
@@ -196,37 +165,72 @@ class UpToDateMigrationsAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Parse pending migrations from migrate:status output.
+     * Whether the container binds a migrator. Only its absence skips the analyzer; a binding
+     * that fails to resolve is reported by runAnalysis().
+     */
+    private function migratorIsBound(): bool
+    {
+        return function_exists('app') && app()->bound('migrator');
+    }
+
+    /**
+     * Resolve the application's migrator, letting resolution errors propagate.
+     */
+    private function resolveMigrator(): Migrator
+    {
+        $migrator = app('migrator');
+
+        if (! $migrator instanceof Migrator) {
+            throw new \UnexpectedValueException(sprintf(
+                'The migrator binding resolved to %s, not %s.',
+                get_debug_type($migrator),
+                Migrator::class
+            ));
+        }
+
+        return $migrator;
+    }
+
+    /**
+     * List the migrations that have not run, as migrate:status does: every migration file in the
+     * paths registered on the migrator plus the application's database/migrations directory,
+     * in name order, minus the ones the repository has recorded.
      *
      * @return array<int, string>
      */
-    private function parsePendingMigrations(string $output): array
+    private function pendingMigrations(Migrator $migrator): array
     {
-        $migrations = [];
+        $paths = array_merge($migrator->paths(), [$this->getMigrationsPath()]);
 
-        if (! str_contains($output, 'Pending')) {
-            return [];
-        }
+        $ran = $migrator->getRepository()->getRan();
 
-        foreach (explode("\n", $output) as $line) {
-            if (! str_contains($line, 'Pending')) {
-                continue;
-            }
+        $pending = [];
 
-            // Skip header lines
-            if (str_contains($line, 'Migration') || str_contains($line, 'Batch')) {
-                continue;
-            }
+        foreach (array_keys($migrator->getMigrationFiles($paths)) as $name) {
+            // A digit-only name comes back as an integer key; the repository stores strings.
+            $name = (string) $name;
 
-            // Extract migration name (first column)
-            $migration = trim(strtok($line, " \t"));
-
-            if ($migration !== '') {
-                $migrations[] = $migration;
+            if (! in_array($name, $ran, true)) {
+                $pending[] = $name;
             }
         }
 
-        return $migrations;
+        return $pending;
+    }
+
+    /**
+     * The configured migrations table name, read the way MigrationServiceProvider does: either a
+     * string or an array with a "table" key.
+     */
+    private function migrationsTableName(): string
+    {
+        $config = config('database.migrations');
+
+        if (is_array($config)) {
+            $config = $config['table'] ?? null;
+        }
+
+        return is_string($config) && $config !== '' ? $config : 'migrations';
     }
 
     /**

@@ -415,6 +415,8 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
     #[DataProvider('renamedMigrationsTableConfigProvider')]
     public function test_passes_with_a_renamed_migrations_table(mixed $migrationsConfig): void
     {
+        $this->skipArrayFormBeforeLaravel11($migrationsConfig);
+
         config(['database.migrations' => $migrationsConfig]);
         $this->createMigrationsTable('ledger_migrations');
         $this->recordRan('ledger_migrations', '2023_03_01_000000_create_widgets_table');
@@ -432,6 +434,8 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
     #[DataProvider('renamedMigrationsTableConfigProvider')]
     public function test_reports_a_missing_renamed_migrations_table_by_its_configured_name(mixed $migrationsConfig): void
     {
+        $this->skipArrayFormBeforeLaravel11($migrationsConfig);
+
         config(['database.migrations' => $migrationsConfig]);
 
         // A table under the default name does not stand in for the configured one.
@@ -455,6 +459,17 @@ class UpToDateMigrationsAnalyzerTest extends AnalyzerTestCase
             'string form' => ['ledger_migrations'],
             'array form' => [['table' => 'ledger_migrations', 'update_date_on_publish' => true]],
         ];
+    }
+
+    /**
+     * MigrationServiceProvider reads the array form of database.migrations from Laravel 11; before
+     * that it passes the array through as the table name, so the framework's own migrator fails.
+     */
+    private function skipArrayFormBeforeLaravel11(mixed $migrationsConfig): void
+    {
+        if (is_array($migrationsConfig) && version_compare(app()->version(), '11.0.0', '<')) {
+            $this->markTestSkipped('Running on Laravel '.app()->version().', which reads database.migrations only as a string.');
+        }
     }
 
     /** @test */

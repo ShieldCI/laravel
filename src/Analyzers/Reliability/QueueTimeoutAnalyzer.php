@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\Reliability;
 
+use Illuminate\Support\Str;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -29,6 +30,24 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
      * preventing duplicate processing.
      */
     private const MINIMUM_RETRY_AFTER_BUFFER_SECONDS = 10;
+
+    /**
+     * Core drivers whose connectors read retry_after.
+     */
+    private const RETRY_AFTER_DRIVERS = ['redis', 'database', 'beanstalkd'];
+
+    /**
+     * Core drivers whose connectors never read retry_after.
+     */
+    private const DRIVERS_WITHOUT_RETRY_AFTER = ['sync', 'sqs', 'null', 'deferred', 'background', 'failover'];
+
+    /**
+     * retry_after when a core connection omits it.
+     *
+     * RedisConnector and DatabaseConnector fall back to 60, BeanstalkdConnector to
+     * Pheanstalk::DEFAULT_TTR, which is also 60.
+     */
+    private const DEFAULT_RETRY_AFTER_SECONDS = 60;
 
     protected function metadata(): AnalyzerMetadata
     {
@@ -65,17 +84,22 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
             $driver = $connection['driver'] ?? '';
 
-            if (! is_string($driver)) {
+            // Laravel cannot build a connection without a driver.
+            if (! is_string($driver) || $driver === '') {
                 continue;
             }
 
-            // Skip sync and sqs drivers as they don't have retry_after
-            if (in_array($driver, ['sync', 'sqs'])) {
+            if (in_array($driver, self::DRIVERS_WITHOUT_RETRY_AFTER, true)) {
                 continue;
             }
 
-            $retryAfter = $this->getRetryAfter($connection);
-            $timeoutInfo = $this->getTimeout($connection, $driver);
+            $retryAfter = $this->getRetryAfter($connection, $driver);
+
+            if ($retryAfter === null) {
+                continue;
+            }
+
+            $timeoutInfo = $this->getTimeout($name, $connection, $driver);
             $timeout = $timeoutInfo['timeout'];
             $minimumBuffer = $this->getMinimumBuffer();
 
@@ -136,13 +160,23 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     /**
      * Get retry_after value from connection config.
      *
+     * Returns null when there is no number to grade: a third-party driver that omits
+     * retry_after (its default is unknown), or a non-numeric value, which the queue
+     * passes to Carbon or Pheanstalk unconverted, so no single runtime value exists.
+     *
      * @param  array<string, mixed>  $connection
      */
-    private function getRetryAfter(array $connection): int
+    private function getRetryAfter(array $connection, string $driver): ?int
     {
-        $retryAfter = $connection['retry_after'] ?? 90;
+        $retryAfter = $connection['retry_after'] ?? null;
 
-        return is_numeric($retryAfter) ? (int) $retryAfter : 90;
+        if ($retryAfter === null) {
+            return in_array($driver, self::RETRY_AFTER_DRIVERS, true)
+                ? self::DEFAULT_RETRY_AFTER_SECONDS
+                : null;
+        }
+
+        return is_numeric($retryAfter) ? (int) $retryAfter : null;
     }
 
     /**
@@ -150,17 +184,16 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
      *
      * Detection order:
      * 1. Connection-specific timeout in queue config
-     * 2. For Redis: Horizon config
+     * 2. For Redis: Horizon supervisors on this connection
      * 3. ShieldCI config override
      * 4. Fallback to 60 with warning
      *
      * @param  array<string, mixed>  $connection
      * @return array{timeout: int, source?: string, horizon_detection?: string, queue_name?: string, detection_warning?: string}
      */
-    private function getTimeout(array $connection, string $driver): array
+    private function getTimeout(string $name, array $connection, string $driver): array
     {
         $queueName = $this->getQueueName($connection);
-        $connectionName = is_string($connection['connection'] ?? null) ? $connection['connection'] : 'default';
 
         // 1. Check connection-specific timeout (non-standard but possible)
         if (isset($connection['timeout']) && is_numeric($connection['timeout'])) {
@@ -173,14 +206,14 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
         // 2. For Redis, check Horizon config
         if ($driver === 'redis') {
-            $horizonTimeout = $this->getRedisHorizonTimeout($queueName);
+            $horizonTimeout = $this->getRedisHorizonTimeout($name, $queueName);
             if ($horizonTimeout !== null) {
                 return $horizonTimeout;
             }
         }
 
         // 3. Check ShieldCI config override
-        $configuredTimeout = $this->getConfiguredTimeout($driver, $connectionName);
+        $configuredTimeout = $this->getConfiguredTimeout($driver, $name, $connection);
         if ($configuredTimeout !== null) {
             return [
                 'timeout' => $configuredTimeout,
@@ -199,44 +232,52 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Get timeout from Horizon configuration for Redis drivers.
+     * Get the largest timeout of the Horizon supervisors on a queue connection.
      *
-     * @return array{timeout: int, horizon_detection: string, queue_name: string}|null
+     * retry_after belongs to the connection, so every supervisor on it counts,
+     * whatever queues it works.
+     *
+     * @return array{timeout: int, horizon_detection: string, source: string, queue_name: string, detection_warning?: string}|null
      */
-    private function getRedisHorizonTimeout(string $queueName): ?array
+    private function getRedisHorizonTimeout(string $name, string $queueName): ?array
     {
         if (! function_exists('config')) {
             return null;
         }
 
         try {
-            // Try to find timeout for this specific queue
-            $matchedTimeout = $this->findHorizonTimeoutForQueue($queueName);
+            $plan = $this->getHorizonSupervisors();
+            $timeouts = [];
 
-            if ($matchedTimeout !== null) {
-                return [
-                    'timeout' => $matchedTimeout,
-                    'horizon_detection' => 'matched',
-                    'source' => 'horizon_config',
-                    'queue_name' => $queueName,
-                ];
+            foreach ($plan['supervisors'] as $supervisor) {
+                if (! is_array($supervisor) || ($supervisor['connection'] ?? null) !== $name) {
+                    continue;
+                }
+
+                // Horizon's SupervisorOptions defaults an unset timeout to 60.
+                $timeout = $supervisor['timeout'] ?? 60;
+
+                if (is_numeric($timeout)) {
+                    $timeouts[] = (int) $timeout;
+                }
             }
 
-            // Fallback: use maximum timeout from all supervisors
-            $defaultTimeouts = $this->getArrayValues(config('horizon.defaults', []), 'timeout');
-            $envTimeouts = $this->getArrayValues(config('horizon.environments', []), 'timeout');
-            $allTimeouts = array_merge($defaultTimeouts, $envTimeouts);
-
-            if (! empty($allTimeouts)) {
-                return [
-                    'timeout' => max($allTimeouts),
-                    'horizon_detection' => 'fallback_max',
-                    'source' => 'horizon_config',
-                    'queue_name' => $queueName,
-                ];
+            if (empty($timeouts)) {
+                return null;
             }
 
-            return null;
+            $result = [
+                'timeout' => max($timeouts),
+                'horizon_detection' => 'matched',
+                'source' => 'horizon_config',
+                'queue_name' => $queueName,
+            ];
+
+            if ($plan['unmatched_environment'] !== null) {
+                $result['detection_warning'] = "No Horizon environment matches '{$plan['unmatched_environment']}', so the largest timeout across all Horizon environments was used.";
+            }
+
+            return $result;
         } catch (\Throwable $e) {
             return null;
         }
@@ -244,8 +285,15 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Get configured timeout from ShieldCI config.
+     *
+     * connection_timeouts is keyed by the queue connection name, the one `queue:work`
+     * takes. An entry under the inner `connection` name is still read when the queue
+     * connection name has none, so configs keyed that way keep working; a connection
+     * without an inner name (database's null, beanstalkd) has no such fallback.
+     *
+     * @param  array<string, mixed>  $connection
      */
-    private function getConfiguredTimeout(string $driver, string $connectionName): ?int
+    private function getConfiguredTimeout(string $driver, string $name, array $connection): ?int
     {
         if (! function_exists('config')) {
             return null;
@@ -255,8 +303,11 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
             // Check connection-specific timeout
             $connectionTimeouts = config('shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts', []);
 
-            if (is_array($connectionTimeouts) && isset($connectionTimeouts[$connectionName])) {
-                $timeout = $connectionTimeouts[$connectionName];
+            $innerName = $connection['connection'] ?? null;
+            $key = is_array($connectionTimeouts) && array_key_exists($name, $connectionTimeouts) ? $name : $innerName;
+
+            if (is_array($connectionTimeouts) && is_string($key) && $key !== '' && isset($connectionTimeouts[$key])) {
+                $timeout = $connectionTimeouts[$key];
                 if (is_numeric($timeout) && $timeout > 0) {
                     return (int) $timeout;
                 }
@@ -291,114 +342,47 @@ class QueueTimeoutAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Find Horizon timeout for a specific queue by matching supervisors.
+     * Get the supervisors Horizon deploys in the current environment.
      *
-     * Searches both defaults and current environment supervisors.
+     * Mirrors Horizon's ProvisioningPlan: every environment's plan is
+     * array_replace_recursive($defaults, $plan), and deploy() runs only the first
+     * environment whose key matches the environment name as a Str::is() pattern.
+     * HorizonCommand takes the name from horizon.env, then app.env (its --environment
+     * option is not visible here). When no environment matches, as when CI runs as
+     * 'testing', the deployed one is unknown, so every environment's plan is returned.
      *
-     * @return int|null Timeout in seconds if found, null otherwise
+     * @return array{supervisors: array<mixed>, unmatched_environment: string|null}
      */
-    private function findHorizonTimeoutForQueue(string $queueName): ?int
+    private function getHorizonSupervisors(): array
     {
-        if (! function_exists('config')) {
-            return null;
+        $defaults = config('horizon.defaults', []);
+        $environments = config('horizon.environments', []);
+
+        if (! is_array($defaults) || ! is_array($environments)) {
+            return ['supervisors' => [], 'unmatched_environment' => null];
         }
 
-        try {
-            $timeouts = [];
+        $environmentValue = config('horizon.env') ?? config('app.env', 'production');
+        $environment = is_string($environmentValue) ? $environmentValue : 'production';
 
-            // Check defaults
-            $defaults = config('horizon.defaults', []);
-            if (is_array($defaults)) {
-                /** @var array<string, mixed> $defaults */
-                $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($defaults, $queueName));
-            }
-
-            // Check current environment
-            $currentEnvValue = config('app.env', 'production');
-            $currentEnv = is_string($currentEnvValue) ? $currentEnvValue : 'production';
-            $envConfig = config("horizon.environments.{$currentEnv}", []);
-            if (is_array($envConfig)) {
-                /** @var array<string, mixed> $envConfig */
-                $timeouts = array_merge($timeouts, $this->extractTimeoutsForQueue($envConfig, $queueName));
-            }
-
-            // Return maximum timeout from matching supervisors
-            return ! empty($timeouts) ? max($timeouts) : null;
-        } catch (\Throwable $e) {
-            return null;
-        }
-    }
-
-    /**
-     * Extract timeouts from supervisors that handle the specified queue.
-     *
-     * @param  array<string, mixed>  $supervisors
-     * @return array<int>
-     */
-    private function extractTimeoutsForQueue(array $supervisors, string $queueName): array
-    {
-        $timeouts = [];
-
-        foreach ($supervisors as $supervisor) {
-            if (! is_array($supervisor)) {
-                continue;
-            }
-
-            // Check if this supervisor handles the queue
-            $supervisorQueues = $supervisor['queue'] ?? [];
-
-            if (is_string($supervisorQueues)) {
-                $supervisorQueues = array_map('trim', explode(',', $supervisorQueues));
-            }
-
-            if (! is_array($supervisorQueues)) {
-                continue;
-            }
-
-            // Match queue name (exact or pattern)
-            if (in_array($queueName, $supervisorQueues, true) || in_array('*', $supervisorQueues, true)) {
-                $timeout = $supervisor['timeout'] ?? null;
-
-                if (is_numeric($timeout)) {
-                    $timeouts[] = (int) $timeout;
-                }
+        foreach ($environments as $name => $plan) {
+            if (Str::is((string) $name, $environment)) {
+                return [
+                    'supervisors' => is_array($plan) ? array_replace_recursive($defaults, $plan) : [],
+                    'unmatched_environment' => null,
+                ];
             }
         }
 
-        return $timeouts;
-    }
+        $supervisors = [];
 
-    /**
-     * Recursively extract numeric values for a specific key from nested arrays.
-     *
-     * @param  mixed  $data
-     * @return array<int>
-     */
-    private function getArrayValues($data, string $key): array
-    {
-        $values = [];
-
-        if (! is_array($data)) {
-            return $values;
-        }
-
-        foreach ($data as $item) {
-            if (! is_array($item)) {
-                continue;
-            }
-
-            if (isset($item[$key]) && is_numeric($item[$key])) {
-                $values[] = (int) $item[$key];
-            }
-
-            foreach ($item as $child) {
-                if (is_array($child)) {
-                    $values = array_merge($values, $this->getArrayValues($child, $key));
-                }
+        foreach ($environments as $plan) {
+            if (is_array($plan)) {
+                $supervisors = array_merge($supervisors, array_values(array_replace_recursive($defaults, $plan)));
             }
         }
 
-        return $values;
+        return ['supervisors' => $supervisors, 'unmatched_environment' => $environment];
     }
 
     /**

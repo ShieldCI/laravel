@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\Reliability\QueueTimeoutAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -424,7 +426,7 @@ return [
             'driver' => 'redis',
             'connection' => 'default',
             'queue' => 'default',
-            // No retry_after specified, should use default of 90
+            // No retry_after: RedisConnector falls back to 60
         ],
     ],
 ];
@@ -439,8 +441,9 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass because default retry_after (90) > timeout (60)
-        $this->assertPassed($result);
+        // retry_after (60) equals the default worker timeout (60)
+        $this->assertFailed($result);
+        $this->assertSame(60, $result->getIssues()[0]->metadata['retry_after']);
     }
 
     /** @test */
@@ -531,7 +534,12 @@ return [
             // Missing driver field
             'connection' => 'default',
             'queue' => 'default',
-            'retry_after' => 90,
+            'retry_after' => 30,
+        ],
+        'blank' => [
+            'driver' => '',
+            'queue' => 'default',
+            'retry_after' => 30,
         ],
     ],
 ];
@@ -546,7 +554,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should pass - connections without driver are skipped
+        // Laravel cannot build a connection without a driver, so neither is graded
+        // (retry_after 30 would fail against the 60s timeout if it were).
         $this->assertPassed($result);
     }
 
@@ -679,10 +688,8 @@ PHP;
 
     /** @test */
     #[Test]
-    public function test_uses_fallback_when_queue_not_matched(): void
+    public function test_redis_without_horizon_config_uses_the_default_assumption(): void
     {
-        // When queue name doesn't match any Horizon supervisor,
-        // should fall back to maximum timeout
         $queueConfig = <<<'PHP'
 <?php
 
@@ -692,7 +699,7 @@ return [
         'redis' => [
             'driver' => 'redis',
             'connection' => 'default',
-            'queue' => 'unmatched-queue',
+            'queue' => 'default',
             'retry_after' => 65,
         ],
     ],
@@ -708,96 +715,14 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        // Should fail due to insufficient buffer
         $this->assertFailed($result);
 
-        $issues = $result->getIssues();
-        $metadata = $issues[0]->metadata;
+        $metadata = $result->getIssues()[0]->metadata;
 
-        // Should indicate fallback detection if Horizon config exists
-        // Otherwise may not have horizon_detection key
-        if (isset($metadata['horizon_detection'])) {
-            $this->assertContains($metadata['horizon_detection'], ['fallback_max', 'matched']);
-        }
-    }
-
-    /** @test */
-    #[Test]
-    public function test_handles_wildcard_queue_in_horizon(): void
-    {
-        // Test that '*' wildcard in Horizon supervisor queue matches any queue
-        // This would require mocking config(), which we can't easily do in unit tests
-        // So we'll just verify the queue name is extracted correctly
-        $queueConfig = <<<'PHP'
-<?php
-
-return [
-    'default' => 'redis',
-    'connections' => [
-        'redis' => [
-            'driver' => 'redis',
-            'connection' => 'default',
-            'queue' => 'any-queue',
-            'retry_after' => 90,
-        ],
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/queue.php' => $queueConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        // With retry_after=90 and default timeout=60, should pass
-        $this->assertPassed($result);
-    }
-
-    /** @test */
-    #[Test]
-    public function test_metadata_includes_horizon_detection_status(): void
-    {
-        // Verify that when an issue is found, metadata includes Horizon detection info
-        $queueConfig = <<<'PHP'
-<?php
-
-return [
-    'default' => 'redis',
-    'connections' => [
-        'redis-fast' => [
-            'driver' => 'redis',
-            'connection' => 'default',
-            'queue' => 'fast',
-            'retry_after' => 65, // Will fail with default timeout
-        ],
-    ],
-];
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'config/queue.php' => $queueConfig,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-
-        $issues = $result->getIssues();
-        $metadata = $issues[0]->metadata;
-
-        // Should have queue_name
-        $this->assertArrayHasKey('queue_name', $metadata);
-        $this->assertSame('fast', $metadata['queue_name']);
-
-        // May have horizon_detection if Horizon config is loaded
-        // (depends on test environment)
+        $this->assertSame(60, $metadata['timeout']);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+        $this->assertArrayHasKey('detection_warning', $metadata);
+        $this->assertArrayNotHasKey('horizon_detection', $metadata);
     }
 
     /** @test */
@@ -1018,5 +943,647 @@ PHP;
         $lines = file($tempDir.'/config/queue.php', FILE_IGNORE_NEW_LINES);
         $this->assertIsArray($lines);
         $this->assertStringContainsString("'redis' =>", $lines[$location->line - 1]);
+    }
+
+    /**
+     * @dataProvider coreDriverWithRetryAfterProvider
+     */
+    #[DataProvider('coreDriverWithRetryAfterProvider')]
+    public function test_core_driver_without_retry_after_uses_the_connector_default_of_60(string $driver): void
+    {
+        $queueConfig = <<<PHP
+<?php
+
+return [
+    'connections' => [
+        'jobs' => [
+            'driver' => '{$driver}',
+            'queue' => 'default',
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame(60, $result->getIssues()[0]->metadata['retry_after']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function coreDriverWithRetryAfterProvider(): array
+    {
+        return [
+            'database' => ['database'],
+            'beanstalkd' => ['beanstalkd'],
+        ];
+    }
+
+    /**
+     * @dataProvider driverWithoutRetryAfterProvider
+     */
+    #[DataProvider('driverWithoutRetryAfterProvider')]
+    public function test_skips_core_drivers_that_never_read_retry_after(string $driver): void
+    {
+        // The connector ignores retry_after, so even a value below the timeout changes nothing.
+        $queueConfig = <<<PHP
+<?php
+
+return [
+    'connections' => [
+        'jobs' => [
+            'driver' => '{$driver}',
+            'retry_after' => 30,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function driverWithoutRetryAfterProvider(): array
+    {
+        return [
+            'sync' => ['sync'],
+            'sqs' => ['sqs'],
+            'null' => ['null'],
+            'deferred' => ['deferred'],
+            'background' => ['background'],
+            'failover' => ['failover'],
+        ];
+    }
+
+    /** @test */
+    #[Test]
+    public function test_passes_a_stock_laravel_12_queue_config(): void
+    {
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'default' => 'database',
+    'connections' => [
+        'sync' => [
+            'driver' => 'sync',
+        ],
+        'database' => [
+            'driver' => 'database',
+            'connection' => null,
+            'table' => 'jobs',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'after_commit' => false,
+        ],
+        'beanstalkd' => [
+            'driver' => 'beanstalkd',
+            'host' => 'localhost',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'block_for' => 0,
+            'after_commit' => false,
+        ],
+        'sqs' => [
+            'driver' => 'sqs',
+            'queue' => 'default',
+            'region' => 'us-east-1',
+        ],
+        'redis' => [
+            'driver' => 'redis',
+            'connection' => 'default',
+            'queue' => 'default',
+            'retry_after' => 90,
+            'block_for' => null,
+            'after_commit' => false,
+        ],
+        'deferred' => [
+            'driver' => 'deferred',
+        ],
+        'background' => [
+            'driver' => 'background',
+        ],
+        'failover' => [
+            'driver' => 'failover',
+            'connections' => [
+                'database',
+                'deferred',
+            ],
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_custom_driver_without_retry_after(): void
+    {
+        // A third-party connector's retry_after default is unknown, so there is nothing to grade.
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'connections' => [
+        'custom' => [
+            'driver' => 'custom-driver',
+            'queue' => 'default',
+            'timeout' => 120,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_grades_custom_driver_with_explicit_retry_after(): void
+    {
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'connections' => [
+        'custom' => [
+            'driver' => 'custom-driver',
+            'queue' => 'default',
+            'retry_after' => 60,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame(60, $result->getIssues()[0]->metadata['retry_after']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_connection_with_non_numeric_retry_after(): void
+    {
+        // The queue passes a non-numeric retry_after on unconverted, so there is no runtime value to compare.
+        $queueConfig = <<<'PHP'
+<?php
+
+return [
+    'connections' => [
+        'database' => [
+            'driver' => 'database',
+            'queue' => 'default',
+            'retry_after' => 'ninety',
+            'timeout' => 85,
+        ],
+    ],
+];
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => $queueConfig,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_grades_the_connection_against_every_supervisor_on_it_whatever_queue_it_works(): void
+    {
+        // retry_after belongs to the connection, so the imports supervisor's 600s jobs on it are re-released too.
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'main' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 60],
+                'imports' => ['connection' => 'redis', 'queue' => ['imports'], 'timeout' => 600],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(600, $metadata['timeout']);
+        $this->assertSame('matched', $metadata['horizon_detection']);
+        $this->assertSame('horizon_config', $metadata['timeout_source']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_ignores_supervisors_on_another_connection(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'main' => ['connection' => 'redis', 'timeout' => 60],
+                'long' => ['connection' => 'redis-long', 'queue' => ['imports'], 'timeout' => 600],
+            ],
+        ], self::TWO_REDIS_CONNECTIONS);
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_ignores_a_supervisor_on_another_connection_that_works_the_same_queue_name(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'short' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 60],
+                'long' => ['connection' => 'redis-long', 'queue' => ['default'], 'timeout' => 600],
+            ],
+        ], [
+            'redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 90],
+            'redis-long' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 700],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_a_supervisor_without_a_timeout_runs_at_horizons_default_of_60(): void
+    {
+        // Pins the default rather than "no supervisor": the 200s driver override must not be reached.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.driver_timeouts' => ['redis' => 200]]);
+
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'main' => ['connection' => 'redis', 'queue' => ['default']],
+                'long' => ['connection' => 'redis-long', 'queue' => ['imports'], 'timeout' => 600],
+            ],
+        ], [
+            'redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 65],
+            'redis-long' => ['driver' => 'redis', 'queue' => 'imports', 'retry_after' => 700],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame('redis', $metadata['connection']);
+        $this->assertSame(60, $metadata['timeout']);
+        $this->assertSame('horizon_config', $metadata['timeout_source']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_falls_through_to_the_default_assumption_when_no_supervisor_is_on_the_connection(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'long' => ['connection' => 'redis-long', 'queue' => ['default'], 'timeout' => 600],
+            ],
+        ], [
+            'redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 65],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(60, $metadata['timeout']);
+        $this->assertSame('default_assumption', $metadata['timeout_source']);
+        $this->assertArrayNotHasKey('horizon_detection', $metadata);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_horizon_runs_a_defaults_supervisor_in_an_environment_that_does_not_name_it(): void
+    {
+        $result = $this->analyzeAgainstHorizon([
+            'importer' => ['connection' => 'redis', 'queue' => ['imports'], 'timeout' => 600],
+        ], [
+            'production' => [],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(600, $metadata['timeout']);
+        $this->assertSame('matched', $metadata['horizon_detection']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_ignores_supervisors_of_other_environments_when_the_current_one_matches(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'mail' => ['connection' => 'redis', 'queue' => ['emails'], 'timeout' => 60],
+            ],
+            'local' => [
+                'importer' => ['connection' => 'redis', 'queue' => ['imports'], 'timeout' => 3600],
+            ],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_environment_timeout_overrides_the_defaults_supervisor_of_the_same_name(): void
+    {
+        $result = $this->analyzeAgainstHorizon([
+            'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 60],
+        ], [
+            'production' => [
+                'supervisor-1' => ['timeout' => 300],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(300, $metadata['timeout']);
+        $this->assertSame('matched', $metadata['horizon_detection']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_defaults_timeout_is_replaced_by_the_environment_timeout(): void
+    {
+        $result = $this->analyzeAgainstHorizon([
+            'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 600],
+        ], [
+            'production' => [
+                'supervisor-1' => ['timeout' => 60],
+            ],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_grades_every_environment_when_none_matches_the_current_one(): void
+    {
+        // CI usually runs as 'testing', which names no Horizon environment, so the
+        // deployed one is unknown: every environment's plan is graded, largest timeout wins.
+        $result = $this->analyzeAgainstHorizon([
+            'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 600],
+        ], [
+            'production' => [
+                'supervisor-1' => ['maxProcesses' => 10],
+            ],
+            'local' => [
+                'supervisor-1' => ['maxProcesses' => 3],
+            ],
+        ], environment: 'testing');
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(600, $metadata['timeout']);
+        $this->assertSame('matched', $metadata['horizon_detection']);
+        $this->assertArrayHasKey('detection_warning', $metadata);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_matches_a_wildcard_horizon_environment(): void
+    {
+        $result = $this->analyzeAgainstHorizon([], [
+            '*' => [
+                'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 300],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(300, $metadata['timeout']);
+        $this->assertSame('matched', $metadata['horizon_detection']);
+        $this->assertArrayNotHasKey('detection_warning', $metadata);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_horizon_env_takes_precedence_over_app_env(): void
+    {
+        config(['horizon.env' => 'staging']);
+
+        $result = $this->analyzeAgainstHorizon([], [
+            'production' => [
+                'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 60],
+            ],
+            'staging' => [
+                'supervisor-1' => ['connection' => 'redis', 'queue' => ['default'], 'timeout' => 300],
+            ],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(300, $result->getIssues()[0]->metadata['timeout']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_reads_connection_timeouts_by_the_queue_connection_name(): void
+    {
+        // `queue:work database --timeout=120` names the queue connection, not its inner database connection.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['database' => 120]]);
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'database' => ['driver' => 'database', 'connection' => null, 'queue' => 'default', 'retry_after' => 90],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(120, $metadata['timeout']);
+        $this->assertSame('shieldci_config', $metadata['timeout_source']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_connection_timeouts_tell_apart_connections_sharing_an_inner_connection(): void
+    {
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['redis-long' => 600]]);
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 90],
+                'redis-long' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'long', 'retry_after' => 300],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame('redis-long', $metadata['connection']);
+        $this->assertSame(600, $metadata['timeout']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_connection_timeouts_still_read_an_entry_keyed_by_the_inner_connection_name(): void
+    {
+        // Configs written when the lookup used the inner `connection` name keep working.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['default' => 120]]);
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 90],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $metadata = $result->getIssues()[0]->metadata;
+        $this->assertSame(120, $metadata['timeout']);
+        $this->assertSame('shieldci_config', $metadata['timeout_source']);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_connection_timeouts_prefer_the_queue_connection_name_over_the_inner_name(): void
+    {
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => [
+            'redis' => 60,
+            'default' => 600,
+        ]]);
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 90],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_connection_timeouts_inner_name_fallback_skips_a_connection_without_an_inner_name(): void
+    {
+        // The legacy 'default' entry belongs to redis; a database connection with a null
+        // inner connection (the default DB connection) must not inherit it.
+        config(['shieldci.analyzers.reliability.queue-timeout-configuration.connection_timeouts' => ['default' => 300]]);
+
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'redis' => ['driver' => 'redis', 'connection' => 'default', 'queue' => 'default', 'retry_after' => 310],
+                'database' => ['driver' => 'database', 'connection' => null, 'queue' => 'default', 'retry_after' => 90],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function test_skips_a_connection_with_a_non_string_driver(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => [
+                'numeric' => ['driver' => 123, 'queue' => 'default', 'retry_after' => 30],
+            ]], true).';',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        // retry_after 30 would fail against the 60s timeout if it were graded.
+        $this->assertPassed($result);
+    }
+
+    private const TWO_REDIS_CONNECTIONS = [
+        'redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 90],
+        'redis-long' => ['driver' => 'redis', 'queue' => 'imports', 'retry_after' => 700],
+    ];
+
+    /**
+     * @param  array<string, mixed>  $defaults
+     * @param  array<string, mixed>  $environments
+     * @param  array<string, array<string, mixed>>  $connections
+     */
+    private function analyzeAgainstHorizon(
+        array $defaults,
+        array $environments,
+        array $connections = ['redis' => ['driver' => 'redis', 'queue' => 'default', 'retry_after' => 90]],
+        string $environment = 'production',
+    ): ResultInterface {
+        $tempDir = $this->createTempDirectory([
+            'config/queue.php' => '<?php return '.var_export(['connections' => $connections], true).';',
+        ]);
+
+        config(['app.env' => $environment]);
+        config(['horizon.defaults' => $defaults]);
+        config(['horizon.environments' => $environments]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        return $analyzer->analyze();
     }
 }

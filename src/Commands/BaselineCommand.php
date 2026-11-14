@@ -153,7 +153,12 @@ class BaselineCommand extends Command
         ];
 
         // Save baseline file
-        $json = json_encode($baselineData, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        // Issue messages quote source text that is not always UTF-8; one invalid byte used to
+        // fail the encode and write an empty baseline while reporting success.
+        $json = json_encode(
+            $baselineData,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
+        );
         file_put_contents($outputPath, $json);
 
         $this->newLine();
@@ -205,8 +210,9 @@ class BaselineCommand extends Command
             'message' => $issue->message,
         ];
 
-        $json = json_encode($data);
-
-        return hash('sha256', $json !== false ? $json : '');
+        // Must match AnalyzeCommand::generateIssueHash(). Without the substitute flag a message
+        // holding invalid UTF-8 failed to encode and every such issue hashed to the same
+        // value, so one baselined issue suppressed all of them. Valid UTF-8 hashes as before.
+        return hash('sha256', json_encode($data, JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR));
     }
 }

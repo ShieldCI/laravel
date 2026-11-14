@@ -2075,6 +2075,67 @@ class ReporterTest extends TestCase
 
     /** @test */
     #[Test]
+    public function json_output_survives_invalid_utf8_in_a_result_message(): void
+    {
+        $results = $this->resultsOf(
+            AnalysisResult::passed('latin1-analyzer', "Scanned caf\xE9.php"),
+            AnalysisResult::passed('clean-analyzer', 'No issues detected'),
+        );
+
+        $decoded = json_decode($this->reporter->toJson($this->reporter->generate($results)), true);
+
+        $this->assertIsArray($decoded);
+        $this->assertSame("Scanned caf\u{FFFD}.php", $decoded['results'][0]['message']);
+        $this->assertSame('clean-analyzer', $decoded['results'][1]['analyzer_id']);
+        $this->assertSame('No issues detected', $decoded['results'][1]['message']);
+    }
+
+    /** @test */
+    #[Test]
+    public function json_output_survives_invalid_utf8_in_an_issue_message_and_code_snippet(): void
+    {
+        $issue = new Issue(
+            message: "Hardcoded label 'r\xE9sum\xE9' found",
+            location: new Location('app/Legacy.php', 2),
+            severity: Severity::High,
+            recommendation: 'Store the file as UTF-8',
+            codeSnippet: new CodeSnippet('app/Legacy.php', 2, [
+                1 => '<?php',
+                2 => "\$label = 'r\xE9sum\xE9';",
+                3 => 'return $label;',
+            ]),
+        );
+
+        $results = $this->resultsOf(
+            AnalysisResult::failed('latin1-analyzer', 'Found 1 issue', [$issue]),
+        );
+
+        $decoded = json_decode($this->reporter->toJson($this->reporter->generate($results)), true);
+
+        $this->assertIsArray($decoded);
+        $decodedIssue = $decoded['results'][0]['issues'][0];
+        $this->assertSame("Hardcoded label 'r\u{FFFD}sum\u{FFFD}' found", $decodedIssue['message']);
+        $this->assertSame('Store the file as UTF-8', $decodedIssue['recommendation']);
+        $this->assertSame("\$label = 'r\u{FFFD}sum\u{FFFD}';", $decodedIssue['code_snippet']['lines'][2]);
+        $this->assertSame('return $label;', $decodedIssue['code_snippet']['lines'][3]);
+        $this->assertSame('Found 1 issue', $decoded['results'][0]['message']);
+    }
+
+    /** @test */
+    #[Test]
+    public function json_output_throws_rather_than_returning_an_empty_report_when_encoding_fails(): void
+    {
+        $results = $this->resultsOf(
+            AnalysisResult::passed('nan-analyzer', 'Passed', 0.0, ['ratio' => NAN]),
+        );
+
+        $this->expectException(\JsonException::class);
+
+        $this->reporter->toJson($this->reporter->generate($results));
+    }
+
+    /** @test */
+    #[Test]
     public function generate_carries_the_shared_parsers_failures_relative_to_the_base_path(): void
     {
         app(AstParser::class)->parseCode("<?php\n\$x = ;", base_path('app/Broken.php'));

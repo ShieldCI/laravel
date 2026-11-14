@@ -1,5 +1,31 @@
 # Changelog
 
+## v1.24.0
+
+### Changed
+- `login-throttling` reads login routes written over several lines, with `Route::match()`, named arguments, an aliased facade or a router variable, which can fail a default `fail_on: high` build (#615)
+- `csrf-protection` reports a route held in a variable whose CSRF middleware a later `withoutMiddleware()` removes, which can fail a default `fail_on: high` build (#615)
+- `framework-override` analyzes a project checked out under a directory named `tests`, such as `/builds/tests/app`, instead of skipping every file, which can fail a default `fail_on: high` build (#624)
+- `authentication-authorization` checks routes on a registrar chain, a router or registrar variable, an arrow-function group, or assigned to a variable, which can fail a default `fail_on: high` build (#626)
+- `authentication-authorization` applies a group's `withoutMiddleware('auth')` or `excluded_middleware` to routes at any depth, which can fail a default `fail_on: high` build (#626)
+- `authentication-authorization` exempts a route only when every URL its route file is served at matches `public_routes`, which can fail a default `fail_on: high` build (#626)
+- `authentication-authorization` reports a FormRequest with no `authorize()` method at High when an unprotected sensitive action uses it, which can fail a default `fail_on: high` build (#626)
+- `queue-timeout-configuration` treats a missing `retry_after` as Laravel's 60 seconds instead of 90, which can fail a default `fail_on: high` build (#628)
+- `queue-timeout-configuration` grades each connection against every Horizon supervisor on it, merged with `defaults` as Horizon does, which can fail a default `fail_on: high` build (#628)
+- `queue-timeout-configuration` reads `connection_timeouts` by queue connection name, which can fail a default `fail_on: high` build (#628)
+- `frontend-vulnerable-dependencies` warns instead of passing when `npm audit` or `yarn audit` did not run or the lock file misses a declared dependency (#631)
+- `frontend-vulnerable-dependencies` grades `info` advisories as Low and advisories with no severity as High, instead of Critical (#631)
+- `queue-timeout-configuration` no longer reads a connection's `timeout` key as the worker timeout, since no queue worker reads it, which can fail a default `fail_on: high` build (#635)
+- `queue-timeout-configuration` fails a Horizon supervisor whose `timeout` is 0, negative or empty, since its jobs never time out, which can fail a default `fail_on: high` build (#635)
+
+### Fixed
+- `authentication-authorization` reads a route file's prefix from more registration forms, such as a `then:` callback in a variable or a provider in `app/Providers/`, so listed `public_routes` match (#613)
+- `authentication-authorization` no longer reports `Auth::user()` without a null check in a method reached only by routes carrying `auth` (#613)
+- `csrf-protection` and `authentication-authorization` credit middleware set on a registrar derived from a router variable (#615)
+- `login-throttling` no longer reads route text inside a string or heredoc as a login route (#615)
+- `login-throttling` credits a throttled login route written over several lines to its controller, instead of reporting the controller method as lacking rate limiting (#615)
+- `framework-override` no longer reports the Laravel 9 and 10 HTTP and Console Kernels as extending core framework classes (#624)
+
 ## v1.23.0
 
 ### Changed

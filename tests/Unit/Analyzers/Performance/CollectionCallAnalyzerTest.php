@@ -11,6 +11,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
+use ShieldCI\Tests\Concerns\RunsRealPHPStan;
 
 /**
  * The analyzer drives a real PHPStan process, so these tests stand up a stub at
@@ -20,6 +21,8 @@ use ShieldCI\Tests\AnalyzerTestCase;
  */
 class CollectionCallAnalyzerTest extends AnalyzerTestCase
 {
+    use RunsRealPHPStan;
+
     private const COLLECTION_MESSAGE = "Called 'count' on Laravel collection, but could have been retrieved as a query.";
 
     protected function createAnalyzer(): AnalyzerInterface
@@ -529,14 +532,14 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
     /**
      * Run the analyzer over a small Laravel project through the real PHPStan and Larastan.
      *
-     * The project borrows this package's own vendor directory, so the run exercises the
-     * generated config against the installed rule rather than a canned report.
+     * The run exercises the generated config against the installed rule rather than a
+     * canned report.
      *
      * @param  array<string, string>  $config  extra files at the project root, such as its phpstan.neon
      */
     private function analyzeRealProject(array $config): ResultInterface
     {
-        $tempDir = $this->createTempDirectory(array_merge([
+        return $this->inRealPHPStanProject(array_merge([
             'app/Models/Invoice.php' => <<<'PHP'
             <?php
 
@@ -561,11 +564,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
                 }
             }
             PHP,
-        ], $config));
-
-        $this->assertTrue(symlink(dirname(__DIR__, 4).'/vendor', $tempDir.'/vendor'));
-
-        return $this->runAnalyzer($tempDir, ['app']);
+        ], $config), fn (string $tempDir): ResultInterface => $this->runAnalyzer($tempDir, ['app']));
     }
 
     /**

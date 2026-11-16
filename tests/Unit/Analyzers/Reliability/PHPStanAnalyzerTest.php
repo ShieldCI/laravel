@@ -15,10 +15,13 @@ use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
+use ShieldCI\Tests\Concerns\RunsRealPHPStan;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
 class PHPStanAnalyzerTest extends AnalyzerTestCase
 {
+    use RunsRealPHPStan;
+
     /**
      * Messages Larastan builds from fixed literals, quoted as its rules emit them.
      */
@@ -371,8 +374,7 @@ PHP;
     {
         // collection-call-optimization empties the project's ignoreErrors for its own run.
         // This analyzer reports every rule, so the project's ignore list must still apply.
-        // Run through the real PHPStan, borrowing this package's vendor directory.
-        $tempDir = $this->createTempDirectory([
+        $result = $this->inRealPHPStanProject([
             'app/Services/LedgerService.php' => <<<'PHP'
             <?php
 
@@ -387,15 +389,15 @@ PHP;
             }
             PHP,
             'phpstan.neon' => "parameters:\n    ignoreErrors:\n        - identifier: method.notFound\n",
-        ]);
+        ], function (string $tempDir): ResultInterface {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['app']);
 
-        $this->assertTrue(symlink(dirname(__DIR__, 4).'/vendor', $tempDir.'/vendor'));
+            return $analyzer->analyze();
+        });
 
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['app']);
-
-        $this->assertPassed($analyzer->analyze());
+        $this->assertPassed($result);
     }
 
     public function test_passes_max_level_through_to_phpstan(): void

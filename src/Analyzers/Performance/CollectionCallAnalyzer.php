@@ -9,6 +9,7 @@ use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\Concerns\ExcludesPHPStanFindings;
 use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\PHPStanRunner;
@@ -27,6 +28,7 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class CollectionCallAnalyzer extends AbstractFileAnalyzer
 {
+    use ExcludesPHPStanFindings;
     use ParsesPHPStanResults;
     use SanitizesErrorMessages;
 
@@ -131,7 +133,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
 
             $analysisErrors = $runner->getAnalysisErrors();
             $stoppedAt = $this->stoppedAtFiles($runner->getRunStoppingErrors());
-            $collectionCalls = $runner->getIssues()->filter(
+            $collectionCalls = $this->withoutExcludedFiles($runner->getIssues())->filter(
                 static fn (array $issue): bool => self::isCollectionCall($issue)
             );
         } catch (\Throwable $e) {

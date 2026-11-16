@@ -1807,6 +1807,16 @@ PHP;
         $this->assertPassed($result);
     }
 
+    public function test_the_project_root_as_an_explicit_path_waives_no_exclude_pattern(): void
+    {
+        // '.' names the whole project; a pattern that covers it is not waived for every file.
+        $result = $this->analyzeWithExcludePatterns(['*'], [
+            ['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response'],
+        ], ['paths' => ['.']]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_issue_categories_declaration_is_internally_consistent(): void
     {
         $reflection = new \ReflectionClass(PHPStanAnalyzer::class);

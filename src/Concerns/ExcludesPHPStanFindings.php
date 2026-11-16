@@ -92,11 +92,6 @@ trait ExcludesPHPStanFindings
 
         foreach ($explicitPaths as $path) {
             $root = trim((string) preg_replace('#^(\./)+#', '', $this->getRelativePath(str_replace('\\', '/', $path))), '/');
-
-            if ($root === '' || $root === '.') {
-                continue;
-            }
-
             $absolute = PathHelper::join($basePath, $root);
 
             $waived[$root] = array_values(array_filter(

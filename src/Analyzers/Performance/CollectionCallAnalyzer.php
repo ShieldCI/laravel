@@ -109,9 +109,15 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             return $this->skipped('Larastan is not installed, so collection calls were not analysed');
         }
 
+        $paths = $this->resolvePaths();
+
+        if ($paths === []) {
+            return $this->skipped('Every analysed path is under resources/views, which holds Blade templates rather than PHP classes, so collection calls were not analysed');
+        }
+
         try {
             $runner->analyze(
-                $this->resolvePaths(),
+                $paths,
                 5,
                 $this->timeout(),
                 $this->memoryLimit(),
@@ -192,35 +198,49 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Paths to analyse, narrowed to directories that hold PHP classes.
+     * Paths to analyse: the ones this analyzer was given, less the Blade templates.
      *
-     * PHPStan should analyse code, not configs, views or migrations.
+     * AnalyzerManager always sets them, from shieldci.paths.analyze or its shipped
+     * defaults, so route closures, migrations, seeders and config are analysed along
+     * with app/. Only resources/views is left out: it holds Blade templates rather than
+     * PHP classes, so a run over it costs time and memory for code Larastan's rule is
+     * not written for. An entry is dropped when it is that directory or one below it,
+     * whether written relative, with ./ or a trailing slash, with backslashes, or as an
+     * absolute path under the base path. A broader entry such as resources or . is kept
+     * whole: narrowing it would mean listing its other subdirectories for PHPStan.
+     *
+     * No paths at all means the analyzer was built outside AnalyzerManager, and app/
+     * stands in for the manager's list. An empty list is returned only when every path
+     * given was under resources/views, which leaves nothing to analyse.
      *
      * @return array<int, string>
      */
     private function resolvePaths(): array
     {
-        if ($this->paths !== []) {
-            return array_values($this->paths);
-        }
-
-        $configPaths = config('shieldci.paths.analyze', ['app']);
-
-        if (! is_array($configPaths)) {
+        if ($this->paths === []) {
             return ['app'];
         }
 
-        $paths = array_values(array_filter(
-            array_filter($configPaths, 'is_string'),
-            static function (string $path): bool {
-                return ! str_starts_with($path, 'config')
-                    && ! str_starts_with($path, 'database')
-                    && ! str_starts_with($path, 'resources')
-                    && ! str_starts_with($path, 'routes');
+        $basePath = rtrim(str_replace('\\', '/', $this->getBasePath()), '/').'/';
+
+        return array_values(array_filter(
+            $this->paths,
+            static function (string $path) use ($basePath): bool {
+                $path = str_replace('\\', '/', $path);
+
+                if (str_starts_with($path, $basePath)) {
+                    $path = substr($path, strlen($basePath));
+                }
+
+                while (str_starts_with($path, './')) {
+                    $path = ltrim(substr($path, 2), '/');
+                }
+
+                $path = rtrim($path, '/');
+
+                return $path !== 'resources/views' && ! str_starts_with($path, 'resources/views/');
             }
         ));
-
-        return $paths === [] ? ['app'] : $paths;
     }
 
     private function timeout(): int

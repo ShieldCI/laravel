@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use PHPUnit\Framework\Attributes\DataProvider;
+use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\Performance\CollectionCallAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -24,6 +25,11 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
     use RunsRealPHPStan;
 
     private const COLLECTION_MESSAGE = "Called 'count' on Laravel collection, but could have been retrieved as a query.";
+
+    /**
+     * Base path of the last project capturedArgumentsFor() built, for absolute-path assertions.
+     */
+    private string $lastBasePath = '';
 
     protected function createAnalyzer(): AnalyzerInterface
     {
@@ -298,26 +304,96 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString("\nsrc\n", $args);
     }
 
-    public function test_filters_non_code_directories_out_of_the_configured_paths(): void
+    public function test_analyses_every_default_path_except_the_views_directory(): void
     {
-        config(['shieldci.paths.analyze' => ['app', 'config', 'database', 'resources/views', 'routes']]);
-
-        $args = $this->capturedArgumentsFor(null);
+        $args = $this->capturedArgumentsFor(AnalyzerManager::DEFAULT_ANALYZE_PATHS);
 
         $this->assertStringContainsString("\napp\n", $args);
-        $this->assertStringNotContainsString("\nconfig\n", $args);
-        $this->assertStringNotContainsString("\ndatabase\n", $args);
-        $this->assertStringNotContainsString("\nresources/views\n", $args);
-        $this->assertStringNotContainsString("\nroutes\n", $args);
+        $this->assertStringContainsString("\nconfig\n", $args);
+        $this->assertStringContainsString("\ndatabase\n", $args);
+        $this->assertStringContainsString("\nroutes\n", $args);
+        $this->assertNoViewsPathIn($args);
     }
 
-    public function test_falls_back_to_app_when_the_configured_paths_are_all_filtered_out(): void
+    /**
+     * @dataProvider viewsPathSpellingProvider
+     */
+    #[DataProvider('viewsPathSpellingProvider')]
+    public function test_leaves_out_every_spelling_of_the_views_directory(string $viewsPath): void
     {
-        config(['shieldci.paths.analyze' => ['config', 'routes']]);
+        $args = $this->capturedArgumentsFor(['app', $viewsPath, 'routes']);
+
+        $this->assertStringContainsString("\napp\n", $args);
+        $this->assertStringContainsString("\nroutes\n", $args);
+        $this->assertNoViewsPathIn($args);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function viewsPathSpellingProvider(): array
+    {
+        return [
+            'plain' => ['resources/views'],
+            'dot-slash with trailing slash' => ['./resources/views/'],
+            'backslashes' => ['resources\\views'],
+            'a subdirectory' => ['resources/views/admin'],
+            'absolute under the base path' => ['{base}/resources/views'],
+            'absolute subdirectory with trailing slash' => ['{base}/resources/views/partials/'],
+        ];
+    }
+
+    /**
+     * @dataProvider keptPathProvider
+     */
+    #[DataProvider('keptPathProvider')]
+    public function test_keeps_paths_outside_the_views_directory(string $path): void
+    {
+        $args = $this->capturedArgumentsFor(['app', $path]);
+
+        $this->assertStringContainsString("\n".str_replace('{base}', $this->lastBasePath, $path)."\n", $args);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function keptPathProvider(): array
+    {
+        return [
+            'route closures' => ['routes'],
+            'seeders and migrations' => ['database'],
+            'config' => ['config'],
+            'a sibling whose name starts with views' => ['resources/views-legacy'],
+            'another resources subdirectory' => ['resources/lang'],
+            'the broader resources directory' => ['resources'],
+            'an absolute path elsewhere under the base path' => ['{base}/routes'],
+        ];
+    }
+
+    public function test_skips_without_running_phpstan_when_every_path_is_under_the_views_directory(): void
+    {
+        $tempDir = $this->createStubbedProject();
+        $capturePath = $tempDir.'/captured_args.txt';
+        $this->writePHPStanStub($tempDir, sprintf(
+            "file_put_contents(%s, 'ran');\necho '{\"totals\":{\"errors\":0,\"file_errors\":0},\"files\":{},\"errors\":[]}';\n",
+            var_export($capturePath, true)
+        ));
+
+        $result = $this->runAnalyzer($tempDir, ['resources/views', './resources/views/admin/']);
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('resources/views', $result->getMessage());
+        $this->assertFileDoesNotExist($capturePath);
+    }
+
+    public function test_analyses_app_when_no_paths_were_set_whatever_the_config_says(): void
+    {
+        config(['shieldci.paths.analyze' => ['src']]);
 
         $args = $this->capturedArgumentsFor(null);
 
         $this->assertStringContainsString("\napp\n", $args);
+        $this->assertStringNotContainsString("\nsrc\n", $args);
     }
 
     public function test_skips_when_the_base_path_cannot_be_determined(): void
@@ -643,6 +719,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             var_export($capturePath, true)
         ));
 
+        $this->lastBasePath = $tempDir;
+
+        if ($paths !== null) {
+            $paths = array_map(static fn (string $path): string => str_replace('{base}', $tempDir, $path), $paths);
+        }
+
         $this->runAnalyzer($tempDir, $paths);
 
         $this->assertFileExists($capturePath);
@@ -688,6 +770,16 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             }
             PHP,
         ], $config), fn (string $tempDir): ResultInterface => $this->runAnalyzer($tempDir, ['app']));
+    }
+
+    /**
+     * No argument PHPStan received names resources/views or anything below it.
+     */
+    private function assertNoViewsPathIn(string $args): void
+    {
+        foreach (explode("\n", $args) as $argument) {
+            $this->assertDoesNotMatchRegularExpression('#resources[/\\\\]views($|[/\\\\])#', $argument);
+        }
     }
 
     /**

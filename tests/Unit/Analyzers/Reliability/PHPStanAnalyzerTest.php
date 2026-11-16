@@ -367,6 +367,37 @@ PHP;
         $this->assertStringContainsString("level: 8\n", (string) $config);
     }
 
+    public function test_honours_the_projects_ignore_errors(): void
+    {
+        // collection-call-optimization empties the project's ignoreErrors for its own run.
+        // This analyzer reports every rule, so the project's ignore list must still apply.
+        // Run through the real PHPStan, borrowing this package's vendor directory.
+        $tempDir = $this->createTempDirectory([
+            'app/Services/LedgerService.php' => <<<'PHP'
+            <?php
+
+            namespace App\Services;
+
+            class LedgerService
+            {
+                public function close(): void
+                {
+                    $this->reconcile();
+                }
+            }
+            PHP,
+            'phpstan.neon' => "parameters:\n    ignoreErrors:\n        - identifier: method.notFound\n",
+        ]);
+
+        $this->assertTrue(symlink(dirname(__DIR__, 4).'/vendor', $tempDir.'/vendor'));
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
     public function test_passes_max_level_through_to_phpstan(): void
     {
         // 'max' used to fail is_numeric() and quietly run at level 5, so asking for the

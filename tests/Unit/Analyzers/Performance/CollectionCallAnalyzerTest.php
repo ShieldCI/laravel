@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Performance\CollectionCallAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
@@ -41,12 +42,12 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
         ]);
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertStringContainsString('Found 1 inefficient collection operation(s)', $result->getMessage());
 
         $issue = $result->getIssues()[0];
-        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame(Severity::Medium, $issue->severity);
         $this->assertSame(self::COLLECTION_MESSAGE, $issue->metadata['phpstan_message']);
         $this->assertSame(CollectionCallAnalyzer::IDENTIFIER, $issue->metadata['phpstan_identifier']);
     }
@@ -58,7 +59,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['message' => 'Wording Larastan has never used.', 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
         ]);
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
     }
 
@@ -70,7 +71,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['message' => self::COLLECTION_MESSAGE],
         ]);
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
     }
 
@@ -195,16 +196,16 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
     }
 
-    public function test_keeps_the_failed_result_when_analysis_errors_accompany_findings(): void
+    public function test_keeps_the_warning_result_when_analysis_errors_accompany_findings(): void
     {
         // A file finding still drives the status, so a partial run is not downgraded
-        // from failed to error and its findings are not thrown away.
+        // from a warning to error and its findings are not thrown away.
         $result = $this->analyzeIssues(
             [['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER]],
             analysisErrors: ['Internal error: child process died.']
         );
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertStringContainsString('these findings may be incomplete', $result->getMessage());
         $this->assertSame(
@@ -235,7 +236,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             exitCode: 1
         );
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertArrayNotHasKey('analysis_errors', $result->getMetadata());
     }
 
@@ -253,7 +254,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
 
         $result = $this->analyzeIssues($issues);
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertIssueCount(50, $result);
         $this->assertStringContainsString('Found 100 inefficient collection operation(s) (showing first 50)', $result->getMessage());
         $this->assertSame(100, $result->getMetadata()['total_issues']);
@@ -369,13 +370,79 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('PHPStan analysis failed', $result->getMessage());
     }
 
+    public function test_reports_a_finding_from_a_real_phpstan_run(): void
+    {
+        // Control for the switches below: the same project with a config that leaves the
+        // rule alone, run through the real PHPStan and Larastan.
+        $result = $this->analyzeRealProject([
+            'phpstan.neon' => "parameters:\n    treatPhpDocTypesAsCertain: false\n",
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+        $this->assertSame(CollectionCallAnalyzer::IDENTIFIER, $result->getIssues()[0]->metadata['phpstan_identifier']);
+    }
+
+    /**
+     * @dataProvider projectSwitchProvider
+     *
+     * @param  array<string, string>  $config
+     */
+    #[DataProvider('projectSwitchProvider')]
+    public function test_reports_the_finding_when_the_projects_config_switches_the_rule_off(array $config): void
+    {
+        // The generated config includes the project's own, so each of these would otherwise
+        // leave a clean run behind and the analyzer would pass.
+        $result = $this->analyzeRealProject($config);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function projectSwitchProvider(): array
+    {
+        $ignoreByIdentifier = "parameters:\n    ignoreErrors:\n        - identifier: larastan.noUnnecessaryCollectionCall\n";
+
+        return [
+            'boolean switch' => [[
+                'phpstan.neon' => "parameters:\n    noUnnecessaryCollectionCall: false\n",
+            ]],
+            'method excluded' => [[
+                'phpstan.neon' => "parameters:\n    noUnnecessaryCollectionCallExcept: [count]\n",
+            ]],
+            'other methods only' => [[
+                'phpstan.neon' => "parameters:\n    noUnnecessaryCollectionCallOnly: [contains]\n",
+            ]],
+            'ignored by message' => [[
+                'phpstan.neon' => "parameters:\n    ignoreErrors:\n        - '#could have been retrieved as a query#'\n",
+            ]],
+            'ignored by identifier' => [[
+                'phpstan.neon' => $ignoreByIdentifier,
+            ]],
+            'method excluded in phpstan.neon.dist' => [[
+                'phpstan.neon.dist' => "parameters:\n    noUnnecessaryCollectionCallExcept: [count]\n",
+            ]],
+            // No path key: PHPStan matches an ignore's path against the resolved file, and
+            // the system temp directory sits behind a symlink on macOS.
+            'ignored in an included file' => [[
+                'phpstan.neon' => "includes:\n    - phpstan-ignores.neon\n",
+                'phpstan-ignores.neon' => $ignoreByIdentifier,
+            ]],
+        ];
+    }
+
     public function test_metadata(): void
     {
         $metadata = (new CollectionCallAnalyzer)->getMetadata();
 
         $this->assertEquals('collection-call-optimization', $metadata->id);
         $this->assertEquals(Category::Performance, $metadata->category);
-        $this->assertEquals(Severity::High, $metadata->severity);
+        $this->assertEquals(Severity::Medium, $metadata->severity);
         $this->assertContains('phpstan', $metadata->tags);
     }
 
@@ -457,6 +524,48 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertIsString($captured);
 
         return "\n".$captured;
+    }
+
+    /**
+     * Run the analyzer over a small Laravel project through the real PHPStan and Larastan.
+     *
+     * The project borrows this package's own vendor directory, so the run exercises the
+     * generated config against the installed rule rather than a canned report.
+     *
+     * @param  array<string, string>  $config  extra files at the project root, such as its phpstan.neon
+     */
+    private function analyzeRealProject(array $config): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory(array_merge([
+            'app/Models/Invoice.php' => <<<'PHP'
+            <?php
+
+            namespace App\Models;
+
+            use Illuminate\Database\Eloquent\Model;
+
+            class Invoice extends Model {}
+            PHP,
+            'app/Reports/InvoiceReport.php' => <<<'PHP'
+            <?php
+
+            namespace App\Reports;
+
+            use App\Models\Invoice;
+
+            class InvoiceReport
+            {
+                public function issued(): int
+                {
+                    return Invoice::all()->count();
+                }
+            }
+            PHP,
+        ], $config));
+
+        $this->assertTrue(symlink(dirname(__DIR__, 4).'/vendor', $tempDir.'/vendor'));
+
+        return $this->runAnalyzer($tempDir, ['app']);
     }
 
     /**

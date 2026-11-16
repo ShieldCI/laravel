@@ -96,9 +96,11 @@ class PHPStanRunner
      * $parameters lets a caller pin the PHPStan settings its analysis depends on.
      * The generated config includes the user's own phpstan.neon, and a scalar declared
      * here outranks the same key there, so a caller whose rule the user switched off is
-     * not left silently reporting nothing. List-valued settings are not supported: NEON
-     * appends included lists rather than replacing them, so an override would need the
-     * prevent-merging suffix and would overrule tuning the user is entitled to.
+     * not left silently reporting nothing. Lists are different: NEON merges a list declared
+     * here into the user's rather than replacing it, so an empty array is written with the
+     * prevent-merging suffix and empties the list for the run. That discards the user's own
+     * entries, ignoreErrors included, so it is for a caller that reads a single rule and
+     * leaves suppression to ShieldCI.
      *
      * reportUnmatchedIgnoredErrors is sent as false unless a caller passes it, because this
      * run substitutes its own level for the user's and so cannot judge their ignore patterns.
@@ -110,7 +112,7 @@ class PHPStanRunner
      *
      * @param  string|array<string>  $paths
      * @param  int|'max'  $level
-     * @param  array<string, bool>  $parameters
+     * @param  array<string, bool|array{}>  $parameters
      * @return $this
      */
     public function analyze(string|array $paths, int|string $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
@@ -165,7 +167,7 @@ class PHPStanRunner
      * @param  list<string>  $includes
      * @param  array<string>  $paths
      * @param  int|'max'  $level
-     * @param  array<string, bool>  $parameters
+     * @param  array<string, bool|array{}>  $parameters
      */
     private function runPhpstan(array $includes, array $paths, int|string $level, int $timeout, ?string $memoryLimit, array $parameters): Process
     {
@@ -344,7 +346,7 @@ class PHPStanRunner
      *
      * @param  list<string>  $includes
      * @param  int|'max'  $level
-     * @param  array<string, bool>  $parameters
+     * @param  array<string, bool|array{}>  $parameters
      */
     private function generateConfig(array $includes, int|string $level, array $parameters): string
     {
@@ -388,7 +390,7 @@ class PHPStanRunner
      *
      * @param  array<string>  $includes
      * @param  int|'max'  $level
-     * @param  array<string, bool>  $parameters
+     * @param  array<string, bool|array{}>  $parameters
      */
     private function buildNeonConfig(array $includes, int|string $level, array $parameters = []): string
     {
@@ -409,7 +411,9 @@ class PHPStanRunner
         // Emitted before the nested parallel block below, which is indented one level
         // deeper and would otherwise swallow these keys.
         foreach ($parameters as $name => $value) {
-            $lines[] = '    '.$name.': '.($value ? 'true' : 'false');
+            $lines[] = is_bool($value)
+                ? '    '.$name.': '.($value ? 'true' : 'false')
+                : '    '.$name.'!: []';
         }
 
         if (PlatformDetector::isServerless()) {

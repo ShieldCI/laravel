@@ -59,6 +59,25 @@ class PHPStanRunner
     private const MAX_OUTPUT_SNIPPET = 500;
 
     /**
+     * Project config names PHPStan discovers when run without --configuration, in its order.
+     *
+     * The generated config is passed with --configuration, which turns PHPStan's own
+     * discovery off, so the project's config is found here instead. The list and its order
+     * match CommandHelper from PHPStan 1.12.1 on; the first name that exists wins. Earlier
+     * releases skip the dot-prefixed names, which a project only creates for PHPStan to read.
+     *
+     * @var list<string>
+     */
+    private const PROJECT_CONFIG_NAMES = [
+        '.phpstan.neon',
+        'phpstan.neon',
+        '.phpstan.neon.dist',
+        'phpstan.neon.dist',
+        '.phpstan.dist.neon',
+        'phpstan.dist.neon',
+    ];
+
+    /**
      * Identifier PHPStan gives a file it could not parse.
      */
     public const PARSE_ERROR_IDENTIFIER = 'phpstan.parse';
@@ -328,14 +347,13 @@ class PHPStanRunner
             $includes[] = $carbonExtension;
         }
 
-        // Include user's existing config if present
-        $userConfig = $this->basePath.'/phpstan.neon';
-        $userConfigDist = $this->basePath.'/phpstan.neon.dist';
+        // Include the user's existing config under the first name PHPStan itself would pick
+        foreach (self::PROJECT_CONFIG_NAMES as $name) {
+            if (is_file($this->basePath.'/'.$name)) {
+                $includes[] = $this->basePath.'/'.$name;
 
-        if (file_exists($userConfig)) {
-            $includes[] = $userConfig;
-        } elseif (file_exists($userConfigDist)) {
-            $includes[] = $userConfigDist;
+                break;
+            }
         }
 
         return $includes;

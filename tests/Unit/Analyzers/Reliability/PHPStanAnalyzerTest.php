@@ -223,6 +223,36 @@ PHP;
         $this->assertHasIssueContaining('Missing Return Statements', $result);
     }
 
+    public function test_honours_ignore_errors_from_a_phpstan_dist_neon(): void
+    {
+        // phpstan.dist.neon is one of the names PHPStan picks up on its own, so an error
+        // the project ignores there must not be reported either.
+        $result = $this->inRealPHPStanProject([
+            'app/Services/ReportBuilder.php' => <<<'PHP'
+            <?php
+
+            namespace App\Services;
+
+            class ReportBuilder
+            {
+                public function build(): void
+                {
+                    $this->assembleSections();
+                }
+            }
+            PHP,
+            'phpstan.dist.neon' => "parameters:\n    ignoreErrors:\n        - identifier: method.notFound\n",
+        ], function (string $tempDir): ResultInterface {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['app']);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertPassed($result);
+    }
+
     public function test_respects_disabled_categories(): void
     {
         $code = <<<'PHP'

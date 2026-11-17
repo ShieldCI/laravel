@@ -455,57 +455,74 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString('nesbot/carbon/extension.neon', $capturedConfig);
     }
 
-    public function test_generates_config_with_user_phpstan_neon(): void
+    /**
+     * @dataProvider projectConfigNameProvider
+     */
+    #[DataProvider('projectConfigNameProvider')]
+    public function test_includes_the_project_config_under_every_name_phpstan_discovers(string $name): void
     {
-        // Create user's phpstan.neon
-        file_put_contents($this->tempDir.'/phpstan.neon', "# User config\n");
+        file_put_contents($this->tempDir.'/'.$name, "parameters:\n    level: 9\n");
 
         $this->createMockPHPStanWithConfigCapture();
 
         $runner = new PHPStanRunner($this->tempDir);
         $runner->analyze(['app']);
 
-        // Read the captured config from the mock script
-        $capturedConfig = $this->getCapturedConfig();
-
-        $this->assertStringContainsString('includes:', $capturedConfig);
-        $this->assertStringContainsString('phpstan.neon', $capturedConfig);
+        $this->assertSame([$this->tempDir.'/'.$name], $this->getCapturedIncludes());
     }
 
-    public function test_generates_config_with_user_phpstan_neon_dist(): void
+    /**
+     * @dataProvider projectConfigNameProvider
+     */
+    #[DataProvider('projectConfigNameProvider')]
+    public function test_includes_only_the_project_config_phpstan_would_pick(string $name): void
     {
-        // Create user's phpstan.neon.dist (without phpstan.neon)
-        file_put_contents($this->tempDir.'/phpstan.neon.dist', "# User config dist\n");
+        // PHPStan uses the first name in its list that exists and ignores the rest, so a
+        // project carrying every later name too must still get exactly this one.
+        $names = array_keys(self::projectConfigNameProvider());
+
+        foreach (array_slice($names, (int) array_search($name, $names, true)) as $present) {
+            file_put_contents($this->tempDir.'/'.$present, "parameters:\n    level: 9\n");
+        }
 
         $this->createMockPHPStanWithConfigCapture();
 
         $runner = new PHPStanRunner($this->tempDir);
         $runner->analyze(['app']);
 
-        // Read the captured config from the mock script
-        $capturedConfig = $this->getCapturedConfig();
-
-        $this->assertStringContainsString('includes:', $capturedConfig);
-        $this->assertStringContainsString('phpstan.neon.dist', $capturedConfig);
+        $this->assertSame([$this->tempDir.'/'.$name], $this->getCapturedIncludes());
     }
 
-    public function test_prefers_phpstan_neon_over_dist(): void
+    public function test_skips_a_directory_carrying_a_project_config_name(): void
     {
-        // Create both files
-        file_put_contents($this->tempDir.'/phpstan.neon', "# Primary config\n");
-        file_put_contents($this->tempDir.'/phpstan.neon.dist', "# Dist config\n");
+        // PHPStan checks each name with is_file(), so a directory under an earlier name does
+        // not stop it from reaching the config file further down the list.
+        mkdir($this->tempDir.'/.phpstan.neon');
+        file_put_contents($this->tempDir.'/phpstan.dist.neon', "parameters:\n    level: 9\n");
 
         $this->createMockPHPStanWithConfigCapture();
 
         $runner = new PHPStanRunner($this->tempDir);
         $runner->analyze(['app']);
 
-        // Read the captured config from the mock script
-        $capturedConfig = $this->getCapturedConfig();
+        $this->assertSame([$this->tempDir.'/phpstan.dist.neon'], $this->getCapturedIncludes());
+    }
 
-        // Should only include phpstan.neon, not .dist
-        $this->assertStringContainsString('phpstan.neon', $capturedConfig);
-        $this->assertStringNotContainsString('phpstan.neon.dist', $capturedConfig);
+    /**
+     * The names PHPStan's CommandHelper tries when no --configuration is passed, in its order.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function projectConfigNameProvider(): array
+    {
+        return [
+            '.phpstan.neon' => ['.phpstan.neon'],
+            'phpstan.neon' => ['phpstan.neon'],
+            '.phpstan.neon.dist' => ['.phpstan.neon.dist'],
+            'phpstan.neon.dist' => ['phpstan.neon.dist'],
+            '.phpstan.dist.neon' => ['.phpstan.dist.neon'],
+            'phpstan.dist.neon' => ['phpstan.dist.neon'],
+        ];
     }
 
     public function test_generates_config_without_extensions_when_not_available(): void
@@ -1575,6 +1592,18 @@ class PHPStanRunnerTest extends TestCase
             var_export($this->tempDir.'/captured_config.neon', true),
             var_export((string) json_encode($output, JSON_PRETTY_PRINT), true)
         ));
+    }
+
+    /**
+     * The include paths of the captured config, in order.
+     *
+     * @return list<string>
+     */
+    private function getCapturedIncludes(): array
+    {
+        preg_match_all('/^    - (.+)$/m', $this->getCapturedConfig(), $matches);
+
+        return $matches[1];
     }
 
     /**

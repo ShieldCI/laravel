@@ -15,10 +15,13 @@ use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
+use ShieldCI\Tests\Concerns\RunsRealPHPStan;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
 class PHPStanAnalyzerTest extends AnalyzerTestCase
 {
+    use RunsRealPHPStan;
+
     /**
      * Messages Larastan builds from fixed literals, quoted as its rules emit them.
      */
@@ -365,6 +368,36 @@ PHP;
 
         $this->assertPassed($result);
         $this->assertStringContainsString("level: 8\n", (string) $config);
+    }
+
+    public function test_honours_the_projects_ignore_errors(): void
+    {
+        // collection-call-optimization empties the project's ignoreErrors for its own run.
+        // This analyzer reports every rule, so the project's ignore list must still apply.
+        $result = $this->inRealPHPStanProject([
+            'app/Services/LedgerService.php' => <<<'PHP'
+            <?php
+
+            namespace App\Services;
+
+            class LedgerService
+            {
+                public function close(): void
+                {
+                    $this->reconcile();
+                }
+            }
+            PHP,
+            'phpstan.neon' => "parameters:\n    ignoreErrors:\n        - identifier: method.notFound\n",
+        ], function (string $tempDir): ResultInterface {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['app']);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertPassed($result);
     }
 
     public function test_passes_max_level_through_to_phpstan(): void

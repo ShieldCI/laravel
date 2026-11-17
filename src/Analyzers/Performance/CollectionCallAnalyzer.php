@@ -60,7 +60,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             name: 'Collection Call Optimization Analyzer',
             description: 'Detects inefficient collection operations that should be performed at the database query level',
             category: Category::Performance,
-            severity: Severity::High,
+            severity: Severity::Medium,
             tags: ['database', 'collection', 'performance', 'n+1', 'optimization', 'phpstan'],
             timeToFix: 45
         );
@@ -115,8 +115,15 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
                 $this->memoryLimit(),
                 [
                     // The rule this analyzer exists to read. The generated config includes
-                    // the user's phpstan.neon, where it could otherwise be switched off.
+                    // the user's phpstan.neon, where it could otherwise be switched off,
+                    // narrowed to some methods, or ignored. Emptying the Only and Except lists
+                    // and ignoreErrors restores Larastan's defaults (every method, nothing
+                    // ignored by config). Only this rule's findings are read, so the user's
+                    // other ignores do not matter.
                     'noUnnecessaryCollectionCall' => true,
+                    'noUnnecessaryCollectionCallOnly' => [],
+                    'noUnnecessaryCollectionCallExcept' => [],
+                    'ignoreErrors' => [],
                     // reportUnmatchedIgnoredErrors is off for every run the runner generates,
                     // so it no longer needs pinning here.
                 ]
@@ -156,7 +163,7 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
         $issues = $this->createIssuesFromPHPStanResults(
             $collectionCalls,
             'Collection operation that should be a database query',
-            Severity::High,
+            Severity::Medium,
             fn (string $message): string => $this->getRecommendationFromMessage($message)
         );
 

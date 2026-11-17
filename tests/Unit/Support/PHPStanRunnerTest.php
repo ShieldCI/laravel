@@ -407,6 +407,35 @@ class PHPStanRunnerTest extends TestCase
         $this->assertGreaterThan($includesAt, $parameterAt);
     }
 
+    public function test_an_empty_list_parameter_replaces_the_users_list(): void
+    {
+        // NEON appends an including file's list to the included one, so a plain key would
+        // add to the user's ignoreErrors rather than replace it. The ! suffix replaces it.
+        file_put_contents(
+            $this->tempDir.'/phpstan.neon',
+            "parameters:\n    ignoreErrors:\n        - '#could have been retrieved as a query#'\n"
+        );
+
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [
+            'noUnnecessaryCollectionCall' => true,
+            'ignoreErrors' => [],
+        ]);
+
+        $capturedConfig = $this->getCapturedConfig();
+
+        $this->assertStringContainsString("    noUnnecessaryCollectionCall: true\n    ignoreErrors!: []", $capturedConfig);
+
+        $includesAt = strpos($capturedConfig, 'phpstan.neon');
+        $resetAt = strpos($capturedConfig, 'ignoreErrors!: []');
+
+        $this->assertIsInt($includesAt);
+        $this->assertIsInt($resetAt);
+        $this->assertGreaterThan($includesAt, $resetAt);
+    }
+
     public function test_generates_config_with_carbon_extension(): void
     {
         // Create mock Carbon extension

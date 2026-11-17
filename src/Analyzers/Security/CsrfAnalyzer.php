@@ -518,7 +518,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                     $exception = $entry->value->value;
 
-                    if ($exception === '*' || $exception === '/*') {
+                    if ($this->excludesEveryRoute($exception)) {
                         $issues[] = $this->createIssueWithSnippet(
                             message: 'All routes excluded from CSRF protection with wildcard',
                             filePath: $middlewarePath,
@@ -548,6 +548,23 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+    }
+
+    /**
+     * Determine if a CSRF exception pattern excludes every route.
+     *
+     * The middleware trims slashes from a pattern other than '/' and matches it with Str::is()
+     * against both the path and the full URL, turning each '*' into '.*'. Every full URL holds
+     * '://', so a pattern made only of '*' and '/' with at least one '*' and at most two slashes
+     * matches every request, the root URL included; a third slash spares at least the root.
+     */
+    private function excludesEveryRoute(string $exception): bool
+    {
+        $pattern = $exception === '/' ? $exception : trim($exception, '/');
+
+        return str_contains($pattern, '*')
+            && trim($pattern, '*/') === ''
+            && substr_count($pattern, '/') <= 2;
     }
 
     /**
@@ -1213,8 +1230,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             }
 
-            // The middleware trims slashes before matching, so '/*' excludes every route too
-            $wildcards = array_values(array_intersect($exceptions, ['*', '/*']));
+            $wildcards = array_values(array_filter($exceptions, fn (string $exception): bool => $this->excludesEveryRoute($exception)));
 
             if ($wildcards !== []) {
                 $issues[] = $this->createIssueWithSnippet(

@@ -4,23 +4,25 @@
 
 ### Changed
 - `up-to-date-migrations` reads migration state from the migrator, so Laravel 9 releases without `migrate:status --pending` report pending migrations instead of an error (#641)
-- `up-to-date-migrations` checks the table named in `database.migrations`, instead of reporting a renamed table as missing or passing when it is absent (#641)
+- `up-to-date-migrations` checks the table named in `database.migrations`, so a missing renamed table is reported, which can fail a default `fail_on: high` build (#641)
 - `unused-global-middleware` warns instead of passing when the container cannot build `TrustProxies` (#644)
 - `cache-driver` grades `failover`, `storage` and `session` stores instead of reporting them as unsupported, which can fail a default `fail_on: high` build (#652)
-- `cache-driver` reports a null default store in production as caching disabled, which can fail a default `fail_on: high` build (#652)
+- `cache-driver` reports a null default store in production or staging as caching disabled, which can fail a default `fail_on: high` build (#652)
 - `cache-driver` no longer runs in CI mode, since the CI environment says nothing about the production cache (#652)
-- `cache-prefix-configuration` grades a `database` store Low and a Redis, Memcached or DynamoDB store Medium, so a stock Laravel 11+ app no longer fails a default `fail_on: high` build (#654)
+- `cache-prefix-configuration` grades `database` stores Low and Redis, Memcached or DynamoDB stores Medium, so stock Laravel 11+ no longer fails a default `fail_on: high` build (#654)
 - `cache-prefix-configuration` counts the Redis and Memcached client prefix, which changes the fingerprint of Redis findings (#654)
+- `cache-prefix-configuration` treats a store's empty `prefix` as set instead of falling back to `cache.prefix`, as Laravel does (#654)
 - `cache-prefix-configuration` checks the shared stores behind a `failover` default store instead of skipping it (#654)
 - `collection-call-optimization` reports findings the project's PHPStan config narrows or ignores, instead of passing (#655)
 - `collection-call-optimization` grades findings Medium instead of High, so they no longer fail a default `fail_on: high` build (#655)
 
 ### Fixed
+- `up-to-date-migrations` no longer reports a renamed migrations table as missing (#641)
 - `unused-global-middleware` no longer flags `TrustHosts`, which validates the Host header without `TrustProxies` (#644)
 - `unused-global-middleware` reads the proxies a `TrustProxies` subclass returns from `proxies()`, instead of telling users to delete it (#644)
 - `shield:analyze --format=json`, `--report` and `shield:baseline` substitute invalid UTF-8 instead of writing an empty report or baseline or dropping the upload (#646)
 - `phpstan` includes the project config under every name PHPStan discovers, such as `phpstan.dist.neon`, so errors the project ignores are no longer reported (#660)
-- `phpstan` and `collection-call-optimization` leave out findings in files matched by `shieldci.excluded_paths` (#661)
+- `phpstan` and `collection-call-optimization` leave out findings in files matched by `shieldci.excluded_paths`, such as `app/Legacy/*` (#661)
 - `collection-call-optimization` leaves `resources/views` out of its PHPStan run, so a Blade template that does not parse no longer errors the run (#663)
 
 ## v1.24.0

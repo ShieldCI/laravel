@@ -439,6 +439,129 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         ];
     }
 
+    /**
+     * @dataProvider excludePatternProvider
+     */
+    #[DataProvider('excludePatternProvider')]
+    public function test_leaves_out_findings_in_excluded_files(string $pattern): void
+    {
+        // The regression test for #657: PHPStan analyses the configured paths whole, so
+        // excluded_paths has to be applied to what it reports, as every file analyzer does.
+        $result = $this->analyzeWithExcludePatterns([$pattern], [
+            ['file' => 'app/Legacy/Report.php', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+            ['file' => 'app/Services/ExampleService.php', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(1, $result->getMetadata()['total_issues']);
+        $this->assertStringContainsString('Found 1 inefficient collection operation(s)', $result->getMessage());
+        $this->assertStringEndsWith('app/Services/ExampleService.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function excludePatternProvider(): array
+    {
+        return [
+            'relative wildcard' => ['app/Legacy/*'],
+            'exact relative file' => ['app/Legacy/Report.php'],
+            'absolute-path wildcard' => ['*/Legacy/*'],
+        ];
+    }
+
+    public function test_passes_when_every_finding_is_in_an_excluded_file(): void
+    {
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/Report.php', 'app/Legacy/*'], [
+            ['file' => 'app/Legacy/Report.php', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_leaves_out_a_trait_finding_reported_in_the_context_of_a_class(): void
+    {
+        // PHPStan reports an error inside a trait under "<file> (in context of class X)".
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [[
+            'file' => 'app/Legacy/CountsWidgets.php (in context of class App\Services\ExampleService)',
+            'message' => self::COLLECTION_MESSAGE,
+            'identifier' => CollectionCallAnalyzer::IDENTIFIER,
+        ]]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_matches_exclude_patterns_through_a_symlinked_base_path(): void
+    {
+        // PHPStan runs from the resolved working directory, so a base path reached through
+        // a symlink (a release directory, or macOS's /var) comes back under its real path.
+        $tempDir = $this->createStubbedProject();
+
+        if (! @symlink($tempDir, $tempDir.'-link')) {
+            $this->markTestSkipped('Cannot create symlinks on this system');
+        }
+
+        $this->beforeApplicationDestroyed(static function () use ($tempDir): void {
+            @unlink($tempDir.'-link');
+        });
+
+        $realPath = (string) realpath($tempDir);
+
+        $this->writePHPStanStub($tempDir, $this->reportScript([
+            ['file' => $realPath.'/app/Legacy/Report.php', 'line' => 7, 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+            ['file' => $realPath.'/app/Services/ExampleService.php', 'line' => 7, 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ], [], 1));
+
+        $analyzer = new CollectionCallAnalyzer;
+        $analyzer->setBasePath($tempDir.'-link');
+        $analyzer->setPaths(['app']);
+        $analyzer->setExcludePatterns(['app/Legacy/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('app/Services/ExampleService.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_a_stopping_error_in_an_excluded_file_still_marks_the_run_incomplete(): void
+    {
+        // The exclusion hides the file's findings, not the fact that PHPStan stopped there
+        // and dropped every other file's.
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Legacy/Report.php', 'message' => 'Syntax error, unexpected \'}\' on line 7', 'identifier' => 'phpstan.parse'],
+        ]);
+
+        $this->assertError($result);
+        $this->assertSame(['app/Legacy/Report.php:7'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_leaves_out_a_finding_in_an_excluded_non_php_file(): void
+    {
+        // Reachable when the project's phpstan.neon adds .inc to fileExtensions.
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Legacy/widgets.inc', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+            ['file' => 'app/Services/ExampleService.php', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertStringEndsWith('app/Services/ExampleService.php', (string) $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_keeps_a_finding_in_a_non_php_file_the_patterns_do_not_exclude(): void
+    {
+        // A project's own fileExtensions can make PHPStan report a .inc file. Core's
+        // matcher declines every non-.php file, so asking it would drop the finding.
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Services/widgets.inc', 'message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+    }
+
     public function test_metadata(): void
     {
         $metadata = (new CollectionCallAnalyzer)->getMetadata();
@@ -609,6 +732,34 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         if ($paths !== null) {
             $analyzer->setPaths($paths);
         }
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * Run the analyzer with exclude patterns against a report naming files by relative path.
+     *
+     * @param  array<int, string>  $patterns
+     * @param  array<int, array{file: string, message: string, line?: int, identifier?: string}>  $issues
+     */
+    private function analyzeWithExcludePatterns(array $patterns, array $issues): ResultInterface
+    {
+        $tempDir = $this->createStubbedProject();
+
+        $prepared = [];
+
+        foreach ($issues as $issue) {
+            $issue['file'] = $tempDir.'/'.$issue['file'];
+            $issue['line'] = $issue['line'] ?? 7;
+            $prepared[] = $issue;
+        }
+
+        $this->writePHPStanStub($tempDir, $this->reportScript($prepared, [], 1));
+
+        $analyzer = new CollectionCallAnalyzer;
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $analyzer->setExcludePatterns($patterns);
 
         return $analyzer->analyze();
     }

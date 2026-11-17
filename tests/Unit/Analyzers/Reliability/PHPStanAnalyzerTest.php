@@ -1689,6 +1689,134 @@ PHP;
         }
     }
 
+    /**
+     * @dataProvider excludePatternProvider
+     */
+    #[DataProvider('excludePatternProvider')]
+    public function test_leaves_out_findings_in_excluded_files(string $pattern): void
+    {
+        // The regression test for #657: PHPStan analyses the configured paths whole, so
+        // excluded_paths has to be applied to what it reports, as every file analyzer does.
+        $result = $this->analyzeWithExcludePatterns([$pattern], [
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $total'],
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'method.notFound', 'message' => 'Call to an undefined method App\Legacy\Report::render().'],
+            ['file' => 'app/Services/ExampleService.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $count'],
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(1, $result->getMetadata()['total_issues']);
+        $this->assertSame(1, $result->getMetadata()['issues_by_category']['undefined-variable']);
+        $this->assertArrayNotHasKey('invalid-method-calls', $result->getMetadata()['issues_by_category']);
+        $this->assertSame('Undefined variable: $count', $result->getIssues()[0]->metadata['phpstan_message']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function excludePatternProvider(): array
+    {
+        return [
+            'relative wildcard' => ['app/Legacy/*'],
+            'exact relative file' => ['app/Legacy/Report.php'],
+            'absolute-path wildcard' => ['*/Legacy/*'],
+        ];
+    }
+
+    public function test_passes_when_every_finding_is_in_an_excluded_file(): void
+    {
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $total'],
+            ['file' => 'app/Legacy/FormatsTotals.php (in context of class App\Services\ExampleService)', 'identifier' => 'method.notFound', 'message' => 'Call to an undefined method App\Services\ExampleService::format().'],
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_a_stopping_error_in_an_excluded_file_still_marks_the_run_incomplete(): void
+    {
+        // The exclusion hides the file's findings, not the fact that PHPStan stopped there
+        // and dropped every other file's.
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'phpstan.parse', 'message' => 'Syntax error, unexpected \'}\' on line 4', 'line' => 4],
+        ]);
+
+        $this->assertError($result);
+        $this->assertSame(['app/Legacy/Report.php:4'], $result->getMetadata()['stopped_at']);
+    }
+
+    /**
+     * @dataProvider coveringExcludePatternProvider
+     */
+    #[DataProvider('coveringExcludePatternProvider')]
+    public function test_an_explicit_phpstan_path_outranks_an_exclude_pattern_covering_it(string $pattern): void
+    {
+        // Pointing PHPStan at tests/ on purpose must not be emptied by the shipped 'tests/*'.
+        $result = $this->analyzeWithExcludePatterns(
+            ['vendor/*', 'node_modules/*', 'storage/*', 'bootstrap/cache/*', $pattern],
+            [['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response']],
+            ['paths' => ['tests']]
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function coveringExcludePatternProvider(): array
+    {
+        return [
+            'directory wildcard' => ['tests/*'],
+            'the path itself' => ['tests'],
+            'absolute-path wildcard' => ['*/tests/*'],
+        ];
+    }
+
+    public function test_an_exclude_pattern_inside_an_explicit_phpstan_path_still_applies(): void
+    {
+        $result = $this->analyzeWithExcludePatterns(['app/Legacy/*'], [
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $total'],
+            ['file' => 'app/Services/ExampleService.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $count'],
+        ], ['paths' => ['app']]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Undefined variable: $count', $result->getIssues()[0]->metadata['phpstan_message']);
+    }
+
+    public function test_an_explicit_path_waives_a_covering_pattern_only_beneath_itself(): void
+    {
+        $result = $this->analyzeWithExcludePatterns(['tests/*', 'app/Legacy/*'], [
+            ['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response'],
+            ['file' => 'app/Legacy/Report.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $total'],
+        ], ['paths' => ['./tests/', 'app']]);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Undefined variable: $response', $result->getIssues()[0]->metadata['phpstan_message']);
+    }
+
+    public function test_an_exclude_pattern_covering_a_shared_path_still_applies(): void
+    {
+        // Without a phpstan-only path list, excluded_paths applies as it does everywhere.
+        $result = $this->analyzeWithExcludePatterns(['tests/*'], [
+            ['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response'],
+        ], ['paths' => []]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_the_project_root_as_an_explicit_path_waives_no_exclude_pattern(): void
+    {
+        // '.' names the whole project; a pattern that covers it is not waived for every file.
+        $result = $this->analyzeWithExcludePatterns(['*'], [
+            ['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response'],
+        ], ['paths' => ['.']]);
+
+        $this->assertPassed($result);
+    }
+
     public function test_issue_categories_declaration_is_internally_consistent(): void
     {
         $reflection = new \ReflectionClass(PHPStanAnalyzer::class);
@@ -1751,6 +1879,38 @@ PHP;
         $analyzer->setPaths(['app']);
 
         return $analyzer;
+    }
+
+    /**
+     * Run the analyzer with exclude patterns against a report naming files by relative path.
+     *
+     * @param  array<int, string>  $patterns
+     * @param  array<int, array{file: string, message: string, line?: int, identifier?: string}>  $issues
+     * @param  array<string, mixed>  $config
+     */
+    private function analyzeWithExcludePatterns(array $patterns, array $issues, array $config = []): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ExampleService.php' => "<?php\n\nnamespace App\\Services;\n\nclass ExampleService {}\n",
+        ]);
+
+        $prepared = [];
+
+        foreach ($issues as $issue) {
+            $issue['file'] = $tempDir.'/'.$issue['file'];
+            $issue['line'] = $issue['line'] ?? 7;
+            $prepared[] = $issue;
+        }
+
+        $this->writePHPStanStub($tempDir, $this->createMockPHPStanScript($prepared));
+
+        $analyzer = $this->createAnalyzer($config);
+        $this->assertInstanceOf(PHPStanAnalyzer::class, $analyzer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $analyzer->setExcludePatterns($patterns);
+
+        return $analyzer->analyze();
     }
 
     /**

@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Location;
+use ShieldCI\Concerns\ExcludesPHPStanFindings;
 use ShieldCI\Concerns\ParsesPHPStanResults;
 use ShieldCI\Concerns\SanitizesErrorMessages;
 use ShieldCI\Support\PHPStanRunner;
@@ -46,6 +47,7 @@ use ShieldCI\Support\PHPStanRunner;
  */
 class PHPStanAnalyzer extends AbstractFileAnalyzer
 {
+    use ExcludesPHPStanFindings;
     use ParsesPHPStanResults;
     use SanitizesErrorMessages;
 
@@ -644,7 +646,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
             $stoppedAt = $this->stoppedAtFiles($runner->getRunStoppingErrors());
 
             // Categorize all issues
-            $categorizedIssues = $this->categorizeIssues($runner->getIssues(), $activeCategories);
+            $categorizedIssues = $this->categorizeIssues($this->withoutExcludedFiles($runner->getIssues(), $this->explicitPaths() ?? []), $activeCategories);
         } catch (\Throwable $e) {
             return $this->error(
                 sprintf('PHPStan analysis failed: %s', $this->sanitizedErrorMessage($e->getMessage())),
@@ -798,28 +800,46 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
      */
     private function resolvePaths(): array
     {
-        $keys = [
-            'shieldci.analyzers.reliability.phpstan.paths',
-            'shieldci.paths.analyze',
-        ];
+        return $this->explicitPaths()
+            ?? $this->usablePaths('shieldci.paths.analyze')
+            ?? ['app'];
+    }
 
-        foreach ($keys as $key) {
-            $configured = $this->config->get($key);
+    /**
+     * The directories configured for this analyzer alone, or null when its key is unusable.
+     *
+     * These outrank a shared exclude pattern that would empty them, so a user who points
+     * PHPStan at tests/ is not silently handed a pass by the shipped 'tests/*'.
+     *
+     * @return array<int, string>|null
+     */
+    private function explicitPaths(): ?array
+    {
+        return $this->usablePaths('shieldci.analyzers.reliability.phpstan.paths');
+    }
 
-            if (is_string($configured) && $configured !== '') {
-                return [$configured];
-            }
+    /**
+     * A config key's paths as a non-empty list, or null when it holds none.
+     *
+     * @return array<int, string>|null
+     */
+    private function usablePaths(string $key): ?array
+    {
+        $configured = $this->config->get($key);
 
-            if (is_array($configured)) {
-                $paths = array_values(array_filter($configured, 'is_string'));
+        if (is_string($configured) && $configured !== '') {
+            return [$configured];
+        }
 
-                if ($paths !== []) {
-                    return $paths;
-                }
+        if (is_array($configured)) {
+            $paths = array_values(array_filter($configured, 'is_string'));
+
+            if ($paths !== []) {
+                return $paths;
             }
         }
 
-        return ['app'];
+        return null;
     }
 
     /**

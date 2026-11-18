@@ -1558,14 +1558,14 @@ class BootstrapRouteParser
                 : null;
             if ($value !== null && $statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
                 && $statement->expr->var instanceof Node\Expr\Variable && is_string($statement->expr->var->name)
-                && ($body === 0 || $this->routeChain($value, $known))) {
+                && ($body === 0 || $this->routeChain($value))) {
                 $name = $statement->expr->var->name;
                 $candidates[spl_object_id($statement)] = $name;
                 $assigned[spl_object_id($statement)] = $value;
                 $direct[spl_object_id($statement->expr)] = true;
                 $assignedIn[$name][$body] = true;
                 $holdsRegistrar[$name] = $this->registrarChain($value, $known);
-                $holdsRoute[$name] = $this->routeChain($value, $known);
+                $holdsRoute[$name] = $this->routeChain($value);
                 unset($exited[$name]);
                 if ($body !== 0) {
                     // A route made in a loop body holds no router a later statement makes routes off
@@ -1766,18 +1766,12 @@ class BootstrapRouteParser
     }
 
     /**
-     * Whether an expression is a route or a pending resource registration the router hands
-     * back: a chain on the router (see {@see self::chainOnRouter()}) with a route verb or a
-     * resource registration (see {@see self::ROUTE_REGISTRATIONS}).
-     *
-     * @param  array<string, mixed>  $routers
+     * Whether a chain on the router (as {@see self::routerChainValue()} returns one) is a
+     * route or a pending resource registration the router hands back: it holds a route verb
+     * or a resource registration (see {@see self::ROUTE_REGISTRATIONS}).
      */
-    private function routeChain(Node\Expr $expr, array $routers): bool
+    private function routeChain(Node\Expr $expr): bool
     {
-        if (! $this->chainOnRouter($expr, $routers)) {
-            return false;
-        }
-
         $node = $expr;
         while ($node instanceof MethodCall || $node instanceof StaticCall) {
             if ($node->name instanceof Identifier && in_array($node->name->toLowerString(), self::ROUTE_REGISTRATIONS, true)) {

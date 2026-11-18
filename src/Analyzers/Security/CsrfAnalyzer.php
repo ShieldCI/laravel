@@ -44,7 +44,7 @@ use ShieldCI\Support\BootstrapRouteParser;
  * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>, api: bool}
  * @phpstan-type ActionMiddleware array{middleware: list<string|null>|null, excluded: list<string|null>|null, dropsRegistrar: bool}
  * @phpstan-type RouteWalk array{
- *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
+ *     routes: array<int, array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
  *     groups: array<int, non-empty-list<array{state: CsrfState, closures: list<int>}>>,
  *     variables: array<string, int>,
  *     resolved: array<int, list<Expr>>,
@@ -107,6 +107,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         'as', 'can', 'controller', 'domain', 'metadata', 'middleware', 'missing', 'name',
         'namespace', 'prefix', 'scopebindings', 'where', 'withoutmiddleware', 'withoutscopedbindings',
     ];
+
+    /**
+     * The methods, lowercase, that register a route or open a group on the router or a
+     * registrar, besides the resource registrations (see RESOURCE_REGISTRATIONS).
+     */
+    private const ROUTE_REGISTRATIONS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'group'];
 
     /**
      * The framework's VerifyCsrfToken, which an application's own CSRF middleware extends.
@@ -2027,8 +2033,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      */
     private function walkRouteNode(Node $node, array $closures, int $scope, array &$walk, BootstrapRouteParser $routeParser): void
     {
-        if ($node instanceof Expr\MethodCall || $node instanceof Expr\StaticCall) {
-            $this->walkCallChain($node, $closures, $scope, $walk, $routeParser);
+        if ($node instanceof Expr\MethodCall || $node instanceof Expr\StaticCall || $node instanceof Expr\NullsafeMethodCall) {
+            // A nullsafe call on a route or a registrar runs as a plain one
+            $this->walkCallChain($node instanceof Expr\StaticCall ? $node : $routeParser->nullsafeStandIn($node), $closures, $scope, $walk, $routeParser);
 
             return;
         }
@@ -2296,14 +2303,53 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $method = $writes ? $this->resourceRegistration($chain[$resourceAt])[0] : null;
         }
 
-        if ($method !== null && $chain !== []) {
-            $walk['routes'][] = [
-                'line' => $chain[0]->getStartLine(),
+        $registration = $this->registeringCall($chain);
+        if ($method !== null && $registration !== null) {
+            // A statement on a variable holding the route, such as $route->middleware('web'), is
+            // read through the calls that built it (see BootstrapRouteParser::groupChain()), so
+            // it reaches the same registering call with every call made on the route so far,
+            // as Route::middleware() and withoutMiddleware() change the route itself
+            $walk['routes'][spl_object_id($registration)] = [
+                // The statement that registers the route, not the one that built a registrar
+                // held in a variable it is made on
+                'line' => $registration->getStartLine(),
                 'method' => $method,
                 'states' => $states,
                 'closures' => $closures,
             ];
+        } elseif ($registration !== null) {
+            // A later statement on the variable, such as $photos->only(['index']), left the
+            // registration no write
+            unset($walk['routes'][spl_object_id($registration)]);
         }
+    }
+
+    /**
+     * The call in a route chain that registers the route or opens the group: the first route
+     * verb, resource registration or group() call, so a chain made on a call the router hands
+     * back, such as Route::getFacadeRoot() or a router macro, registers at its verb. A chain
+     * with none registers at the first call that is neither a registrar attribute nor a
+     * where*() constraint. Null when every call only sets attributes.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $chain  The chain's calls, root first
+     */
+    private function registeringCall(array $chain): Expr\MethodCall|Expr\StaticCall|null
+    {
+        foreach ($chain as $link) {
+            $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
+            if (in_array($name, self::ROUTE_REGISTRATIONS, true) || isset(self::RESOURCE_REGISTRATIONS[$name ?? ''])) {
+                return $link;
+            }
+        }
+
+        foreach ($chain as $link) {
+            $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
+            if (! (in_array($name, self::REGISTRAR_ATTRIBUTES, true) || ($name !== null && str_starts_with($name, 'where')))) {
+                return $link;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -2351,10 +2397,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $registrarExcluded = [];
         $action = self::NO_ACTION_MIDDLEWARE;
         $registered = false;
+        $registration = $this->registeringCall($chain);
         foreach ($chain as $link) {
             $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
-            $registers = ! $registered
-                && ! (in_array($name, self::REGISTRAR_ATTRIBUTES, true) || ($name !== null && str_starts_with($name, 'where')));
+            $registers = $link === $registration;
             $registered = $registered || $registers;
 
             if ($registers) {

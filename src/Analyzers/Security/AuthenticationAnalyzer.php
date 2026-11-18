@@ -17,6 +17,7 @@ use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Concerns\DetectsLaravelVersion;
+use ShieldCI\Concerns\ReadsMiddlewareConfigurator;
 use ShieldCI\Concerns\ResolvesClassNames;
 use ShieldCI\Support\BootstrapRouteParser;
 use ShieldCI\Support\ClassHierarchyIndex;
@@ -34,6 +35,7 @@ use ShieldCI\Support\ClassHierarchyIndex;
 class AuthenticationAnalyzer extends AbstractFileAnalyzer
 {
     use DetectsLaravelVersion;
+    use ReadsMiddlewareConfigurator;
     use ResolvesClassNames;
 
     /**
@@ -73,6 +75,25 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * @var array<string, string>|null
      */
     private ?array $middlewareAliasMap = null;
+
+    /**
+     * Memoized middleware group name => members map, parsed from bootstrap/app.php
+     * (`$middleware->group(...)` and the calls that add to or remove from a group) and
+     * app/Http/Kernel.php ($middlewareGroups). Null until first resolved.
+     *
+     * @var array<string, list<string>>|null
+     */
+    private ?array $middlewareGroupMap = null;
+
+    /**
+     * The groups resolveMiddlewareGroups() cannot read, by name: one a replaceInGroup() call
+     * targets, or a removeFromGroup() or replaceInGroup() call changes with an argument that
+     * cannot be read, each mapped to no member; '*' when such a call names a group that cannot
+     * be read, which may be any group. Set with $middlewareGroupMap.
+     *
+     * @var array<string, true>
+     */
+    private array $unreadMiddlewareGroups = [];
 
     /**
      * Map of controller methods that are intentionally public.
@@ -117,6 +138,34 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * @var array<string, true>
      */
     private array $routeOpenControllerMethods = [];
+
+    /**
+     * Controller methods a route reaches with auth removed at any level, which strips the
+     * controller's own auth middleware too (Router::gatherRouteMiddleware()). Read by the
+     * Auth::user() null check only.
+     *
+     * @var array<string, true>
+     */
+    private array $routeAuthRemovedMethods = [];
+
+    /**
+     * Per-run memos of what the new controller-level and middleware-class reads compute:
+     * App\ class declarations by lowercase name, whether a class extends Authenticate, and,
+     * by spl_object_id() of a class declaration, whether it implements HasMiddleware and
+     * the auth entries controllerAuthCovers() reads.
+     *
+     * @var array<string, array{Node\Stmt\Class_, array<Node>}|null>
+     */
+    private array $appClassMemo = [];
+
+    /** @var array<string, bool> */
+    private array $extendsAuthenticateMemo = [];
+
+    /** @var array<int, bool> */
+    private array $hasMiddlewareMemo = [];
+
+    /** @var array<int, list<array{string, array{only?: array<string>, except?: array<string>}, bool}>> */
+    private array $controllerAuthEntriesMemo = [];
 
     /**
      * File-level URI prefixes the framework applies when registering whole route
@@ -188,10 +237,16 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // Drop what an earlier analysis on this instance read, which may be of another project
         $this->resolvedAuthMiddleware = [];
         $this->middlewareAliasMap = null;
+        $this->middlewareGroupMap = null;
         $this->publicControllerMethods = [];
         $this->routeAuthStats = [];
         $this->routeAuthCarried = [];
         $this->routeOpenControllerMethods = [];
+        $this->routeAuthRemovedMethods = [];
+        $this->appClassMemo = [];
+        $this->extendsAuthenticateMemo = [];
+        $this->hasMiddlewareMemo = [];
+        $this->controllerAuthEntriesMemo = [];
         $this->routeVisitors = [];
         $this->controllerParameterTypes = null;
 
@@ -1046,6 +1101,25 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      */
     private function appClass(string $name, array $near = []): ?array
     {
+        if ($near === []) {
+            $key = strtolower($name);
+
+            return array_key_exists($key, $this->appClassMemo)
+                ? $this->appClassMemo[$key]
+                : $this->appClassMemo[$key] = $this->readAppClass($name, []);
+        }
+
+        return $this->readAppClass($name, $near);
+    }
+
+    /**
+     * Read the declaration {@see self::appClass()} returns.
+     *
+     * @param  array<Node>  $near
+     * @return array{Node\Stmt\Class_, array<Node>}|null
+     */
+    private function readAppClass(string $name, array $near): ?array
+    {
         // The path the route parser reads app/Providers/ files under, so the trees are the same
         $file = $this->getBasePath().'/app/'.str_replace('\\', '/', substr($name, 4)).'.php';
         $conventional = str_starts_with(strtolower($name), 'app\\') && is_file($file) ? [$this->parser->parseFile($file)] : [];
@@ -1365,7 +1439,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             // Expand resource/apiResource routes to individual methods
             $controllerMethods = $this->expandControllerMethods($controller, $route['action'], $route['http_methods']);
 
-            $isGuestRoute = in_array('guest', $route['middleware'], true);
+            $isGuestRoute = $this->isGuestRoute($route);
             $isPublicUri = $this->isRoutePublic($route);
             $hasExplicitAuthRemoval = $this->routeDirectRemoveHasAuth($route['direct_remove']);
 
@@ -1379,7 +1453,10 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 // (Router::gatherRouteMiddleware()); a group-level removal opens the method
                 // here only on a public URI, where master already counts the method public
                 $removesAuth = $this->routeDirectRemoveHasAuth($route['removed']);
-                if (! $removesAuth && ! $isGuestRoute && $this->isRouteMiddlewareAuthenticated($route['middleware'])) {
+                if ($this->removesAuthInAnyForm($route['removed'])) {
+                    $this->routeAuthRemovedMethods[$method] = true;
+                }
+                if (! $removesAuth && ! $isGuestRoute && $this->isRouteMiddlewareAuthenticated($route['middleware'], $route['removed'])) {
                     $this->routeAuthCarried[$method] = ($this->routeAuthCarried[$method] ?? 0) + 1;
                 } elseif ($hasExplicitAuthRemoval || $isGuestRoute || $route['http_methods'] === ['GET'] || ($isPublicUri && $removesAuth)) {
                     $this->routeOpenControllerMethods[$method] = true;
@@ -1392,7 +1469,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                if ($this->isRouteMiddlewareAuthenticated($route['middleware'])) {
+                if ($this->isRouteMiddlewareAuthenticated($route['middleware'], $route['removed'])) {
                     $this->routeAuthStats[$method]['authenticated']++;
                 } elseif ($route['http_methods'] === ['GET']) {
                     // Unauthenticated GET routes are read-only, intentionally public
@@ -1450,20 +1527,54 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Handles: 'auth', 'auth:api', 'auth.basic', 'can:ability', 'role:admin',
      * 'permission:x', fully-qualified custom auth middleware class names, and
      * bare string aliases that resolve (via bootstrap/app.php or Kernel) to a
-     * custom auth middleware class.
+     * custom auth middleware class. A middleware group the app defines is read as its
+     * members, less those the route excludes (Router::resolveMiddleware()), and a group
+     * among them as its own, each group once.
      *
      * @param  list<string>  $middleware
+     * @param  list<string>  $removed  The middleware the route excludes
+     * @param  array<string, true>  $expanded  The groups already read as their members
      */
-    private function isRouteMiddlewareAuthenticated(array $middleware): bool
+    private function isRouteMiddlewareAuthenticated(array $middleware, array $removed = [], array $expanded = []): bool
     {
         foreach ($middleware as $mw) {
-            if ($this->isAuthMiddleware($mw) || $this->isAuthorizationMiddleware($mw)) {
+            // A group member counts only by a strict signal (see self::isStrictAuthMiddleware()),
+            // and not at all once the route excludes auth in any form: Router::resolveMiddleware()
+            // compares both sides as the classes they resolve to, subclasses included
+            if ($expanded !== []) {
+                if ($this->isStrictAuthMiddleware($mw)) {
+                    if (! $this->excludesAuth($removed)) {
+                        return true;
+                    }
+
+                    continue;
+                }
+                if (! isset($this->resolveMiddlewareGroups()[$mw])) {
+                    continue;
+                }
+            } elseif ($this->isAuthMiddleware($mw) || ($this->isAuthMiddlewareClass($mw) && ! $this->excludesAuth($removed))) {
                 return true;
+            }
+
+            if ($this->isAuthorizationMiddleware($mw)) {
+                return true;
+            }
+
+            // A group name, matched exactly as MiddlewareNameResolver matches it, before
+            // any alias of the same name
+            $groups = $this->resolveMiddlewareGroups();
+            if (isset($groups[$mw])) {
+                if (! isset($expanded[$mw])
+                    && $this->isRouteMiddlewareAuthenticated(array_values(array_diff($groups[$mw], $removed)), $removed, $expanded + [$mw => true])) {
+                    return true;
+                }
+
+                continue;
             }
 
             // Class-like strings (contain backslash = FQCN from NameResolver)
             if (str_contains($mw, '\\')) {
-                if ($this->isCustomAuthMiddlewareClass($mw)) {
+                if ($this->isCustomAuthMiddlewareClass($mw) || ($this->extendsAuthenticateClass($mw) && ! $this->excludesAuth($removed))) {
                     return true;
                 }
 
@@ -1476,12 +1587,66 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             // never trigger this lookup.
             $alias = explode(':', $mw, 2)[0];
             $aliasMap = $this->resolveMiddlewareAliases();
-            if (isset($aliasMap[$alias]) && $this->isCustomAuthMiddlewareClass($aliasMap[$alias])) {
+            if (isset($aliasMap[$alias]) && ($this->isCustomAuthMiddlewareClass($aliasMap[$alias])
+                || ($this->extendsAuthenticateClass($aliasMap[$alias]) && ! $this->excludesAuth($removed)))) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Whether a route is for guests: it carries the 'guest' middleware, or the guest
+     * middleware with a guard and no auth middleware beside it.
+     *
+     * @param  array{middleware: list<string>, removed: list<string>}  $route
+     */
+    private function isGuestRoute(array $route): bool
+    {
+        return in_array('guest', $route['middleware'], true)
+            || (RouteAuthVisitor::hasGuestMiddleware($route['middleware']) && ! $this->isRouteMiddlewareAuthenticated($route['middleware'], $route['removed']));
+    }
+
+    /**
+     * Whether a route's exclusions take out auth: as routeDirectRemoveHasAuth() reads them,
+     * or in any form self::excludesAuth() reads, such as the Authenticate class.
+     *
+     * @param  list<string>  $removed
+     */
+    private function removesAuthInAnyForm(array $removed): bool
+    {
+        return $this->routeDirectRemoveHasAuth($removed) || $this->excludesAuth($removed);
+    }
+
+    /**
+     * Whether the controller a route reaches applies auth to every method the route runs,
+     * through its constructor's $this->middleware(...) or its middleware() list, which
+     * Route::controllerMiddleware() gathers for the route, unless the route removes auth,
+     * which strips them too (Router::gatherRouteMiddleware()). The controller is read from
+     * the file Laravel's convention gives an App\ class.
+     *
+     * @param  array{controller: string|null, action: string|null, http_methods: list<string>, removed: list<string>}  $route
+     */
+    private function controllerAuthCoversRoute(array $route): bool
+    {
+        if ($route['controller'] === null || $this->removesAuthInAnyForm($route['removed'])) {
+            return false;
+        }
+
+        $declaration = $this->appClass(ltrim($route['controller'], '\\'));
+        if ($declaration === null) {
+            return false;
+        }
+
+        foreach ($this->expandControllerMethods($route['controller'], $route['action'], $route['http_methods']) as $key) {
+            $parts = explode('::', $key);
+            if (! $this->controllerAuthCovers($parts[count($parts) - 1], $declaration[0])) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -1507,7 +1672,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $hasAuth = $this->isRouteMiddlewareAuthenticated($group['effective_middleware']);
+            $hasAuth = $this->isRouteMiddlewareAuthenticated($group['effective_middleware'], $group['removed']);
 
             if (! $hasAuth && ! $group['has_guest']) {
                 // Skip when every route inside this group is explicitly public (the user has
@@ -1535,7 +1700,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             }
 
             // Skip guest routes (guest middleware means for unauthenticated users)
-            if (in_array('guest', $route['middleware'], true)) {
+            if ($this->isGuestRoute($route)) {
                 continue;
             }
 
@@ -1544,11 +1709,11 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            $isAuthenticated = $this->isRouteMiddlewareAuthenticated($route['middleware']);
             $httpMethod = $route['http_methods'][0] ?? 'GET';
             $isMutation = $this->isMutationRoute($httpMethod);
 
-            if (! $isAuthenticated && $isMutation) {
+            if ($isMutation && ! $this->isRouteMiddlewareAuthenticated($route['middleware'], $route['removed'])
+                && ! $this->controllerAuthCoversRoute($route)) {
                 $isClosure = $route['is_closure'];
 
                 $issues[] = $this->createIssueWithSnippet(
@@ -1751,7 +1916,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Returns false when the group contains no routes, so genuinely empty or
      * non-whitelisted groups continue to be flagged.
      *
-     * @param  array{middleware: list<string>, effective_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}  $group
+     * @param  array{middleware: list<string>, effective_middleware: list<string>, removed: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}  $group
      * @param  list<array{uri: string, match_uris: list<list<string>>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int, every_url: bool}>  $routes
      */
     private function groupLeavesNoRouteOpen(array $group, array $routes): bool
@@ -1767,9 +1932,10 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $found = true;
 
             $isClosed = $this->isRoutePublic($route)
-                || in_array('guest', $route['middleware'], true)
+                || $this->isGuestRoute($route)
                 || $this->routeDirectRemoveHasAuth($route['direct_remove'])
-                || $this->isRouteMiddlewareAuthenticated($route['middleware']);
+                || $this->isRouteMiddlewareAuthenticated($route['middleware'], $route['removed'])
+                || $this->controllerAuthCoversRoute($route);
 
             if (! $isClosed) {
                 return false;
@@ -1798,7 +1964,9 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $namespace = $namespaceNodes[0]->name->toString();
         }
 
-        $classes = $this->parser->findClasses($ast);
+        // Resolve names so a middleware() list's ::class constants and new Middleware(...)
+        // read as the classes they name
+        $classes = $this->parser->findClasses($this->resolveNamesForMatching($ast));
 
         foreach ($classes as $class) {
             $className = $class->name ? $class->name->toString() : 'Unknown';
@@ -1836,7 +2004,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                         }
 
                         // Check if method has controller-level auth middleware
-                        $hasAuthMiddleware = $this->isControllerMethodAuthenticated($methodName, $constructorMiddlewareInfo, $middlewareMethodInfo);
+                        $hasAuthMiddleware = $this->isControllerMethodAuthenticated($methodName, $constructorMiddlewareInfo, $this->controllerMiddlewareInfoFor($class, $middlewareMethodInfo, $fqcnKey, $controllerMethodKey));
 
                         // Also consider method authenticated if protected at route level (check both key forms)
                         $stats = $this->routeAuthStats[$fqcnKey] ?? $this->routeAuthStats[$controllerMethodKey] ?? null;
@@ -2136,7 +2304,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
             // 3. Controller constructor or middleware() method protection
             $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
-            $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+            $middlewareMethodInfo = $this->controllerMiddlewareInfoFor($classNode, $this->getMiddlewareMethodInfo($classNode), $fqcnKey, $shortKey);
             if ($this->isControllerMethodAuthenticated($method, $constructorInfo, $middlewareMethodInfo)) {
                 continue;
             }
@@ -2153,7 +2321,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      *
      * Returns array with 'auth' key containing 'only' or 'except' arrays, or null if no auth middleware.
      *
-     * @return array<string, array{only?: array<string>, except?: array<string>}>|null
+     * @return array<string, array{only?: array<string>, except?: array<string>, unread?: array<string>, option_only?: array<string>, option_except?: array<string>}>|null
      */
     private function getConstructorMiddlewareInfo(Node\Stmt\Class_ $class): ?array
     {
@@ -2198,6 +2366,28 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $methodName = $currentExpr->name instanceof Node\Identifier ? $currentExpr->name->toLowerString() : null;
 
             if ($methodName === 'middleware') {
+                // The options array of Controller::middleware($middleware, $options), its only
+                // and except lists recorded apart, as only controllerAuthCovers() reads them
+                $options = $currentExpr->args[1] ?? null;
+                if ($options instanceof Node\Arg) {
+                    foreach ($options->value instanceof Node\Expr\Array_ ? $options->value->items : [null] as $option) {
+                        if (! $option instanceof Node\Expr\ArrayItem) {
+                            $constraints['unread'] = [];
+
+                            continue;
+                        }
+                        $key = $option->key instanceof Node\Scalar\String_ ? $option->key->value : null;
+                        if ($key === 'only' || $key === 'except') {
+                            $methods = $this->stringList($option->value);
+                            if ($methods === null) {
+                                $constraints['unread'] = [];
+                            } else {
+                                $constraints['option_'.$key] = $methods;
+                            }
+                        }
+                    }
+                }
+
                 // Extract middleware name from arguments
                 foreach ($currentExpr->args as $arg) {
                     // A first-class callable yields a VariadicPlaceholder, which has no value.
@@ -2235,9 +2425,18 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                     } elseif ($value instanceof Node\Scalar\String_) {
                         $methods[] = $value->value;
                     }
+                    // A list that cannot be read, or an empty only list, is recorded under
+                    // 'unread': it covers no method where controller auth credits a route
+                    // or the Auth::user() check (see self::controllerAuthCovers())
+                    if (! $value instanceof Node\Scalar\String_
+                        && ($value === null || $this->stringList($value) === null)) {
+                        $constraints['unread'] = [];
+                    }
                 }
                 if (! empty($methods)) {
                     $constraints[$methodName] = $methods;
+                } elseif ($methodName === 'only') {
+                    $constraints['unread'] = [];
                 }
             }
 
@@ -2256,12 +2455,19 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Get middleware information from controller's middleware() method.
      *
-     * Returns array with 'auth' key containing 'only' or 'except' arrays, or null if no auth middleware.
+     * Returns each auth or authorization middleware the method's returned array lists, with
+     * the 'only' or 'except' methods it is limited to, or null if it lists none. An entry is
+     * a keyed 'auth' => ['only' => [...]] pair, or, as a HasMiddleware controller lists it, a
+     * middleware string or ::class constant, or a new Middleware(...) definition (see
+     * {@see self::controllerMiddlewareDefinition()}). The list form is read only from a
+     * class that implements HasMiddleware, the only one Route::controllerMiddleware() reads
+     * it from; the keyed form, read as master read it, is left out when $keyed is false.
      *
-     * @return array<string, array{only?: array<string>, except?: array<string>}>|null
+     * @return list<array{string, array{only?: array<string>, except?: array<string>}, bool}>|null
      */
-    private function getMiddlewareMethodInfo(Node\Stmt\Class_ $class): ?array
+    private function getMiddlewareMethodInfo(Node\Stmt\Class_ $class, bool $keyed = true, bool $listed = true): ?array
     {
+        $hasMiddleware = null;
         foreach ($class->stmts as $stmt) {
             if ($stmt instanceof Node\Stmt\ClassMethod && $stmt->name->toLowerString() === 'middleware') {
                 // Check if method returns an array
@@ -2274,40 +2480,17 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
                                 continue;
                             }
 
-                            // Get the key (middleware name like 'auth', 'auth:api', 'can:update,post')
-                            $key = $this->extractArrayKeyValue($item->key);
-
-                            if ($key === null || (! $this->isAuthMiddleware($key) && ! $this->isAuthorizationMiddleware($key))) {
-                                continue;
+                            if ($item->key === null) {
+                                $hasMiddleware ??= $listed && $this->implementsHasMiddleware($class);
+                                $entries = $hasMiddleware ? $this->controllerMiddlewareDefinition($item->value) : [];
+                            } else {
+                                $entries = $keyed ? $this->keyedControllerMiddleware($item) : [];
                             }
 
-                            // Get the value (array with 'only' or 'except')
-                            $value = $item->value;
-                            if ($value instanceof Node\Expr\Array_) {
-                                $constraints = [];
-                                foreach ($value->items as $constraintItem) {
-                                    if (! ($constraintItem instanceof Node\Expr\ArrayItem)) {
-                                        continue;
-                                    }
-
-                                    $constraintKey = $this->extractArrayKeyValue($constraintItem->key);
-
-                                    if ($constraintKey === 'only' || $constraintKey === 'except') {
-                                        $methods = [];
-                                        if ($constraintItem->value instanceof Node\Expr\Array_) {
-                                            foreach ($constraintItem->value->items as $methodItem) {
-                                                if ($methodItem instanceof Node\Expr\ArrayItem && $methodItem->value instanceof Node\Scalar\String_) {
-                                                    $methods[] = $methodItem->value->value;
-                                                }
-                                            }
-                                        }
-                                        $constraints[$constraintKey] = $methods;
-                                    }
+                            foreach ($entries as [$name, $constraints, $isListed]) {
+                                if ($this->isAuthMiddleware($name) || $this->isAuthorizationMiddleware($name) || $this->isAuthMiddlewareClass($name)) {
+                                    $middlewareInfo[] = [$name, $constraints, $isListed];
                                 }
-                                $middlewareInfo[$key] = $constraints;
-                            } else {
-                                // If value is not an array, middleware applies to all methods
-                                $middlewareInfo[$key] = [];
                             }
                         }
 
@@ -2320,6 +2503,213 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         }
 
         return null;
+    }
+
+    /**
+     * The middleware a keyed middleware() entry names: its key, such as 'auth', 'auth:api'
+     * or 'can:update,post', limited by the 'only' or 'except' list its array value gives,
+     * or applying to every method for any other value.
+     *
+     * @return list<array{string, array{only?: array<string>, except?: array<string>}, bool}>
+     */
+    private function keyedControllerMiddleware(Node\Expr\ArrayItem $item): array
+    {
+        $key = $this->extractArrayKeyValue($item->key);
+        if ($key === null) {
+            return [];
+        }
+
+        $constraints = [];
+        if ($item->value instanceof Node\Expr\Array_) {
+            foreach ($item->value->items as $constraintItem) {
+                if (! ($constraintItem instanceof Node\Expr\ArrayItem)) {
+                    continue;
+                }
+
+                $constraintKey = $this->extractArrayKeyValue($constraintItem->key);
+
+                if ($constraintKey === 'only' || $constraintKey === 'except') {
+                    $methods = [];
+                    if ($constraintItem->value instanceof Node\Expr\Array_) {
+                        foreach ($constraintItem->value->items as $methodItem) {
+                            if ($methodItem instanceof Node\Expr\ArrayItem && $methodItem->value instanceof Node\Scalar\String_) {
+                                $methods[] = $methodItem->value->value;
+                            }
+                        }
+                    }
+                    $constraints[$constraintKey] = $methods;
+                }
+            }
+        }
+
+        return [[$key, $constraints, false]];
+    }
+
+    /**
+     * The middleware a HasMiddleware controller's middleware() list entry defines, each with
+     * the methods it is limited to, as Route::staticallyProvidedControllerMiddleware() reads
+     * the entry: a middleware string or ::class constant applies to every method, and a
+     * new Middleware(...) applies its middleware, one or a list, to the methods its only
+     * and except arguments, by name or position, leave in, or those its chained ->only() and
+     * ->except() calls set in their place.
+     *
+     * @return list<array{string, array{only?: array<string>, except?: array<string>}, bool}>
+     */
+    private function controllerMiddlewareDefinition(Node\Expr $value): array
+    {
+        $constraints = [];
+        while ($value instanceof Node\Expr\MethodCall && $value->name instanceof Node\Identifier
+            && in_array($value->name->toLowerString(), ['only', 'except'], true)) {
+            $argument = $value->args[0] ?? null;
+            $constraints[$value->name->toLowerString()] ??= $argument instanceof Node\Arg ? $this->stringList($argument->value) : null;
+            $value = $value->var;
+        }
+
+        if (! $value instanceof Node\Expr\New_) {
+            return $constraints === [] ? array_map(fn (string $name): array => [$name, [], true], $this->middlewareNames($value)) : [];
+        }
+        // The class as resolved, or, in a tree whose names were not resolved, as written
+        $class = $value->class;
+        if (! $class instanceof Node\Name
+            || ($class->getAttribute('resolvedName') !== null || $class->isFullyQualified()
+                ? strcasecmp($this->resolvedName($class), 'Illuminate\\Routing\\Controllers\\Middleware') !== 0
+                : strcasecmp($class->toString(), 'Middleware') !== 0)) {
+            return [];
+        }
+
+        $arguments = [];
+        foreach ($value->args as $position => $arg) {
+            if ($arg instanceof Node\Arg && ! $arg->unpack) {
+                $arguments[$arg->name !== null ? $arg->name->toString() : ['middleware', 'only', 'except'][$position] ?? ''] = $arg->value;
+            }
+        }
+        foreach (['only', 'except'] as $option) {
+            if (! array_key_exists($option, $constraints) && isset($arguments[$option]) && ! $this->isNullLiteral($arguments[$option])) {
+                $constraints[$option] = $this->stringList($arguments[$option]);
+            }
+        }
+
+        // An except list that cannot be read may leave out any method, so the definition
+        // covers none; an only list that cannot be read covers none as it is
+        if (array_key_exists('except', $constraints) && $constraints['except'] === null) {
+            return [];
+        }
+        $limits = [];
+        foreach ($constraints as $option => $methods) {
+            $limits[$option] = $methods ?? [];
+        }
+
+        return array_map(fn (string $name): array => [$name, $limits, true], isset($arguments['middleware']) ? $this->middlewareNames($arguments['middleware']) : []);
+    }
+
+    /**
+     * The strings a value lists, or the one string it is. Null when it cannot be read: any
+     * other value, or a list with an entry that is not a literal string.
+     *
+     * @return list<string>|null
+     */
+    private function stringList(Node\Expr $value): ?array
+    {
+        if ($value instanceof Node\Scalar\String_) {
+            return [$value->value];
+        }
+        if (! $value instanceof Node\Expr\Array_) {
+            return null;
+        }
+
+        $strings = [];
+        foreach ($value->items as $item) {
+            if (! $item instanceof Node\Expr\ArrayItem || $item->unpack || ! $item->value instanceof Node\Scalar\String_) {
+                return null;
+            }
+            $strings[] = $item->value->value;
+        }
+
+        return $strings;
+    }
+
+    /**
+     * Whether a controller implements Illuminate\Routing\Controllers\HasMiddleware, itself or
+     * through an App\ parent read from the file Laravel's convention places it in. A name
+     * not resolved is read as written, the short name standing for the import.
+     *
+     * @param  array<string, true>  $seen  The parents already read, lowercase
+     */
+    private function implementsHasMiddleware(Node\Stmt\Class_ $class, array $seen = []): bool
+    {
+        return $this->hasMiddlewareMemo[spl_object_id($class)] ??= $this->readsHasMiddleware($class, $seen);
+    }
+
+    /**
+     * Read what {@see self::implementsHasMiddleware()} returns.
+     *
+     * @param  array<string, true>  $seen
+     */
+    private function readsHasMiddleware(Node\Stmt\Class_ $class, array $seen): bool
+    {
+        foreach ($class->implements as $interface) {
+            if ($interface->getAttribute('resolvedName') !== null || $interface->isFullyQualified()
+                ? strcasecmp($this->resolvedName($interface), 'Illuminate\\Routing\\Controllers\\HasMiddleware') === 0
+                : strcasecmp($interface->toString(), 'HasMiddleware') === 0) {
+                return true;
+            }
+        }
+
+        $parent = $class->extends !== null ? $this->resolvedName($class->extends) : null;
+        if ($parent === null || isset($seen[strtolower($parent)])) {
+            return false;
+        }
+        $declaration = $this->appClass($parent);
+
+        return $declaration !== null && $this->implementsHasMiddleware($declaration[0], $seen + [strtolower($parent) => true]);
+    }
+
+    /**
+     * Whether controller-level auth that Laravel applies covers a method, read only as far as
+     * it can be: the constructor's auth middleware, less any whose method list cannot be
+     * read, and a HasMiddleware controller's middleware() list. The keyed middleware() form
+     * is left out, as Laravel never reads it.
+     */
+    private function controllerAuthCovers(string $methodName, Node\Stmt\Class_ $class): bool
+    {
+        $id = spl_object_id($class);
+        if (! isset($this->controllerAuthEntriesMemo[$id])) {
+            // The constructor's method lists: a chained ->only() or ->except() in place of
+            // the one its options array gives (ControllerMiddlewareOptions), both applied
+            $entries = [];
+            foreach ($this->getConstructorMiddlewareInfo($class) ?? [] as $name => $constraints) {
+                if (isset($constraints['unread'])) {
+                    continue;
+                }
+                $limits = [];
+                foreach (['only', 'except'] as $option) {
+                    $methods = $constraints[$option] ?? $constraints['option_'.$option] ?? null;
+                    if ($methods !== null) {
+                        $limits[$option] = $methods;
+                    }
+                }
+                $entries[] = [$name, $limits, true];
+            }
+            $this->controllerAuthEntriesMemo[$id] = [...$entries, ...$this->getMiddlewareMethodInfo($class, false) ?? []];
+        }
+
+        return $this->middlewareMethodProvidesAuthentication($methodName, $this->controllerAuthEntriesMemo[$id]);
+    }
+
+    /**
+     * The middleware() entries the sensitive-method and Auth::user() checks credit a method
+     * with: those given, less a HasMiddleware list when a route reaching the method removes
+     * auth, which strips the controller's middleware too. The keyed form is read as master
+     * read it.
+     *
+     * @param  list<array{string, array{only?: array<string>, except?: array<string>}, bool}>|null  $middlewareMethodInfo
+     * @return list<array{string, array{only?: array<string>, except?: array<string>}, bool}>|null
+     */
+    private function controllerMiddlewareInfoFor(Node\Stmt\Class_ $class, ?array $middlewareMethodInfo, string $fqcnKey, string $shortKey): ?array
+    {
+        return isset($this->routeAuthRemovedMethods[$fqcnKey]) || isset($this->routeAuthRemovedMethods[$shortKey])
+            ? $this->getMiddlewareMethodInfo($class, true, false)
+            : $middlewareMethodInfo;
     }
 
     /**
@@ -2348,13 +2738,17 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if controller method is authenticated.
      *
-     * @param  array<string, array{only?: array<string>, except?: array<string>}>|null  $constructorMiddlewareInfo
-     * @param  array<string, array{only?: array<string>, except?: array<string>}>|null  $middlewareMethodInfo
+     * @param  array<string, array{only?: array<string>, except?: array<string>, unread?: array<string>, option_only?: array<string>, option_except?: array<string>}>|null  $constructorMiddlewareInfo
+     * @param  list<array{string, array{only?: array<string>, except?: array<string>}, bool}>|null  $middlewareMethodInfo
      */
     private function isControllerMethodAuthenticated(string $methodName, ?array $constructorMiddlewareInfo, ?array $middlewareMethodInfo): bool
     {
         // Check constructor middleware with constraints
-        if ($this->middlewareMethodProvidesAuthentication($methodName, $constructorMiddlewareInfo)) {
+        $constructorEntries = [];
+        foreach ($constructorMiddlewareInfo ?? [] as $name => $constraints) {
+            $constructorEntries[] = [$name, $constraints, false];
+        }
+        if ($this->middlewareMethodProvidesAuthentication($methodName, $constructorEntries)) {
             return true;
         }
 
@@ -2366,9 +2760,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if middleware method provides authentication or authorization.
+     * Check if middleware method provides authentication or authorization. A HasMiddleware
+     * list entry, or one controllerAuthCovers() reads, covers the method when it is in its
+     * only list, if any, and not in its except list, as Route::methodExcludedByOptions()
+     * reads both, and any such entry covering it is enough; a constructor or keyed entry is
+     * read as master read it, the first auth entry deciding.
      *
-     * @param  array<string, array{only?: array<string>, except?: array<string>}>|null  $middlewareInfo
+     * @param  list<array{string, array{only?: array<string>, except?: array<string>, unread?: array<string>}, bool}>|null  $middlewareInfo
      */
     private function middlewareMethodProvidesAuthentication(string $methodName, ?array $middlewareInfo): bool
     {
@@ -2376,26 +2774,30 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return false;
         }
 
-        foreach ($middlewareInfo as $middlewareName => $constraints) {
+        foreach ($middlewareInfo as [$middlewareName, $constraints, $listed]) {
             // Check for both auth and authorization middleware (can:, role:, permission:)
-            if (! $this->isAuthMiddleware($middlewareName) && ! $this->isAuthorizationMiddleware($middlewareName)) {
+            if (! $this->isAuthMiddleware($middlewareName) && ! $this->isAuthorizationMiddleware($middlewareName) && ! $this->isAuthMiddlewareClass($middlewareName)) {
                 continue;
             }
 
-            // Applies to all methods
-            if ($constraints === []) {
-                return true;
+            // A listed entry applies when both its lists let the method in, and any one
+            // applying covers it
+            if ($listed) {
+                if ((! isset($constraints['only']) || in_array($methodName, $constraints['only'], true))
+                    && (! isset($constraints['except']) || ! in_array($methodName, $constraints['except'], true))) {
+                    return true;
+                }
+
+                continue;
             }
 
-            // only = whitelist
+            // A constructor or keyed entry: the first one decides, its only list over its
+            // except list
             if (isset($constraints['only'])) {
                 return in_array($methodName, $constraints['only'], true);
             }
 
-            // except = blacklist
-            if (isset($constraints['except'])) {
-                return ! in_array($methodName, $constraints['except'], true);
-            }
+            return ! isset($constraints['except']) || ! in_array($methodName, $constraints['except'], true);
         }
 
         return false;
@@ -2555,6 +2957,13 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
+        // Controller-level auth covering the method runs on every route that reaches it,
+        // open or not, unless one of them removes auth
+        if (! isset($this->routeAuthRemovedMethods[$fqcnKey]) && ! isset($this->routeAuthRemovedMethods[$shortKey])
+            && $this->controllerAuthCovers($methodName, $classNode)) {
+            return true;
+        }
+
         // Reached without auth on purpose (guest route, auth removed, unauthenticated GET) → do not suppress
         if (isset($this->routeOpenControllerMethods[$fqcnKey])
                 || isset($this->routeOpenControllerMethods[$shortKey])) {
@@ -2573,7 +2982,7 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
 
         // Controller-level: constructor $this->middleware('auth') or middleware() method
         $constructorInfo = $this->getConstructorMiddlewareInfo($classNode);
-        $middlewareMethodInfo = $this->getMiddlewareMethodInfo($classNode);
+        $middlewareMethodInfo = $this->controllerMiddlewareInfoFor($classNode, $this->getMiddlewareMethodInfo($classNode), $fqcnKey, $shortKey);
 
         return $this->isControllerMethodAuthenticated($methodName, $constructorInfo, $middlewareMethodInfo);
     }
@@ -2625,6 +3034,111 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
         // requests, so it counts as authentication too.
         return (bool) preg_match('/^auth(?::[a-zA-Z0-9_-]+)?$/i', $middleware)
             || (bool) preg_match('/^auth\.basic(?::.+)?$/i', $middleware);
+    }
+
+    /**
+     * Whether a middleware names Laravel's authentication middleware class, Authenticate or
+     * AuthenticateWithBasicAuth, which the auth and auth.basic aliases resolve to: with or
+     * without a leading backslash and parameters, compared case-insensitively as PHP
+     * compares class names.
+     */
+    private function isAuthMiddlewareClass(string $middleware): bool
+    {
+        $class = strtolower(ltrim(explode(':', trim($middleware), 2)[0], '\\'));
+
+        return $class === 'illuminate\\auth\\middleware\\authenticate'
+            || $class === 'illuminate\\auth\\middleware\\authenticatewithbasicauth';
+    }
+
+    /**
+     * Whether a middleware authenticates by a strict signal: an auth alias, the Authenticate
+     * or AuthenticateWithBasicAuth class, or a class, named or through the app's alias map,
+     * that extends one.
+     */
+    private function isStrictAuthMiddleware(string $middleware): bool
+    {
+        if ($this->isAuthMiddleware($middleware) || $this->isAuthMiddlewareClass($middleware)) {
+            return true;
+        }
+
+        return $this->extendsAuthenticateClass(str_contains($middleware, '\\')
+            ? $middleware
+            : ($this->resolveMiddlewareAliases()[explode(':', $middleware, 2)[0]] ?? ''));
+    }
+
+    /**
+     * Whether a route's exclusions take out authentication in any form (see
+     * self::isStrictAuthMiddleware()), an excluded group's members included.
+     *
+     * @param  list<string>  $removed
+     * @param  array<string, true>  $expanded  The groups already read as their members
+     */
+    private function excludesAuth(array $removed, array $expanded = []): bool
+    {
+        foreach ($removed as $mw) {
+            if ($this->isStrictAuthMiddleware($mw)) {
+                return true;
+            }
+
+            // An excluded group takes out its members (MiddlewareNameResolver resolves it),
+            // and one that cannot be read may take out auth
+            $groups = $this->resolveMiddlewareGroups();
+            if (isset($groups[$mw]) && ! isset($expanded[$mw])
+                && (isset($this->unreadMiddlewareGroups[$mw]) || isset($this->unreadMiddlewareGroups['*'])
+                    || $this->excludesAuth($groups[$mw], $expanded + [$mw => true]))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a middleware class is Authenticate or AuthenticateWithBasicAuth (see
+     * {@see self::isAuthMiddlewareClass()}), or an App\ class that extends one, directly or
+     * through other App\ classes, read from the file Laravel's convention places it in, none
+     * of which declares handle(), authenticate() or unauthenticated().
+     *
+     * @param  array<string, true>  $seen  The classes already read, lowercase
+     */
+    private function extendsAuthenticateClass(string $class, array $seen = []): bool
+    {
+        if ($seen !== []) {
+            return $this->readsExtendsAuthenticate($class, $seen);
+        }
+
+        return $this->extendsAuthenticateMemo[strtolower($class)] ??= $this->readsExtendsAuthenticate($class, []);
+    }
+
+    /**
+     * Read what {@see self::extendsAuthenticateClass()} returns.
+     *
+     * @param  array<string, true>  $seen
+     */
+    private function readsExtendsAuthenticate(string $class, array $seen): bool
+    {
+        $class = ltrim(explode(':', $class, 2)[0], '\\');
+        if ($class === '' || isset($seen[strtolower($class)])) {
+            return false;
+        }
+        if ($this->isAuthMiddlewareClass($class)) {
+            return true;
+        }
+
+        // A class that declares how it authenticates, such as an unauthenticated() that lets
+        // guests through, may not authenticate; one read nowhere is not known to
+        $declaration = $this->appClass($class);
+        if ($declaration === null) {
+            return false;
+        }
+        foreach ($declaration[0]->getMethods() as $method) {
+            if (in_array($method->name->toLowerString(), ['handle', 'authenticate', 'unauthenticated'], true)) {
+                return false;
+            }
+        }
+        $parent = $declaration[0]->extends !== null ? $this->resolvedName($declaration[0]->extends) : null;
+
+        return $parent !== null && $this->extendsAuthenticateClass($parent, $seen + [strtolower($class) => true]);
     }
 
     /**
@@ -2718,11 +3232,12 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
      * Looks for auth signals: bearerToken(), getPassword(), AuthenticationException,
      * AuthenticatesRequests, Illuminate\Contracts\Auth\Factory.
      *
-     * Expects a FQCN (resolved by NameResolver in the route visitor).
+     * Expects a FQCN (resolved by NameResolver in the route visitor), read without the
+     * parameters a middleware string may give it.
      */
     private function isCustomAuthMiddlewareClass(string $className): bool
     {
-        $fqcn = $className;
+        $fqcn = ltrim(explode(':', $className, 2)[0], '\\');
 
         // Check cache
         if (isset($this->resolvedAuthMiddleware[$fqcn])) {
@@ -2775,6 +3290,187 @@ class AuthenticationAnalyzer extends AbstractFileAnalyzer
             $this->extractKernelAliasMap($this->buildPath('app/Http/Kernel.php')),
             $this->extractBootstrapAliasMap($this->buildPath('bootstrap/app.php')),
         );
+    }
+
+    /**
+     * Resolve the app's middleware group => members map, memoized: the Kernel's
+     * $middlewareGroups, then what bootstrap/app.php's configurator calls make of them, as
+     * Middleware::getMiddlewareGroups() applies them: group() sets a group,
+     * removeFromGroup() takes members out of what group() set, and prependToGroup() and
+     * appendToGroup() add members after any removal.
+     *
+     * @return array<string, list<string>>
+     */
+    private function resolveMiddlewareGroups(): array
+    {
+        if ($this->middlewareGroupMap !== null) {
+            return $this->middlewareGroupMap;
+        }
+
+        $groups = $this->extractKernelGroupMap($this->buildPath('app/Http/Kernel.php'));
+
+        $file = $this->buildPath('bootstrap/app.php');
+        $ast = is_file($file) ? $this->parser->parseFile($file) : [];
+        $removed = [];
+        $added = [];
+        $unread = [];
+        foreach ($this->middlewareConfiguratorCalls($ast === [] ? [] : $this->resolveNamesForMatching($ast)) as $call) {
+            $method = $call->name instanceof Node\Identifier ? $call->name->toLowerString() : '';
+            $group = $this->callArgument($call, 0, 'group');
+            $members = $this->callArgument($call, 1, 'middleware');
+
+            // A replacement, or a removal that cannot be read, may take auth out: the group
+            // it changes, or any group when that cannot be read, is not read at all
+            if ($method === 'replaceingroup' || ($method === 'removefromgroup' && ($members === null || ! $this->middlewareNamesReadable($members)))) {
+                $unread[$group instanceof Node\Scalar\String_ ? $group->value : '*'] = true;
+
+                continue;
+            }
+
+            if (! in_array($method, ['group', 'removefromgroup', 'prependtogroup', 'appendtogroup'], true)
+                || ! $group instanceof Node\Scalar\String_ || $members === null) {
+                continue;
+            }
+
+            $names = $this->middlewareNames($members);
+            match ($method) {
+                'group' => $groups[$group->value] = $names,
+                'removefromgroup' => $removed[$group->value] = [...$removed[$group->value] ?? [], ...$names],
+                default => $added[$group->value] = [...$added[$group->value] ?? [], ...$names],
+            };
+        }
+
+        foreach ($removed as $group => $names) {
+            $groups[$group] = array_values(array_diff($groups[$group] ?? [], $names));
+        }
+        foreach ($added as $group => $names) {
+            $groups[$group] = [...$groups[$group] ?? [], ...$names];
+        }
+        foreach (isset($unread['*']) ? $groups : $unread as $group => $_) {
+            $groups[$group] = [];
+        }
+        $this->unreadMiddlewareGroups = $unread;
+
+        return $this->middlewareGroupMap = $groups;
+    }
+
+    /**
+     * The calls made on the Middleware configurator withMiddleware() hands its callback: the
+     * calls in the callback whose chain starts at the callback's first parameter, so a
+     * ->group(...) on another variable, such as a router in a withRouting() callback, is
+     * left out.
+     *
+     * @param  array<Node>  $ast  bootstrap/app.php's tree
+     * @return list<Node\Expr\MethodCall>
+     */
+    private function middlewareConfiguratorCalls(array $ast): array
+    {
+        $calls = [];
+        foreach ($this->parser->findNodes($ast, Node\Expr\MethodCall::class) as $with) {
+            if (! $with instanceof Node\Expr\MethodCall || ! $with->name instanceof Node\Identifier || $with->name->toLowerString() !== 'withmiddleware') {
+                continue;
+            }
+
+            $callback = $this->callArgument($with, 0, 'callback');
+            $param = $callback instanceof Node\Expr\Closure || $callback instanceof Node\Expr\ArrowFunction ? ($callback->params[0]->var ?? null) : null;
+            if (! $param instanceof Node\Expr\Variable || ! is_string($param->name)) {
+                continue;
+            }
+
+            $body = $callback instanceof Node\Expr\ArrowFunction ? [$callback->expr] : ($callback instanceof Node\Expr\Closure ? $callback->stmts : []);
+            foreach ($this->configuratorCalls($this->parser, $body) as $call) {
+                $root = $call->var;
+                while ($root instanceof Node\Expr\MethodCall) {
+                    $root = $root->var;
+                }
+                if ($root instanceof Node\Expr\Variable && $root->name === $param->name) {
+                    $calls[] = $call;
+                }
+            }
+        }
+
+        return $calls;
+    }
+
+    /**
+     * Extract the group map from app/Http/Kernel.php's $middlewareGroups property.
+     *
+     * @return array<string, list<string>>
+     */
+    private function extractKernelGroupMap(string $file): array
+    {
+        $ast = is_file($file) ? $this->parser->parseFile($file) : [];
+        if ($ast === []) {
+            return [];
+        }
+
+        $groups = [];
+        foreach ($this->parser->findNodes($this->resolveNamesForMatching($ast), Node\Stmt\Property::class) as $property) {
+            foreach ($property instanceof Node\Stmt\Property ? $property->props : [] as $prop) {
+                if ($prop->name->toString() !== 'middlewareGroups' || ! $prop->default instanceof Node\Expr\Array_) {
+                    continue;
+                }
+
+                foreach ($prop->default->items as $item) {
+                    if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                        $groups[$item->key->value] = $this->middlewareNames($item->value);
+                    }
+                }
+            }
+        }
+
+        return $groups;
+    }
+
+    /**
+     * Whether {@see self::middlewareNames()} reads every middleware a value names: a string,
+     * a ::class constant, or a list of those.
+     */
+    private function middlewareNamesReadable(Node\Expr $value): bool
+    {
+        if ($value instanceof Node\Expr\Array_) {
+            foreach ($value->items as $item) {
+                if (! $item instanceof Node\Expr\ArrayItem || $item->unpack || ! $this->middlewareNamesReadable($item->value)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        return $value instanceof Node\Scalar\String_
+            || ($value instanceof Node\Expr\ClassConstFetch && $value->class instanceof Node\Name);
+    }
+
+    /**
+     * The middleware a value names, one or a list: each string as written and each ::class
+     * constant as its resolved name. Any other entry names nothing.
+     *
+     * @return list<string>
+     */
+    private function middlewareNames(Node\Expr $value): array
+    {
+        if ($value instanceof Node\Expr\Array_) {
+            $names = [];
+            foreach ($value->items as $item) {
+                if ($item instanceof Node\Expr\ArrayItem) {
+                    $names = [...$names, ...$this->middlewareNames($item->value)];
+                }
+            }
+
+            return $names;
+        }
+
+        if ($value instanceof Node\Scalar\String_) {
+            return [$value->value];
+        }
+
+        if ($value instanceof Node\Expr\ClassConstFetch && $value->class instanceof Node\Name
+            && $value->name instanceof Node\Identifier && $value->name->toLowerString() === 'class') {
+            return [$this->resolvedName($value->class)];
+        }
+
+        return [];
     }
 
     /**
@@ -2947,12 +3643,21 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     private array $prefixStack = [];
 
     /**
+     * Controller stack — one entry per open group, the controller class it names through
+     * ->controller() or a 'controller' attribute, or null when it names none. Kept in lockstep
+     * with $middlewareStack.
+     *
+     * @var list<string|null>
+     */
+    private array $controllerStack = [];
+
+    /**
      * @var list<array{uri: string, match_uris: list<list<string>>, http_methods: list<string>, controller: string|null, action: string|null, is_closure: bool, middleware: list<string>, direct_remove: list<string>, removed: list<string>, line: int, every_url: bool}>
      */
     private array $collectedRoutes = [];
 
     /**
-     * @var list<array{middleware: list<string>, effective_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
+     * @var list<array{middleware: list<string>, effective_middleware: list<string>, removed: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
      */
     private array $collectedGroups = [];
 
@@ -3023,7 +3728,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * @return list<array{middleware: list<string>, effective_middleware: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
+     * @return list<array{middleware: list<string>, effective_middleware: list<string>, removed: list<string>, line: int, end_line: int, has_guest: bool, is_static_group: bool}>
      */
     public function getCollectedGroups(): array
     {
@@ -3054,13 +3759,15 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             $own = $this->extractGroupMiddleware($node);
             $this->middlewareStack[] = $own;
             $this->prefixStack[] = $this->extractGroupPrefix($node);
+            $this->controllerStack[] = $this->extractGroupController($node);
 
             $this->collectedGroups[] = [
                 'middleware' => $own['add'],
                 'effective_middleware' => $this->computeStackMiddleware(),
+                'removed' => $this->stackRemovals(),
                 'line' => $node->getStartLine(),
                 'end_line' => $node->getEndLine(),
-                'has_guest' => in_array('guest', $own['add'], true),
+                'has_guest' => self::hasGuestMiddleware($own['add']),
                 'is_static_group' => $node instanceof Node\Expr\StaticCall,
             ];
         }
@@ -3073,6 +3780,7 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         if ($this->isGroupNode($node)) {
             array_pop($this->middlewareStack);
             array_pop($this->prefixStack);
+            array_pop($this->controllerStack);
         }
 
         if ($node instanceof Node\FunctionLike) {
@@ -3265,10 +3973,11 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      *
      * For MethodCall ->group() chains (e.g. Route::middleware('auth')->group(fn)):
      *   → walks the chain the route parser reads for the call (see
-     *     BootstrapRouteParser::groupChain()) collecting every ->withoutMiddleware() call,
-     *     as RouteRegistrar merges them, and only the last ->middleware() call, as each
-     *     middleware() call replaces the last (the first one found walking outward-in),
-     *     including Route::middleware() / Route::withoutMiddleware() as the root.
+     *     BootstrapRouteParser::groupChain()) collecting the first argument of every
+     *     ->withoutMiddleware() call, as RouteRegistrar merges them, and only the last
+     *     ->middleware() call, as each middleware() call replaces the last (the first
+     *     one found walking outward-in), including Route::middleware() /
+     *     Route::withoutMiddleware() as the root.
      *
      * @return array{add: list<string>, remove: list<string>}
      */
@@ -3311,7 +4020,8 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                         // RouteRegistrar's can attribute becomes can: middleware on each route
                         $can ??= $this->canMiddleware($current);
                     } elseif ($name === 'withoutmiddleware') {
-                        $remove = array_merge($remove, $this->extractMiddlewareArgs($current->args));
+                        // RouteRegistrar passes on only the first argument, a list or one middleware
+                        $remove = array_merge($remove, $this->extractMiddlewareArgs(array_slice($current->args, 0, 1)));
                     }
                 }
             }
@@ -3394,6 +4104,64 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         }
 
         return '';
+    }
+
+    /**
+     * The controller class this group node names, or null if it names none: the 'controller'
+     * key of a group's attribute array, or the last ->controller() call of a ->group() chain
+     * (the first one found walking outward-in), a ::class constant or a class name string.
+     */
+    private function extractGroupController(Node $node): ?string
+    {
+        if ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) {
+            $firstArg = $node->args[0]->value ?? null;
+            $firstArg = $firstArg !== null ? BootstrapRouteParser::heldValue($firstArg) : null;
+            if ($firstArg instanceof Node\Expr\Array_ && ($controller = $this->actionAttribute($firstArg, 'controller')) !== null) {
+                return $this->controllerName($controller);
+            }
+        }
+
+        if ($node instanceof Node\Expr\MethodCall) {
+            foreach ($this->registrarCalls($node) as $current) {
+                if ($current->name instanceof Node\Identifier && $current->name->toLowerString() === 'controller') {
+                    $arg = $current->args[0] ?? null;
+
+                    return $arg instanceof Node\Arg ? $this->controllerName($arg->value) : null;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The class a ::class constant or class name string names, without a leading backslash.
+     */
+    private function controllerName(Node\Expr $value): ?string
+    {
+        if ($value instanceof Node\Expr\ClassConstFetch) {
+            $class = $this->resolveClassFqcn($value->class);
+
+            return $class !== null ? ltrim($class, '\\') : null;
+        }
+
+        return $value instanceof Node\Scalar\String_ && $value->value !== '' ? ltrim($value->value, '\\') : null;
+    }
+
+    /**
+     * The value an attribute or action array gives under a string key, the last one when
+     * the key repeats, as PHP keeps it.
+     */
+    private function actionAttribute(Node\Expr\Array_ $array, string $key): ?Node\Expr
+    {
+        $value = null;
+        foreach ($array->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_ && $item->key->value === $key) {
+                $value = $item->value;
+            }
+        }
+
+        return $value;
     }
 
     /**
@@ -3508,12 +4276,27 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             $directPrefixes[] = $registrarPrefix;
         }
 
+        // The middleware an action array names takes the place of the registrar's, as
+        // RouteRegistrar::compileAction() merges the action over its attributes, and the
+        // groups' middleware adds to it (Router::mergeWithLastGroup())
+        $actionArray = $this->actionArray($current);
+        $actionMiddleware = $actionArray !== null ? $this->actionAttribute($actionArray, 'middleware') : null;
+        if ($actionMiddleware !== null) {
+            $registrarAdd = $this->extractMiddlewareValue($actionMiddleware);
+        }
+
+        // The middleware an action array excludes, which Router::resolveMiddleware() drops
+        // from every middleware the route gathers, read as a group's exclusions are: it takes
+        // auth away without opting the route out as public
+        $actionExcluded = $actionArray !== null ? $this->actionAttribute($actionArray, 'excluded_middleware') : null;
+        $actionRemove = $actionExcluded !== null ? $this->extractMiddlewareValue($actionExcluded) : [];
+
         [$uri, $matchUris] = $this->composeRouteUris($ownUri, $directPrefixes);
 
         // Compute effective middleware: inherited from stack → apply direct. Every exclusion,
         // the groups' and the route's own, drops the route's own middleware too
         // (Router::resolveMiddleware())
-        $removed = array_values(array_unique([...$this->stackRemovals(), ...$directRemove]));
+        $removed = array_values(array_unique([...$this->stackRemovals(), ...$directRemove, ...$actionRemove]));
         $effective = array_diff(array_unique([...$this->computeStackMiddleware(), ...$registrarAdd, ...$registrarCan, ...$directAdd]), $removed);
 
         $this->collectedRoutes[] = [
@@ -3655,8 +4438,11 @@ class RouteAuthVisitor extends NodeVisitorAbstract
      * Supports:
      *   [Controller::class, 'method']  — array tuple
      *   Controller::class              — invokable (action = '__invoke')
-     *   'Controller@method'            — legacy string
+     *   'Controller@method'            — legacy string, or Controller::class.'@method'
+     *   'method'                       — a method of the controller the enclosing groups name
      *   Closure / ArrowFunction        — closure route
+     *   ['uses' => ..., ...]           — an action array, read as the controller its 'uses'
+     *                                    key gives
      *
      * @return array{0: string|null, 1: string|null, 2: bool} [controller, action, isClosure]
      */
@@ -3667,6 +4453,17 @@ class RouteAuthVisitor extends NodeVisitorAbstract
         }
 
         $handlerArg = $call->args[1]->value ?? null;
+
+        // An action array's 'uses' handler; one whose handler is a closure, under 'uses' or
+        // listed without a key, has no controller and keeps the route message of any other
+        // array action, as the message is baseline-hashed
+        $action = $this->actionArray($call);
+        if ($action !== null) {
+            $handlerArg = $this->actionAttribute($action, 'uses');
+            if ($handlerArg instanceof Node\Expr\Closure || $handlerArg instanceof Node\Expr\ArrowFunction) {
+                return [null, null, false];
+            }
+        }
 
         // Closure or ArrowFunction
         if ($handlerArg instanceof Node\Expr\Closure
@@ -3696,6 +4493,14 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             return [$controller, '__invoke', false];
         }
 
+        // Controller::class.'@method'
+        if ($handlerArg instanceof Node\Expr\BinaryOp\Concat
+            && $handlerArg->left instanceof Node\Expr\ClassConstFetch
+            && $handlerArg->right instanceof Node\Scalar\String_
+            && str_starts_with($handlerArg->right->value, '@')) {
+            return [$this->resolveClassFqcn($handlerArg->left->class), substr($handlerArg->right->value, 1), false];
+        }
+
         // 'Controller@method' or 'Controller' (legacy string)
         if ($handlerArg instanceof Node\Scalar\String_) {
             $value = $handlerArg->value;
@@ -3705,10 +4510,55 @@ class RouteAuthVisitor extends NodeVisitorAbstract
                 return [$class, $method, false];
             }
 
+            // A bare method of the controller the enclosing groups name, which
+            // Router::prependGroupController() puts before it; a class name stays one, and
+            // so does a resource's controller, which ResourceRegistrar registers itself
+            $groupController = $this->groupController();
+            if ($groupController !== null && ! str_contains($value, '\\')
+                && $call->name instanceof Node\Identifier && ! in_array($call->name->toLowerString(), ['resource', 'apiresource'], true)) {
+                return [$groupController, $value, false];
+            }
+
             return [$value, '__invoke', false];
         }
 
         return [null, null, false];
+    }
+
+    /**
+     * The action array a route verb call is given in place of a handler: an array, or a
+     * variable holding one, with a string key, such as 'uses' or 'middleware'.
+     */
+    private function actionArray(Node\Expr\MethodCall|Node\Expr\StaticCall $call): ?Node\Expr\Array_
+    {
+        $value = $call->args[1]->value ?? null;
+        $value = $value instanceof Node\Expr ? BootstrapRouteParser::heldValue($value) : null;
+        if (! $value instanceof Node\Expr\Array_) {
+            return null;
+        }
+
+        foreach ($value->items as $item) {
+            if ($item instanceof Node\Expr\ArrayItem && $item->key instanceof Node\Scalar\String_) {
+                return $value;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * The controller the innermost enclosing group naming one names (RouteGroup::merge()
+     * keeps an inner group's controller over an outer one's).
+     */
+    private function groupController(): ?string
+    {
+        foreach (array_reverse($this->controllerStack) as $controller) {
+            if ($controller !== null) {
+                return $controller;
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -3797,7 +4647,52 @@ class RouteAuthVisitor extends NodeVisitorAbstract
             }
         }
 
+        // SomeClass::class.':guard', the class with its parameters
+        if ($value instanceof Node\Expr\BinaryOp\Concat
+            && $value->left instanceof Node\Expr\ClassConstFetch
+            && $value->right instanceof Node\Scalar\String_
+            && str_starts_with($value->right->value, ':')) {
+            $fqcn = $this->resolveClassFqcn($value->left->class);
+
+            return $fqcn !== null ? [$fqcn.$value->right->value] : [];
+        }
+
+        // SomeClass::using('guard'), which middleware such as Authenticate and
+        // ThrottleRequests define to give the class name with its parameters
+        if ($value instanceof Node\Expr\StaticCall
+            && $value->name instanceof Node\Identifier
+            && $value->name->toLowerString() === 'using'
+            && ($fqcn = $this->resolveClassFqcn($value->class)) !== null) {
+            $parameters = [];
+            foreach ($value->args as $arg) {
+                if ($arg instanceof Node\Arg && $arg->value instanceof Node\Scalar\String_) {
+                    $parameters[] = $arg->value->value;
+                }
+            }
+
+            return [$fqcn.':'.implode(',', $parameters)];
+        }
+
         return [];
+    }
+
+    /**
+     * Whether a middleware list carries the guest middleware, the 'guest' alias with or
+     * without a guard.
+     *
+     * @param  list<string>  $middleware
+     *
+     * @internal An implementation detail of authentication-authorization, outside this package's backward-compatibility promise.
+     */
+    public static function hasGuestMiddleware(array $middleware): bool
+    {
+        foreach ($middleware as $mw) {
+            if ($mw === 'guest' || str_starts_with($mw, 'guest:')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

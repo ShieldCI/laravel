@@ -6962,6 +6962,1116 @@ PHP;
         $this->assertHasIssueContaining('Sensitive method AccountController::store() without authentication check', $result);
     }
 
+    // ==========================================
+    // Route middleware reading (#591, #606, #607, #610, #611, #612, #623)
+    // ==========================================
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function authenticateClassMiddlewareProvider(): array
+    {
+        return [
+            'imported class' => ["use Illuminate\\Auth\\Middleware\\Authenticate;\n\nRoute::middleware(Authenticate::class)->group(function () {\n    Route::post('/ledgers', fn () => 1);\n});"],
+            'imported class with a guard' => ["use Illuminate\\Auth\\Middleware\\Authenticate;\n\nRoute::middleware(Authenticate::class.':staff')->group(function () {\n    Route::post('/ledgers', fn () => 1);\n});"],
+            'class imported under an alias' => ["use Illuminate\\Auth\\Middleware\\Authenticate as SignedIn;\n\nRoute::post('/ledgers', fn () => 1)->middleware(SignedIn::class);"],
+            'fully qualified class' => ["Route::post('/ledgers', fn () => 1)->middleware(\\Illuminate\\Auth\\Middleware\\Authenticate::class);"],
+            'basic auth class' => ["use Illuminate\\Auth\\Middleware\\AuthenticateWithBasicAuth;\n\nRoute::post('/ledgers', fn () => 1)->middleware([AuthenticateWithBasicAuth::class]);"],
+            'class string with a leading backslash and a guard' => ["Route::post('/ledgers', fn () => 1)->middleware('\\Illuminate\\Auth\\Middleware\\Authenticate:staff');"],
+            'class string in another case' => ["Route::post('/ledgers', fn () => 1)->middleware('illuminate\\auth\\middleware\\AUTHENTICATE');"],
+            'using() with a guard' => ["use Illuminate\\Auth\\Middleware\\Authenticate;\n\nRoute::post('/ledgers', fn () => 1)->middleware(Authenticate::using('staff'));"],
+        ];
+    }
+
+    /**
+     * @dataProvider authenticateClassMiddlewareProvider
+     */
+    #[DataProvider('authenticateClassMiddlewareProvider')]
+    public function test_counts_the_authenticate_middleware_class_as_authentication(string $routes): void
+    {
+        $this->assertPassed($this->analyzeWebRoutes($routes));
+    }
+
+    public function test_still_reports_a_route_behind_another_middleware_class(): void
+    {
+        $result = $this->analyzeWebRoutes("use Illuminate\\Session\\Middleware\\AuthenticateSession;\n\nRoute::post('/ledgers', fn () => 1)->middleware(AuthenticateSession::class);");
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_counts_an_app_middleware_extending_authenticate_as_authentication(): void
+    {
+        $middleware = <<<'PHP'
+<?php
+
+namespace App\Http\Middleware;
+
+use Illuminate\Auth\Middleware\Authenticate as Middleware;
+
+class Authenticate extends Middleware
+{
+    protected function redirectTo($request): ?string
+    {
+        return '/sign-in';
+    }
+}
+PHP;
+
+        $result = $this->analyzeFiles([
+            'app/Http/Middleware/Authenticate.php' => $middleware,
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Middleware\\Authenticate;\n\nRoute::post('/ledgers', fn () => 1)->middleware(Authenticate::class);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_without_middleware_on_the_authenticate_class_does_not_remove_the_auth_alias(): void
+    {
+        // Removal matching stays exact: the class does not take out the 'auth' alias
+        $result = $this->analyzeWebRoutes(<<<'PHP'
+use Illuminate\Auth\Middleware\Authenticate;
+
+Route::middleware('auth')->group(function () {
+    Route::post('/ledgers', fn () => 1)->withoutMiddleware(Authenticate::class);
+});
+PHP);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function actionArrayMiddlewareProvider(): array
+    {
+        return [
+            'string middleware and a uses string' => ["Route::post('/vouchers', ['middleware' => 'auth', 'uses' => 'App\\Http\\Controllers\\VoucherController@store']);"],
+            'middleware list' => ["Route::post('/vouchers', ['middleware' => ['web', 'auth:staff'], 'uses' => 'App\\Http\\Controllers\\VoucherController@store']);"],
+            'uses tuple-free class string' => ["use App\\Http\\Controllers\\VoucherController;\n\nRoute::post('/vouchers', ['uses' => VoucherController::class.'@store', 'middleware' => 'auth']);"],
+            'in a group without auth' => ["Route::middleware('web')->group(function () {\n    Route::post('/vouchers', ['middleware' => 'auth', 'uses' => 'App\\Http\\Controllers\\VoucherController@store']);\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider actionArrayMiddlewareProvider
+     */
+    #[DataProvider('actionArrayMiddlewareProvider')]
+    public function test_reads_the_middleware_of_a_route_action_array(string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+            'app/Http/Controllers/VoucherController.php' => $this->plainController('VoucherController', ['store']),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reads_the_middleware_of_a_closure_action_array(): void
+    {
+        $this->assertPassed($this->analyzeWebRoutes(<<<'PHP'
+Route::post('/vouchers', ['middleware' => 'auth', fn () => 1]);
+Route::put('/vouchers/{voucher}', ['middleware' => 'auth', 'uses' => function () {
+    return 1;
+}]);
+PHP));
+    }
+
+    public function test_still_reports_an_action_array_route_without_auth(): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/vouchers', ['middleware' => 'web', 'uses' => 'App\\Http\\Controllers\\VoucherController@store']);\n",
+            'app/Http/Controllers/VoucherController.php' => $this->plainController('VoucherController', ['store']),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('Sensitive method VoucherController::store() without authentication check', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function groupWithoutMiddlewareFirstArgumentProvider(): array
+    {
+        return [
+            'on the registrar of the group' => ["Route::middleware('auth')->withoutMiddleware('throttle', 'auth')->group(function () {\n    Route::post('/ledgers', fn () => 1);\n});"],
+            'on a nested group' => ["Route::middleware('auth')->group(function () {\n    Route::withoutMiddleware('throttle', 'auth')->group(function () {\n        Route::post('/ledgers', fn () => 1);\n    });\n});"],
+            'list first' => ["Route::middleware('auth')->group(function () {\n    Route::withoutMiddleware(['throttle'], 'auth')->group(function () {\n        Route::post('/ledgers', fn () => 1);\n    });\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider groupWithoutMiddlewareFirstArgumentProvider
+     */
+    #[DataProvider('groupWithoutMiddlewareFirstArgumentProvider')]
+    public function test_group_without_middleware_reads_only_its_first_argument(string $routes): void
+    {
+        $this->assertPassed($this->analyzeWebRoutes($routes));
+    }
+
+    public function test_group_without_middleware_still_removes_auth_listed_first(): void
+    {
+        $result = $this->analyzeWebRoutes(<<<'PHP'
+Route::middleware('auth')->group(function () {
+    Route::withoutMiddleware(['throttle', 'auth'], 'verified')->group(function () {
+        Route::post('/ledgers', fn () => 1);
+    });
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_route_without_middleware_still_reads_every_argument(): void
+    {
+        // The route-level reading is unchanged here: a later argument still opts the route out
+        $this->assertPassed($this->analyzeWebRoutes("Route::post('/ledgers', fn () => 1)->withoutMiddleware('throttle', 'auth');"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function hasMiddlewareListProvider(): array
+    {
+        return [
+            'plain string and a scoped entry' => ["['auth', new Middleware('verified', only: ['store'])]"],
+            'scoped auth entry' => ["[new Middleware('auth', only: ['store', 'create'])]"],
+            'positional only' => ["[new Middleware('auth:staff', ['store', 'create'])]"],
+            'except a reader' => ["[new Middleware(['web', 'auth'], except: ['index'])]"],
+            'positional except' => ["[new Middleware('auth', null, ['index'])]"],
+            'chained only' => ["[(new Middleware('auth'))->only(['store', 'create'])]"],
+            'fully qualified entry' => ["[new \\Illuminate\\Routing\\Controllers\\Middleware('auth')]"],
+            'authenticate class' => ['[new Middleware(Authenticate::class)]'],
+            'two auth entries' => ["[new Middleware('auth', only: ['store']), new Middleware('auth', only: ['create'])]"],
+        ];
+    }
+
+    /**
+     * @dataProvider hasMiddlewareListProvider
+     */
+    #[DataProvider('hasMiddlewareListProvider')]
+    public function test_reads_the_middleware_list_of_a_has_middleware_controller(string $list): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/MemoController.php' => $this->hasMiddlewareController($list),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function hasMiddlewareListMissingStoreProvider(): array
+    {
+        return [
+            'only another action' => ["[new Middleware('auth', only: ['create'])]"],
+            'except the action' => ["[new Middleware('auth', except: ['store'])]"],
+            'no auth' => ["['verified', new Middleware('throttle:6,1')]"],
+        ];
+    }
+
+    /**
+     * @dataProvider hasMiddlewareListMissingStoreProvider
+     */
+    #[DataProvider('hasMiddlewareListMissingStoreProvider')]
+    public function test_still_reports_an_action_a_has_middleware_list_leaves_out(string $list): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/MemoController.php' => $this->hasMiddlewareController($list),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Sensitive method MemoController::store() without authentication check', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function middlewareGroupWithAuthProvider(): array
+    {
+        $bootstrap = static fn (string $calls): string => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        {$calls}\n    })\n    ->create();\n";
+
+        return [
+            'bootstrap group' => [['bootstrap/app.php' => $bootstrap("\$middleware->group('crew', ['web', 'auth']);")]],
+            'bootstrap appendToGroup' => [['bootstrap/app.php' => $bootstrap("\$middleware->group('crew', ['web'])->appendToGroup('crew', 'auth:staff');")]],
+            'bootstrap prependToGroup with the class' => [['bootstrap/app.php' => $bootstrap("\$middleware->prependToGroup('crew', [\\Illuminate\\Auth\\Middleware\\Authenticate::class]);")]],
+            'bootstrap nested group' => [['bootstrap/app.php' => $bootstrap("\$middleware->group('crew', ['web', 'members']);\n        \$middleware->group('members', ['auth']);")]],
+            'bootstrap group appended after a removal' => [['bootstrap/app.php' => $bootstrap("\$middleware->group('crew', ['web', 'auth']);\n        \$middleware->removeFromGroup('crew', 'auth');\n        \$middleware->appendToGroup('crew', 'auth');")]],
+            'kernel group' => [['app/Http/Kernel.php' => "<?php\n\nnamespace App\\Http;\n\nuse Illuminate\\Foundation\\Http\\Kernel as HttpKernel;\n\nclass Kernel extends HttpKernel\n{\n    protected \$middlewareGroups = [\n        'web' => [],\n        'crew' => ['web', 'auth'],\n    ];\n}\n"]],
+        ];
+    }
+
+    /**
+     * @dataProvider middlewareGroupWithAuthProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('middlewareGroupWithAuthProvider')]
+    public function test_reads_auth_inside_a_custom_middleware_group(array $files): void
+    {
+        $result = $this->analyzeFiles([
+            ...$files,
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware('crew')->group(function () {\n    Route::post('/rosters', fn () => 1);\n});\nRoute::group(['middleware' => ['crew']], function () {\n    Route::put('/rosters/{roster}', fn () => 1);\n});\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function middlewareGroupWithoutAuthProvider(): array
+    {
+        return [
+            'group without auth' => ["\$middleware->group('crew', ['web', 'verified']);", "Route::middleware('crew')->post('/rosters', fn () => 1);"],
+            'auth removed from the group' => ["\$middleware->group('crew', ['web', 'auth']);\n        \$middleware->removeFromGroup('crew', 'auth');", "Route::middleware('crew')->post('/rosters', fn () => 1);"],
+            'groups naming each other' => ["\$middleware->group('crew', ['members']);\n        \$middleware->group('members', ['crew']);", "Route::middleware('crew')->post('/rosters', fn () => 1);"],
+            'group member excluded by the group' => ["\$middleware->group('crew', ['web', 'auth']);", "Route::middleware('crew')->withoutMiddleware('auth')->group(function () {\n    Route::post('/rosters', fn () => 1);\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider middlewareGroupWithoutAuthProvider
+     */
+    #[DataProvider('middlewareGroupWithoutAuthProvider')]
+    public function test_still_reports_a_custom_middleware_group_that_runs_no_auth(string $calls, string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        {$calls}\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function guestWithGuardProvider(): array
+    {
+        return [
+            'route middleware' => ["Route::post('/staff/sign-in', fn () => 1)->middleware('guest:staff');"],
+            'group attribute' => ["Route::group(['middleware' => 'guest:staff'], function () {\n    Route::post('/staff/sign-in', fn () => 1);\n});"],
+            'registrar group' => ["Route::middleware(['web', 'guest:staff'])->group(function () {\n    Route::post('/staff/sign-in', fn () => 1);\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider guestWithGuardProvider
+     */
+    #[DataProvider('guestWithGuardProvider')]
+    public function test_treats_guest_with_a_guard_as_guest(string $routes): void
+    {
+        $this->assertPassed($this->analyzeWebRoutes($routes));
+    }
+
+    public function test_controller_method_behind_guest_with_a_guard_is_not_flagged(): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\StaffSessionController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/staff/sign-in', [StaffSessionController::class, 'store'])->middleware('guest:staff');\n",
+            'app/Http/Controllers/StaffSessionController.php' => $this->plainController('StaffSessionController', ['store']),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_does_not_treat_a_guest_prefixed_alias_as_guest(): void
+    {
+        $result = $this->analyzeWebRoutes(<<<'PHP'
+Route::post('/staff/sign-in', fn () => 1)->middleware('guestbook');
+Route::group(['middleware' => 'guestbook'], function () {
+    Route::post('/staff/sign-up', fn () => 1);
+});
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+        $this->assertHasIssueContaining('Route group without authentication middleware', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function controllerGroupProvider(): array
+    {
+        return [
+            'registrar controller' => ["Route::controller(LedgerController::class)->middleware('auth')->group(function () {\n    Route::post('/ledgers', 'store');\n});"],
+            'controller after middleware' => ["Route::middleware('auth')->controller(LedgerController::class)->group(function () {\n    Route::post('/ledgers', 'store');\n});"],
+            'attribute array' => ["Route::group(['controller' => LedgerController::class, 'middleware' => 'auth'], function () {\n    Route::post('/ledgers', 'store');\n});"],
+            'outer auth group' => ["Route::middleware('auth')->group(function () {\n    Route::controller(LedgerController::class)->group(function () {\n        Route::post('/ledgers', 'store');\n    });\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider controllerGroupProvider
+     */
+    #[DataProvider('controllerGroupProvider')]
+    public function test_resolves_a_bare_method_against_the_group_controller(string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\LedgerController;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+            'app/Http/Controllers/LedgerController.php' => $this->plainController('LedgerController', ['store']),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_inner_group_controller_overrides_the_outer_one(): void
+    {
+        $routes = <<<'PHP'
+<?php
+
+use App\Http\Controllers\JournalController;
+use App\Http\Controllers\LedgerController;
+use Illuminate\Support\Facades\Route;
+
+Route::controller(JournalController::class)->middleware('auth')->group(function () {
+    Route::controller(LedgerController::class)->group(function () {
+        Route::post('/ledgers', 'store');
+    });
+});
+PHP;
+
+        $result = $this->analyzeFiles([
+            'routes/web.php' => $routes,
+            'app/Http/Controllers/LedgerController.php' => $this->plainController('LedgerController', ['store']),
+            'app/Http/Controllers/JournalController.php' => $this->plainController('JournalController', ['store']),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('Sensitive method JournalController::store() without authentication check', $result);
+    }
+
+    public function test_still_reports_a_group_controller_method_without_auth(): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\LedgerController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::controller(LedgerController::class)->middleware('web')->group(function () {\n    Route::post('/ledgers', 'store');\n});\n",
+            'app/Http/Controllers/LedgerController.php' => $this->plainController('LedgerController', ['store']),
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('Sensitive method LedgerController::store() without authentication check', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function constructorAuthRouteProvider(): array
+    {
+        return [
+            'group controller' => ["Route::controller(ProfileController::class)->group(function () {\n    Route::get('/profile', 'show');\n});"],
+            'uses string' => ["Route::get('/profile', ['uses' => 'App\\Http\\Controllers\\ProfileController@show']);"],
+            'class and method string' => ["Route::get('/profile', ProfileController::class.'@show');"],
+            'attribute array group' => ["Route::group(['controller' => ProfileController::class, 'middleware' => 'web'], function () {\n    Route::get('/profile', 'show');\n});"],
+            'tuple route' => ["Route::get('/profile', [ProfileController::class, 'show']);"],
+            'guest with a guard' => ["Route::post('/profile', [ProfileController::class, 'store'])->middleware('guest:staff');"],
+        ];
+    }
+
+    /**
+     * @dataProvider constructorAuthRouteProvider
+     */
+    #[DataProvider('constructorAuthRouteProvider')]
+    public function test_auth_user_reads_the_controller_auth_of_a_method_an_open_route_reaches(string $routes): void
+    {
+        $controller = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Support\Facades\Auth;
+
+class ProfileController extends Controller
+{
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
+    public function show()
+    {
+        return Auth::user()->id;
+    }
+
+    public function store()
+    {
+        return Auth::user()->id;
+    }
+}
+PHP;
+
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\ProfileController;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+            'app/Http/Controllers/ProfileController.php' => $controller,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function controllerAuthCoveredRouteProvider(): array
+    {
+        return [
+            'has middleware list' => ["    public static function middleware(): array\n    {\n        return ['auth', new Middleware('verified', only: ['store'])];\n    }\n"],
+            'constructor auth' => ["    public function __construct()\n    {\n        \$this->middleware('auth')->only(['create', 'store']);\n    }\n"],
+        ];
+    }
+
+    /**
+     * @dataProvider controllerAuthCoveredRouteProvider
+     */
+    #[DataProvider('controllerAuthCoveredRouteProvider')]
+    public function test_route_reads_the_controller_auth_of_the_method_it_reaches(string $members): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/JotController.php' => $this->jotController($members),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\JotController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/jots/create', [JotController::class, 'create']);\nRoute::post('/jots', [JotController::class, 'store']);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_route_still_reports_a_method_the_controller_auth_leaves_out(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/JotController.php' => $this->jotController("    public static function middleware(): array\n    {\n        return [new Middleware('auth', only: ['create'])];\n    }\n"),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\JotController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/jots', [JotController::class, 'store']);\nRoute::post('/jots/draft', fn () => 1);\n",
+        ]);
+
+        $this->assertSame([
+            'POST route without authentication middleware',
+            'POST closure route without authentication middleware',
+            'Sensitive method JotController::store() without authentication check',
+        ], array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    public function test_route_still_reports_controller_auth_the_route_removes(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/JotController.php' => $this->jotController("    public static function middleware(): array\n    {\n        return ['auth'];\n    }\n"),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\JotController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::withoutMiddleware('auth')->group(function () {\n    Route::post('/jots', [JotController::class, 'store']);\n});\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_has_middleware_applies_both_only_and_except(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/MemoController.php' => $this->hasMiddlewareController("[new Middleware('auth', only: ['store', 'create'], except: ['store'])]"),
+        ]);
+
+        $this->assertSame(
+            ['Sensitive method MemoController::store() without authentication check'],
+            array_map(fn ($issue) => $issue->message, $result->getIssues()),
+        );
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function newlyResolvedOpenRouteProvider(): array
+    {
+        return [
+            'uses string' => ["Route::delete('/members/{member}', ['uses' => 'App\\Http\\Controllers\\MembershipController@destroy']);"],
+            'group controller' => ["Route::controller(MembershipController::class)->group(function () {\n    Route::delete('/members/{member}', 'destroy');\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider newlyResolvedOpenRouteProvider
+     */
+    #[DataProvider('newlyResolvedOpenRouteProvider')]
+    public function test_reports_the_controller_and_form_request_of_a_newly_resolved_open_route(string $routes): void
+    {
+        $result = $this->analyzeFormRequestWithoutAuthorize($routes);
+
+        $this->assertHasIssueContaining('Sensitive method MembershipController::destroy() without authentication check', $result);
+        $this->assertHasIssueContaining('RemoveMemberRequest has no authorize() method, so every request is authorized', $result);
+    }
+
+    public function test_action_array_middleware_replaces_the_registrar_middleware(): void
+    {
+        $result = $this->analyzeWebRoutes("Route::middleware('auth')->post('/vouchers', ['middleware' => 'web', 'uses' => 'App\\Http\\Controllers\\VoucherController@store']);");
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+    }
+
+    public function test_reads_a_group_before_an_alias_of_the_same_name(): void
+    {
+        $result = $this->analyzeFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->alias(['crew' => \\App\\Http\\Middleware\\Authenticate::class]);\n        \$middleware->group('crew', ['web']);\n    })\n    ->create();\n",
+            'app/Http/Middleware/Authenticate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate as Middleware;\n\nclass Authenticate extends Middleware\n{\n}\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/rosters', fn () => 1)->middleware('crew');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_keeps_the_route_message_of_an_action_array_with_a_closure(): void
+    {
+        $result = $this->analyzeWebRoutes(<<<'PHP'
+Route::post('/drafts', ['as' => 'drafts', function () {
+    return 1;
+}]);
+Route::post('/drafts/copy', ['uses' => fn () => 1]);
+Route::post('/drafts/send', ['middleware' => 'throttle', function () {
+    return 1;
+}]);
+PHP);
+
+        $this->assertSame(
+            array_fill(0, 3, 'POST route without authentication middleware'),
+            array_map(fn ($issue) => $issue->message, $result->getIssues()),
+        );
+    }
+
+    public function test_reads_groups_only_from_the_middleware_configurator(): void
+    {
+        $result = $this->analyzeFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->alias(['token' => \\App\\Http\\Middleware\\Token::class]);\n    })\n    ->withRouting(web: __DIR__.'/../routes/web.php', then: function (\$router) {\n        \$router->group('crew', ['auth']);\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/rosters', fn () => 1)->middleware('crew');\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_bare_resource_controller_is_not_a_group_controller_method(): void
+    {
+        $result = $this->analyzeFiles([
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\LedgerController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::controller(LedgerController::class)->middleware('auth')->group(function () {\n    Route::resource('photos', 'PhotoController');\n});\n",
+            'app/Http/Controllers/LedgerController.php' => $this->plainController('LedgerController', ['store']),
+            'app/Http/Controllers/PhotoController.php' => $this->plainController('PhotoController', ['store', 'update', 'destroy']),
+        ]);
+
+        $this->assertSame(
+            ['Sensitive method LedgerController::store() without authentication check'],
+            array_map(fn ($issue) => $issue->message, $result->getIssues()),
+        );
+    }
+
+    /**
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function webGroupMemberProvider(): array
+    {
+        $member = "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Contracts\\Auth\\Factory;\n\nclass ShareViewer\n{\n    public function __construct(private Factory \$auth)\n    {\n    }\n\n    public function handle(\$request, \$next)\n    {\n        view()->share('viewer', \$this->auth->guard()->user());\n\n        return \$next(\$request);\n    }\n}\n";
+
+        return [
+            'kernel' => [[
+                'app/Http/Middleware/ShareViewer.php' => $member,
+                'app/Http/Kernel.php' => "<?php\n\nnamespace App\\Http;\n\nuse Illuminate\\Foundation\\Http\\Kernel as HttpKernel;\n\nclass Kernel extends HttpKernel\n{\n    protected \$middlewareGroups = [\n        'web' => [\\App\\Http\\Middleware\\ShareViewer::class],\n    ];\n}\n",
+            ]],
+            'bootstrap' => [[
+                'app/Http/Middleware/ShareViewer.php' => $member,
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->appendToGroup('web', \\App\\Http\\Middleware\\ShareViewer::class);\n    })\n    ->create();\n",
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider webGroupMemberProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('webGroupMemberProvider')]
+    public function test_group_member_counts_as_auth_only_by_a_strict_signal(array $files): void
+    {
+        $result = $this->analyzeFiles([
+            ...$files,
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware('web')->post('/rosters', fn () => 1);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_group_member_extending_authenticate_counts_as_auth(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Middleware/StaffGate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass StaffGate extends Authenticate\n{\n}\n",
+            'app/Http/Middleware/Authenticate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate as Middleware;\n\nclass Authenticate extends Middleware\n{\n}\n",
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->appendToGroup('crew', \\App\\Http\\Middleware\\StaffGate::class);\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware('crew')->post('/rosters', fn () => 1);\n",
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * A JotController in App\Http\Controllers implementing HasMiddleware, with $members,
+     * create() and store().
+     */
+    private function jotController(string $members): string
+    {
+        return "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse Illuminate\\Routing\\Controllers\\HasMiddleware;\nuse Illuminate\\Routing\\Controllers\\Middleware;\n\nclass JotController extends Controller implements HasMiddleware\n{\n{$members}\n    public function create()\n    {\n        return 1;\n    }\n\n    public function store()\n    {\n        return 1;\n    }\n}\n";
+    }
+
+    /**
+     * @return array<string, array{string, string, list<string>}>
+     */
+    public static function middlewareMethodWithoutHasMiddlewareProvider(): array
+    {
+        $route = 'POST route without authentication middleware';
+        $store = 'Sensitive method PadController::store() without authentication check';
+        $unsafe = 'Unsafe Auth::user() usage without null check';
+
+        return [
+            'list' => ["['auth']", "Route::post('/pads', [PadController::class, 'store']);", [$route, $store, $unsafe]],
+            'middleware definition' => ["[new Middleware('auth')]", "Route::post('/pads', [PadController::class, 'store']);", [$route, $store, $unsafe]],
+            'keyed entry' => ["['auth' => []]", "Route::post('/pads', [PadController::class, 'store']);", [$route]],
+            'list in a static group' => ["['auth']", "Route::group(['prefix' => 'n'], function () {\n    Route::post('/pads', [PadController::class, 'store']);\n});", ['Route group without authentication middleware', $route, $store, $unsafe]],
+            'keyed entry in a static group' => ["['auth' => []]", "Route::group(['prefix' => 'n'], function () {\n    Route::post('/pads', [PadController::class, 'store']);\n});", ['Route group without authentication middleware', $route]],
+            'list on an open GET' => ["['auth']", "Route::get('/pads', [PadController::class, 'index']);", [$store, $unsafe]],
+            'keyed entry on an open GET' => ["['auth' => []]", "Route::get('/pads', [PadController::class, 'index']);", [$unsafe]],
+        ];
+    }
+
+    /**
+     * @dataProvider middlewareMethodWithoutHasMiddlewareProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('middlewareMethodWithoutHasMiddlewareProvider')]
+    public function test_reads_a_middleware_list_only_from_a_has_middleware_controller(string $list, string $routes, array $expected): void
+    {
+        $members = "    public static function middleware(): array\n    {\n        return {$list};\n    }\n";
+
+        $this->assertSame($expected, $this->issueMessages($this->analyzeFiles([
+            'app/Http/Controllers/PadController.php' => $this->padController($members, false),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\PadController;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ])));
+    }
+
+    public function test_reads_a_middleware_list_of_a_controller_whose_parent_implements_has_middleware(): void
+    {
+        $this->assertSame([], $this->issueMessages($this->analyzeFiles([
+            'app/Http/Controllers/BaseController.php' => "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse Illuminate\\Routing\\Controllers\\HasMiddleware;\n\nabstract class BaseController implements HasMiddleware\n{\n}\n",
+            'app/Http/Controllers/PadController.php' => str_replace('class PadController', 'class PadController extends BaseController', $this->padController("    public static function middleware(): array\n    {\n        return ['auth'];\n    }\n", false)),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\PadController;\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/pads', [PadController::class, 'store']);\n",
+        ])));
+    }
+
+    /**
+     * @return array<string, array{string, bool, string, list<string>}>
+     */
+    public static function unreadableMethodListProvider(): array
+    {
+        $route = 'POST route without authentication middleware';
+        $store = 'Sensitive method PadController::store() without authentication check';
+        $unsafe = 'Unsafe Auth::user() usage without null check';
+        $post = "Route::post('/pads', [PadController::class, 'store']);";
+        $get = "Route::get('/pads', [PadController::class, 'index']);";
+
+        return [
+            'except a constant' => ["    private const OPEN = ['store'];\n\n    public static function middleware(): array\n    {\n        return [new Middleware('auth', except: self::OPEN)];\n    }\n", true, $post, [$route, $store, $unsafe]],
+            'chained except a variable' => ["    public static function middleware(): array\n    {\n        \$open = ['store'];\n\n        return [(new Middleware('auth'))->except(\$open)];\n    }\n", true, $post, [$route, $store, $unsafe]],
+            'constructor only a property' => ["    private array \$guarded = ['store'];\n\n    public function __construct()\n    {\n        \$this->middleware('auth')->only(\$this->guarded);\n    }\n", false, $post, [$route]],
+            'constructor only an empty list' => ["    public function __construct()\n    {\n        \$this->middleware('auth')->only([]);\n    }\n", false, $post, [$route]],
+            'constructor only a property on an open GET' => ["    private array \$guarded = ['store'];\n\n    public function __construct()\n    {\n        \$this->middleware('auth')->only(\$this->guarded);\n    }\n", false, $get, [$unsafe]],
+        ];
+    }
+
+    /**
+     * @dataProvider unreadableMethodListProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('unreadableMethodListProvider')]
+    public function test_an_unreadable_method_list_covers_no_method(string $members, bool $hasMiddleware, string $routes, array $expected): void
+    {
+        $this->assertSame($expected, $this->issueMessages($this->analyzeFiles([
+            'app/Http/Controllers/PadController.php' => $this->padController($members, $hasMiddleware),
+            'routes/web.php' => "<?php\n\nuse App\\Http\\Controllers\\PadController;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ])));
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string}>
+     */
+    public static function groupMemberExclusionProvider(): array
+    {
+        $appAuthenticate = "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate as Middleware;\n\nclass Authenticate extends Middleware\n{\n}\n";
+        $bootstrap = static fn (string $calls): string => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        {$calls}\n    })\n    ->create();\n";
+
+        return [
+            'kernel group of the app class, alias excluded by a group' => [[
+                'app/Http/Middleware/Authenticate.php' => $appAuthenticate,
+                'app/Http/Kernel.php' => "<?php\n\nnamespace App\\Http;\n\nuse Illuminate\\Foundation\\Http\\Kernel as HttpKernel;\n\nclass Kernel extends HttpKernel\n{\n    protected \$middlewareGroups = [\n        'crew' => [\\App\\Http\\Middleware\\Authenticate::class],\n    ];\n\n    protected \$middlewareAliases = [\n        'auth' => \\App\\Http\\Middleware\\Authenticate::class,\n    ];\n}\n",
+            ], "Route::middleware('crew')->group(function () {\n    Route::withoutMiddleware('auth')->group(function () {\n        Route::post('/rosters', fn () => 1);\n    });\n});"],
+            'bootstrap group of the class, alias excluded by a group' => [[
+                'bootstrap/app.php' => $bootstrap("\$middleware->group('crew', [\\Illuminate\\Auth\\Middleware\\Authenticate::class]);"),
+            ], "Route::middleware('crew')->withoutMiddleware('auth')->group(function () {\n    Route::post('/rosters', fn () => 1);\n});"],
+            'bootstrap group of the alias, class excluded by the route' => [[
+                'bootstrap/app.php' => $bootstrap("\$middleware->group('crew', ['auth']);"),
+            ], "Route::middleware('crew')->group(function () {\n    Route::post('/rosters', fn () => 1)->withoutMiddleware(\\Illuminate\\Auth\\Middleware\\Authenticate::class);\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider groupMemberExclusionProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('groupMemberExclusionProvider')]
+    public function test_group_auth_member_is_not_credited_when_the_route_excludes_auth(array $files, string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            ...$files,
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ]);
+
+        $this->assertSame(['POST closure route without authentication middleware'], $this->issueMessages($result));
+    }
+
+    public function test_reads_the_excluded_middleware_of_a_route_action_array(): void
+    {
+        $members = "    public function store()\n    {\n        return \\Illuminate\\Support\\Facades\\Auth::user()->id;\n    }\n";
+
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/PadController.php' => "<?php\n\nnamespace App\\Http\\Controllers;\n\nclass PadController\n{\n{$members}}\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware('auth')->group(function () {\n    Route::post('/pads', ['excluded_middleware' => ['auth'], 'uses' => 'App\\Http\\Controllers\\PadController@store']);\n});\n",
+        ]);
+
+        $this->assertSame([
+            'POST route without authentication middleware',
+            'Sensitive method PadController::store() without authentication check',
+            'Unsafe Auth::user() usage without null check',
+        ], $this->issueMessages($result));
+    }
+
+    /**
+     * The message of each issue a result reports, in order.
+     *
+     * @return list<string>
+     */
+    private function issueMessages(ResultInterface $result): array
+    {
+        return array_values(array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    /**
+     * A PadController in App\Http\Controllers with $members, an index() reading the user's
+     * name and an empty store(), implementing HasMiddleware when $hasMiddleware.
+     */
+    private function padController(string $members, bool $hasMiddleware): string
+    {
+        $implements = $hasMiddleware ? ' implements HasMiddleware' : '';
+
+        return "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse Illuminate\\Routing\\Controllers\\HasMiddleware;\nuse Illuminate\\Routing\\Controllers\\Middleware;\nuse Illuminate\\Support\\Facades\\Auth;\n\nclass PadController{$implements}\n{\n{$members}\n    public function index()\n    {\n        return Auth::user()->name;\n    }\n\n    public function store()\n    {\n        return 1;\n    }\n}\n";
+    }
+
+    public function test_constructor_options_only_list_does_not_credit_a_route_to_another_method(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController("    public function __construct() { \$this->middleware('auth', ['only' => ['store']]); }\n"),
+            'routes/web.php' => $this->orderRoutes("Route::put('/orders/{order}', [OrderController::class, 'update']);"),
+        ]);
+
+        $this->assertHasIssueContaining('PUT route without authentication middleware', $result);
+    }
+
+    public function test_constructor_options_except_list_does_not_cover_auth_user_on_an_open_get(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController("    public function __construct() { \$this->middleware('auth', ['except' => ['index']]); }\n"),
+            'routes/web.php' => $this->orderRoutes("Route::get('/orders', [OrderController::class, 'index']);"),
+        ]);
+
+        $this->assertHasIssueContaining('Unsafe Auth::user() usage without null check', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function authenticateClassExclusionProvider(): array
+    {
+        return [
+            'group excludes the class' => ["Route::withoutMiddleware(Authenticate::class)->group(function () {\n    Route::post('/orders', [OrderController::class, 'create']);\n});"],
+            'route excludes the class' => ["Route::post('/orders', [OrderController::class, 'create'])->withoutMiddleware(Authenticate::class);"],
+            'action array excludes the class' => ["Route::post('/orders', ['excluded_middleware' => Authenticate::class, 'uses' => 'App\\Http\\Controllers\\OrderController@create']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider authenticateClassExclusionProvider
+     */
+    #[DataProvider('authenticateClassExclusionProvider')]
+    public function test_route_excluding_the_authenticate_class_is_not_covered_by_controller_auth(string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController(
+                "    public static function middleware(): array { return ['auth']; }\n",
+                'use Illuminate\\Routing\\Controllers\\HasMiddleware;',
+                ' implements HasMiddleware',
+            ),
+            'routes/web.php' => $this->orderRoutes($routes),
+        ]);
+
+        $this->assertHasIssueContaining('POST route without authentication middleware', $result);
+        $this->assertHasIssueContaining('Sensitive method OrderController::create() without authentication check', $result);
+        $this->assertHasIssueContaining('Unsafe Auth::user() usage without null check', $result);
+    }
+
+    public function test_route_excluding_the_authenticate_class_is_not_covered_by_constructor_auth(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController("    public function __construct() { \$this->middleware('auth'); }\n"),
+            'routes/web.php' => $this->orderRoutes("Route::withoutMiddleware(Authenticate::class)->group(function () {\n    Route::post('/orders', [OrderController::class, 'create']);\n});"),
+        ]);
+
+        // The route loses its new controller credit; the constructor's master credit stays
+        $this->assertSame(['POST route without authentication middleware'], $this->issueMessages($result));
+    }
+
+    public function test_has_middleware_credit_ignores_a_group_removing_auth(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController(
+                "    public static function middleware(): array { return ['auth']; }\n",
+                'use Illuminate\\Routing\\Controllers\\HasMiddleware;',
+                ' implements HasMiddleware',
+            ),
+            'routes/web.php' => $this->orderRoutes("Route::withoutMiddleware('auth')->group(function () {\n    Route::post('/orders', [OrderController::class, 'create']);\n});"),
+        ]);
+
+        $this->assertHasIssueContaining('Sensitive method OrderController::create() without authentication check', $result);
+        $this->assertHasIssueContaining('Unsafe Auth::user() usage without null check', $result);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string}>
+     */
+    public static function authenticateClassUnderAuthExclusionProvider(): array
+    {
+        $subclass = ['app/Http/Middleware/Authenticate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate as Middleware;\n\nclass Authenticate extends Middleware\n{\n}\n"];
+
+        return [
+            'group of the class, inner group excludes the alias' => [[], "Route::middleware(Authenticate::class)->group(function () {\n    Route::withoutMiddleware('auth')->group(function () {\n        Route::post('/orders', fn () => 1);\n    });\n});"],
+            'route of the class inside a group excluding the alias' => [[], "Route::withoutMiddleware('auth')->group(function () {\n    Route::post('/orders', fn () => 1)->middleware(Authenticate::class);\n});"],
+            'app subclass inside a group excluding the alias' => [$subclass, "Route::withoutMiddleware('auth')->group(function () {\n    Route::post('/orders', fn () => 1)->middleware(\\App\\Http\\Middleware\\Authenticate::class);\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider authenticateClassUnderAuthExclusionProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('authenticateClassUnderAuthExclusionProvider')]
+    public function test_authenticate_class_is_not_credited_when_the_group_excludes_auth(array $files, string $routes): void
+    {
+        $result = $this->analyzeFiles([...$files, 'routes/web.php' => $this->orderRoutes($routes)]);
+
+        $this->assertHasIssueContaining('POST closure route without authentication middleware', $result);
+    }
+
+    public function test_keyed_middleware_method_keeps_masters_first_entry_reading(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController("    public function middleware() { return ['auth' => ['only' => ['index']], 'can:manage' => []]; }\n"),
+            'routes/web.php' => $this->orderRoutes("Route::post('/orders', [OrderController::class, 'store']);"),
+        ]);
+
+        $this->assertHasIssueContaining('Sensitive method OrderController::store() without authentication check', $result);
+    }
+
+    public function test_guest_with_a_guard_under_auth_adds_no_auth_user_issue(): void
+    {
+        $result = $this->analyzeFiles([
+            'app/Http/Controllers/OrderController.php' => $this->orderController(''),
+            'routes/web.php' => $this->orderRoutes("Route::middleware('auth')->group(function () {\n    Route::post('/admin/sign-in', [OrderController::class, 'index'])->middleware('guest:admin');\n});"),
+        ]);
+
+        // index() (line 11) is reached only by the auth route; create() (line 12) by none
+        $lines = [];
+        foreach ($result->getIssues() as $issue) {
+            if (str_contains($issue->message, 'Unsafe Auth::user()')) {
+                $lines[] = $issue->location?->line;
+            }
+        }
+        $this->assertSame([12], $lines);
+    }
+
+    /**
+     * @return array<string, array{array<string, string>, string}>
+     */
+    public static function guestPermittingSubclassProvider(): array
+    {
+        $optional = "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate;\n\nclass LenientGate extends Authenticate\n{\n    protected function unauthenticated(\$request, array \$guards)\n    {\n    }\n}\n";
+        $bootstrap = "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->alias(['auth.lenient' => \\App\\Http\\Middleware\\LenientGate::class]);\n    })\n    ->create();\n";
+        $kernel = "<?php\n\nnamespace App\\Http;\n\nuse Illuminate\\Foundation\\Http\\Kernel as HttpKernel;\n\nclass Kernel extends HttpKernel\n{\n    protected \$middlewareAliases = [\n        'auth.lenient' => \\App\\Http\\Middleware\\LenientGate::class,\n    ];\n}\n";
+
+        return [
+            'bootstrap alias' => [['app/Http/Middleware/LenientGate.php' => $optional, 'bootstrap/app.php' => $bootstrap], "->middleware('auth.lenient')"],
+            'kernel alias' => [['app/Http/Middleware/LenientGate.php' => $optional, 'app/Http/Kernel.php' => $kernel], "->middleware('auth.lenient')"],
+            'class' => [['app/Http/Middleware/LenientGate.php' => $optional], '->middleware(\\App\\Http\\Middleware\\LenientGate::class)'],
+            'override up the chain' => [[
+                'app/Http/Middleware/LenientGate.php' => $optional,
+                'app/Http/Middleware/StaffGate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass StaffGate extends LenientGate\n{\n}\n",
+            ], '->middleware(\\App\\Http\\Middleware\\StaffGate::class)'],
+            'handle override' => [[
+                'app/Http/Middleware/LenientGate.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Auth\\Middleware\\Authenticate;\n\nclass LenientGate extends Authenticate\n{\n    public function handle(\$request, \\Closure \$next, ...\$guards)\n    {\n        return \$next(\$request);\n    }\n}\n",
+            ], '->middleware(\\App\\Http\\Middleware\\LenientGate::class)'],
+        ];
+    }
+
+    /**
+     * @dataProvider guestPermittingSubclassProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('guestPermittingSubclassProvider')]
+    public function test_a_subclass_of_authenticate_overriding_how_it_authenticates_is_not_authentication(array $files, string $middleware): void
+    {
+        $result = $this->analyzeFiles([
+            ...$files,
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/comments', fn () => 1){$middleware};\n",
+        ]);
+
+        $this->assertSame(['POST closure route without authentication middleware'], $this->issueMessages($result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function excludedGroupHoldingAuthProvider(): array
+    {
+        return [
+            'route excludes the group' => ["Route::middleware('crew')->group(function () {\n    Route::post('/settings', fn () => 1)->withoutMiddleware('members');\n});"],
+            'group excludes the group' => ["Route::middleware('crew')->group(function () {\n    Route::withoutMiddleware('members')->group(function () {\n        Route::post('/settings', fn () => 1);\n    });\n});"],
+        ];
+    }
+
+    /**
+     * @dataProvider excludedGroupHoldingAuthProvider
+     */
+    #[DataProvider('excludedGroupHoldingAuthProvider')]
+    public function test_excluding_a_group_that_holds_auth_removes_the_group_auth_credit(string $routes): void
+    {
+        $result = $this->analyzeFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        \$middleware->group('crew', ['web', 'auth']);\n        \$middleware->group('members', ['outer']);\n        \$middleware->group('outer', ['auth']);\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n",
+        ]);
+
+        $this->assertSame(['POST closure route without authentication middleware'], $this->issueMessages($result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unreadableGroupChangeProvider(): array
+    {
+        return [
+            'replaceInGroup statement' => ["\$middleware->group('crew', ['web', 'auth']);\n        \$middleware->replaceInGroup('crew', 'auth', 'throttle:6,1');"],
+            'replaceInGroup chained' => ["\$middleware->group('crew', ['web', 'auth'])->replaceInGroup('crew', 'auth', 'throttle:6,1');"],
+            'removeFromGroup of a variable' => ["\$middleware->group('crew', ['web', 'auth']);\n        \$middleware->removeFromGroup('crew', \$dropped);"],
+        ];
+    }
+
+    /**
+     * @dataProvider unreadableGroupChangeProvider
+     */
+    #[DataProvider('unreadableGroupChangeProvider')]
+    public function test_a_group_changed_in_a_way_not_read_is_not_credited_with_auth(string $calls): void
+    {
+        $result = $this->analyzeFiles([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Foundation\\Configuration\\Middleware;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (Middleware \$middleware): void {\n        {$calls}\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware('crew')->group(function () {\n    Route::post('/settings', fn () => 1);\n});\n",
+        ]);
+
+        $this->assertSame(['POST closure route without authentication middleware'], $this->issueMessages($result));
+    }
+
+    /**
+     * An OrderController in App\Http\Controllers with $members after the $head imports, and
+     * index() and create() reading the user, store() and update().
+     */
+    private function orderController(string $members, string $head = '', string $implements = ''): string
+    {
+        return "<?php\n\nnamespace App\\Http\\Controllers;\n\n{$head}\nuse Illuminate\\Support\\Facades\\Auth;\n\nclass OrderController{$implements}\n{\n{$members}\n    public function index() { return Auth::user()->name; }\n    public function create() { return Auth::user()->id; }\n    public function store() { return 1; }\n    public function update() { return 1; }\n}\n";
+    }
+
+    /**
+     * routes/web.php importing OrderController, Authenticate and the Route facade, running $body.
+     */
+    private function orderRoutes(string $body): string
+    {
+        return "<?php\n\nuse App\\Http\\Controllers\\OrderController;\nuse Illuminate\\Auth\\Middleware\\Authenticate;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$body}\n";
+    }
+
+    /**
+     * Analyze a project made of $files, its app/ directory scanned.
+     *
+     * @param  array<string, string>  $files
+     */
+    private function analyzeFiles(array $files): ResultInterface
+    {
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($this->createTempDirectory($files));
+        $analyzer->setPaths(['app']);
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * A controller in App\Http\Controllers with an empty public method per name.
+     *
+     * @param  list<string>  $methods
+     */
+    private function plainController(string $class, array $methods): string
+    {
+        $body = implode("\n", array_map(static fn (string $method): string => "    public function {$method}()\n    {\n        return 1;\n    }\n", $methods));
+
+        return "<?php\n\nnamespace App\\Http\\Controllers;\n\nclass {$class}\n{\n{$body}}\n";
+    }
+
+    /**
+     * A HasMiddleware controller whose middleware() returns $list, with create() and store().
+     */
+    private function hasMiddlewareController(string $list): string
+    {
+        return <<<PHP
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Auth\Middleware\Authenticate;
+use Illuminate\Routing\Controllers\HasMiddleware;
+use Illuminate\Routing\Controllers\Middleware;
+
+class MemoController implements HasMiddleware
+{
+    public static function middleware(): array
+    {
+        return {$list};
+    }
+
+    public function create()
+    {
+        return 1;
+    }
+
+    public function store()
+    {
+        return 1;
+    }
+}
+PHP;
+    }
+
     /**
      * Analyze routes/web.php running $routes, with $publicRoutes listed as public.
      *

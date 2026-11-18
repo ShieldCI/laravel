@@ -114,12 +114,18 @@ class BootstrapRouteParser
      * {@see MiddlewareThrottleDetector::__construct()} describes. Without one, only the
      * framework's throttle classes and the 'throttle' alias Laravel registers count.
      *
+     * With $byValueCaptures, a closure importing a variable that holds a registrar by value
+     * sees the registrar the variable holds where the closure is made, when neither the
+     * closure nor the code after it can change it (see {@see self::aliasedVariables()}).
+     * Without it, the closure hands the registrar on, and the variable is read nowhere.
+     *
      * @param  (Closure(string): bool)|null  $nameThrottles
      */
     public function __construct(
         private readonly string $basePath,
         private readonly ParserInterface $parser,
         ?Closure $nameThrottles = null,
+        private readonly bool $byValueCaptures = false,
     ) {
         $this->throttles = new MiddlewareThrottleDetector($basePath, $parser, $nameThrottles);
         $this->standIns = new \WeakMap;
@@ -315,11 +321,30 @@ class BootstrapRouteParser
     }
 
     /**
+     * What one walk of a file finds (see {@see self::walkFile()}): the route files it loads,
+     * as {@see self::getExternalRouteFileLoads()} reads them, those $this->loadRoutesFrom(...)
+     * requires, each group closure with the group calls enclosing it, and the routes each
+     * group call made on the router loads, by spl_object_id() of the call.
+     *
+     * @return array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>}
+     *
+     * @internal An implementation detail of authentication-authorization, outside this package's backward-compatibility promise.
+     */
+    public function routeFileWalk(string $path): array
+    {
+        $walk = $this->walkFile($path);
+
+        return ['loads' => $walk['loads'], 'routesFrom' => $walk['routesFrom'], 'closures' => $walk['closures'], 'groups' => $walk['groups']];
+    }
+
+    /**
      * The PHP files under a directory of the base path, at any depth.
      *
      * @return list<string>
+     *
+     * @internal An implementation detail of authentication-authorization and of this class itself, outside this package's backward-compatibility promise.
      */
-    private function phpFilesUnder(string $relativeDir): array
+    public function phpFilesUnder(string $relativeDir): array
     {
         if (! is_dir($this->basePath.'/'.$relativeDir)) {
             return [];
@@ -1503,7 +1528,7 @@ class BootstrapRouteParser
             }
         } while (array_intersect_key($routers, $untracked) !== []);
         if ($routers !== []) {
-            $untracked += $this->aliasedVariables($statements, $routers, $globals && $fileScope);
+            $untracked += $this->aliasedVariables($statements, $routers, $globals && $fileScope, $candidates);
         }
 
         return ['bindings' => array_diff($candidates, array_keys($untracked)), 'untracked' => $untracked, 'disabled' => false];
@@ -1545,14 +1570,28 @@ class BootstrapRouteParser
      * read any of them, and so may \$GLOBALS or a global statement anywhere in a file whose
      * own scope this is, when $globals says its variables are globals.
      *
+     * With byValueCaptures, a closure's use ($a) hands $a on only when the closure may
+     * change the registrar (see {@see self::closureOnlyRegistersOn()}), or the scope writes
+     * $a in or after the statement making the closure, by one of $candidates or a
+     * $a->middleware(...); update, as the closure holds the same object and runs later.
+     *
      * @param  array<Node>  $statements
      * @param  array<string, true>  $names
+     * @param  array<int, string>  $candidates  The scope's direct writes, by spl_object_id() of their statement (see {@see self::pathBindings()})
      * @return array<string, true>
      */
-    private function aliasedVariables(array $statements, array $names, bool $globals = false): array
+    private function aliasedVariables(array $statements, array $names, bool $globals = false, array $candidates = []): array
     {
         if ($globals && $this->namesGlobals($statements)) {
             return $names;
+        }
+
+        // The index of the last statement writing each variable directly
+        $lastWrite = [];
+        foreach ($statements as $index => $statement) {
+            if (isset($candidates[spl_object_id($statement)])) {
+                $lastWrite[$candidates[spl_object_id($statement)]] = $index;
+            }
         }
 
         $receivers = [];
@@ -1598,7 +1637,14 @@ class BootstrapRouteParser
                 }
 
                 if ($node instanceof Node\Expr\Closure) {
-                    array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
+                    foreach ($node->uses as $use) {
+                        // Imported by value, the registrar is read where the closure is made
+                        if ($this->byValueCaptures && ! $use->byRef && is_string($use->var->name) && isset($names[$use->var->name])
+                            && ($lastWrite[$use->var->name] ?? -1) < $index && $this->closureOnlyRegistersOn($node, $use->var->name)) {
+                            $receivers[spl_object_id($use->var)] = true;
+                        }
+                        $pending[] = $use->var;
+                    }
                 } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
                     array_push($pending, ...$this->childNodes($node));
                 }
@@ -1618,6 +1664,49 @@ class BootstrapRouteParser
         }
 
         return $aliased;
+    }
+
+    /**
+     * Whether a closure reads the variable $name only to register routes on the registrar
+     * it holds, so it neither changes the registrar nor hands it on: each read, in its own
+     * scope or an arrow function's in it, is the receiver of a route verb, or of a group()
+     * whose value a statement drops, as group() returns the registrar. A nested closure
+     * importing it, or anything that may read or write variables the closure does not name,
+     * such as a require or include, eval(), a variable variable, extract(), compact() or
+     * get_defined_vars(), makes it false.
+     */
+    private function closureOnlyRegistersOn(Node\Expr\Closure $closure, string $name): bool
+    {
+        $registers = [];
+        $pending = $closure->stmts;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Include_ || $node instanceof Node\Expr\Eval_
+                || ($node instanceof Node\Expr\Variable && ! is_string($node->name))
+                || ($node instanceof FuncCall && $this->isFunction($node, ['extract', 'compact', 'get_defined_vars', 'parse_str']))) {
+                return false;
+            }
+
+            $call = $node instanceof Node\Stmt\Expression ? $node->expr : $node;
+            if ($call instanceof MethodCall && $call->var instanceof Node\Expr\Variable && $call->var->name === $name
+                && $call->name instanceof Identifier && in_array($call->name->toLowerString(), self::REGISTRAR_READS, true)
+                && ($call->name->toLowerString() !== 'group' || $node instanceof Node\Stmt\Expression)) {
+                $registers[spl_object_id($call->var)] = true;
+            }
+            if ($node instanceof Node\Expr\Variable && $node->name === $name && ! isset($registers[spl_object_id($node)])) {
+                return false;
+            }
+
+            if ($node instanceof Node\Expr\Closure) {
+                array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
+            } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
+                if (! $node instanceof Node\Stmt\ClassLike) {
+                    array_push($pending, ...$this->childNodes($node));
+                }
+            }
+        }
+
+        return true;
     }
 
     /**

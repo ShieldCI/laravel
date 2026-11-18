@@ -8600,4 +8600,32 @@ PHP;
             ."return Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        {$routing}\n    )\n"
             ."    ->withMiddleware(function (Middleware \$middleware): void {\n        {$middleware}\n    })\n    ->create();\n";
     }
+
+    public function test_throttle_stripped_from_a_loop_route_variable_after_the_loop_is_reported(): void
+    {
+        $result = $this->analyzeRoutesOnly(['routes/web.php' => <<<'PHP'
+<?php
+
+foreach (['web'] as $guard) {
+    $route = Route::post('/login', [LoginController::class, 'login']);
+    $route->middleware('throttle:5,1');
+}
+$route->withoutMiddleware('throttle:5,1');
+PHP]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Login route "/login" lacks rate limiting', $result);
+    }
+
+    public function test_throttle_added_to_a_loop_route_variable_in_the_loop_body_passes(): void
+    {
+        $this->assertPassed($this->analyzeRoutesOnly(['routes/web.php' => <<<'PHP'
+<?php
+
+foreach (['web'] as $guard) {
+    $route = Route::post('/login', [LoginController::class, 'login']);
+    $route->middleware('throttle:5,1');
+}
+PHP]));
+    }
 }

@@ -6936,7 +6936,7 @@ PHP;
         $analyzer->setPaths($paths);
         $analyzer->analyze();
 
-        $this->assertSame($expected, array_map(fn ($failure): string => str_replace($basePath, '', (string) $failure->path), $this->parser->failures()));
+        $this->assertSame($expected, array_map(fn ($failure): string => str_replace([$basePath, '/./'], ['', '/'], (string) $failure->path), $this->parser->failures()));
     }
 
     /**
@@ -6950,7 +6950,7 @@ PHP;
             'a route file in a subdirectory' => [['routes/partials/broken.php' => $broken], ['app'], []],
             'config/app.php' => [['config/app.php' => $broken], ['app'], []],
             'bootstrap/providers.php' => [['bootstrap/providers.php' => $broken], ['app'], []],
-            'an analyzed file that may load routes, under paths [.]' => [['app/Http/Broken.php' => "<?php\nRoute::group(\$routes);\n\$value = ;\n"], ['.'], ['/./app/Http/Broken.php']],
+            'an analyzed file that may load routes, under paths [.]' => [['app/Http/Broken.php' => "<?php\nRoute::group(\$routes);\n\$value = ;\n"], ['.'], ['/app/Http/Broken.php']],
         ];
     }
 

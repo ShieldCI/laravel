@@ -3063,6 +3063,180 @@ PHP));
     }
 
     /**
+     * @dataProvider kernelCsrfSubclassProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('kernelCsrfSubclassProvider')]
+    public function test_kernel_web_group_entry_counts_as_csrf_by_the_class_its_parents_reach(string $entry, array $files, bool $registered, string $import = ''): void
+    {
+        $tempDir = $this->createTempDirectory([
+            ...$files,
+            'app/Http/Kernel.php' => "<?php\n\nnamespace App\\Http;\n\n{$import}\n\nclass Kernel\n{\n    protected \$middlewareGroups = [\n        'web' => [\n            {$entry},\n        ],\n    ];\n}\n",
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        if ($registered) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame('CSRF middleware is not registered in HTTP Kernel', $result->getIssues()[0]->message);
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * Each case: the Kernel's web group entry, application files, whether CSRF counts as
+     * registered, and an import for the Kernel.
+     *
+     * @return array<string, array{0: string, 1: array<string, string>, 2: bool, 3?: string}>
+     */
+    public static function kernelCsrfSubclassProvider(): array
+    {
+        $class = fn (string $name, string $parent): array => ["app/Http/Middleware/{$name}.php" => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass {$name} extends {$parent}\n{\n}\n"];
+        $subclass = $class('FormTokenGuard', '\\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken');
+
+        return [
+            'own-named subclass of the framework class' => ['\\App\\Http\\Middleware\\FormTokenGuard::class', $subclass, true],
+            'own-named subclass imported under the framework name' => ['VerifyCsrfToken::class', $subclass, true, 'use App\\Http\\Middleware\\FormTokenGuard as VerifyCsrfToken;'],
+            'own-named subclass two levels down' => ['\\App\\Http\\Middleware\\StrictFormGuard::class', [...$subclass, ...$class('StrictFormGuard', 'FormTokenGuard')], true],
+            'own-named subclass of another framework class' => ['\\App\\Http\\Middleware\\FormTokenGuard::class', $class('FormTokenGuard', '\\Illuminate\\Cookie\\Middleware\\EncryptCookies'), false],
+            'own-named class whose file cannot be read' => ['\\App\\Http\\Middleware\\FormTokenGuard::class', [], false],
+            // PHP class names are case-insensitive, so a lowercase parent still names the framework class
+            'own-named subclass of the framework class written in lowercase' => ['\\App\\Http\\Middleware\\FormTokenGuard::class', $class('FormTokenGuard', '\\illuminate\\foundation\\http\\middleware\\verifycsrftoken'), true],
+            'no CSRF middleware at all' => ['\\Illuminate\\Session\\Middleware\\StartSession::class', [], false],
+        ];
+    }
+
+    /**
+     * @dataProvider kernelCsrfAliasProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('kernelCsrfAliasProvider')]
+    public function test_kernel_alias_counts_as_registered_csrf_by_the_class_its_parents_reach(string $target, array $files, bool $registered): void
+    {
+        $tempDir = $this->createTempDirectory([
+            ...$files,
+            'app/Http/Kernel.php' => "<?php\n\nnamespace App\\Http;\n\nclass Kernel\n{\n    protected \$middlewareGroups = ['web' => [\\Illuminate\\Session\\Middleware\\StartSession::class]];\n\n    protected \$middlewareAliases = ['csrf' => {$target}::class];\n}\n",
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources']);
+
+        $result = $analyzer->analyze();
+
+        if ($registered) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertSame(['CSRF middleware is not registered in HTTP Kernel'], array_map(fn ($issue) => $issue->message, $result->getIssues()));
+    }
+
+    /**
+     * Each case: the class a 'csrf' alias names beside a web group without CSRF middleware,
+     * application files, and whether CSRF counts as registered.
+     *
+     * @return array<string, array{string, array<string, string>, bool}>
+     */
+    public static function kernelCsrfAliasProvider(): array
+    {
+        $guard = fn (string $parent): array => ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends {$parent}\n{\n}\n"];
+
+        return [
+            'an own-named subclass' => ['\\App\\Http\\Middleware\\FormTokenGuard', $guard('\\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken'), true],
+            'an application class named as CSRF middleware' => ['\\App\\Http\\Middleware\\VerifyCsrfToken', ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN], true],
+            'an own-named class extending another framework class' => ['\\App\\Http\\Middleware\\FormTokenGuard', $guard('\\Illuminate\\Cookie\\Middleware\\EncryptCookies'), false],
+        ];
+    }
+
+    /**
+     * @dataProvider bootstrapCsrfSubclassProvider
+     *
+     * @param  array<string, string>  $files
+     * @param  list<string>  $messages
+     */
+    #[DataProvider('bootstrapCsrfSubclassProvider')]
+    public function test_bootstrap_web_group_credits_csrf_subclass_by_the_class_its_parents_reach(string $statement, array $files, array $messages): void
+    {
+        $this->skipUnlessDefaultWebGroupOf(13);
+
+        $tempDir = $this->createTempDirectory([
+            ...$files,
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (\$middleware) {\n        {$statement}\n    })\n    ->create();\n",
+            'resources/views/form.blade.php' => '<form method="POST">@csrf</form>',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap', 'resources']);
+
+        $this->assertSame($messages, array_map(fn ($issue) => $issue->message, $analyzer->analyze()->getIssues()));
+    }
+
+    /**
+     * Each case: a withMiddleware() statement, application files, and the messages reported.
+     *
+     * @return array<string, array{string, array<string, string>, list<string>}>
+     */
+    public static function bootstrapCsrfSubclassProvider(): array
+    {
+        $class = fn (string $parent): array => ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends {$parent}\n{\n}\n"];
+        $subclass = $class('\\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken');
+        $other = $class('\\Illuminate\\Cookie\\Middleware\\EncryptCookies');
+        $guard = '\\App\\Http\\Middleware\\FormTokenGuard::class';
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class';
+
+        return [
+            'group redefined with a subclass' => ["\$middleware->group('web', [{$guard}]);", $subclass, []],
+            'group redefined with a non-CSRF class' => ["\$middleware->group('web', [{$guard}]);", $other, ['web middleware group redefined without CSRF middleware']],
+            'group redefined with a class whose file cannot be read' => ["\$middleware->group('web', [{$guard}]);", [], ['web middleware group redefined without CSRF middleware']],
+            'CSRF middleware replaced with a subclass' => ["\$middleware->web(replace: [{$framework} => {$guard}]);", $subclass, []],
+            'CSRF middleware replaced with a non-CSRF class' => ["\$middleware->web(replace: [{$framework} => {$guard}]);", $other, ['PreventRequestForgery replaced in web middleware group']],
+            'CSRF middleware removed and a subclass appended' => ["\$middleware->web(remove: [{$framework}], append: [{$guard}]);", $subclass, []],
+            'CSRF middleware removed and a non-CSRF class appended' => ["\$middleware->web(remove: [{$framework}], append: [{$guard}]);", $other, ['PreventRequestForgery removed from web middleware group']],
+            // Taking out a subclass the group credits leaves it without CSRF middleware
+            'CSRF middleware replaced with a subclass, then the subclass removed' => ["\$middleware->web(replace: [{$framework} => {$guard}], remove: [{$guard}]);", $subclass, ['FormTokenGuard removed from web middleware group']],
+            'group redefined with a subclass, then removeFromGroup() takes it out' => ["\$middleware->group('web', [{$guard}]);\n        \$middleware->removeFromGroup('web', {$guard});", $subclass, ['FormTokenGuard removed from web middleware group']],
+            'group redefined with a subclass, then web(remove:) takes it out' => ["\$middleware->group('web', [{$guard}]);\n        \$middleware->web(remove: [{$guard}]);", $subclass, ['FormTokenGuard removed from web middleware group']],
+            'group redefined with a subclass, then the subclass replaced' => ["\$middleware->group('web', [{$guard}]);\n        \$middleware->web(replace: [{$guard} => \\App\\Http\\Middleware\\ShareViewState::class]);", $subclass, ['FormTokenGuard replaced in web middleware group']],
+            // Appends run after removals, so the subclass appended back keeps the group protected
+            'subclass appended while it and the CSRF middleware are removed' => ["\$middleware->web(append: [{$guard}], remove: [{$framework}, {$guard}]);", $subclass, []],
+            'CSRF middleware replaced with a CSRF-named class, then that class removed' => ["\$middleware->web(replace: [{$framework} => \\App\\Http\\Middleware\\VerifyCsrfToken::class], remove: [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);", $subclass, ['VerifyCsrfToken removed from web middleware group']],
+        ];
+    }
+
+    public function test_removing_a_csrf_subclass_swapped_into_the_laravel_12_web_group_is_reported(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nuse Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken as Middleware;\n\nclass FormTokenGuard extends Middleware\n{\n}\n",
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withMiddleware(function (\$middleware) {\n        \$middleware->replaceInGroup('web', \\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class, \\App\\Http\\Middleware\\FormTokenGuard::class);\n        \$middleware->removeFromGroup('web', \\App\\Http\\Middleware\\FormTokenGuard::class);\n    })\n    ->create();\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['bootstrap']);
+
+        $result = $this->onLaravelMajor(12, fn (): ResultInterface => $analyzer->analyze());
+
+        $this->assertSame(['FormTokenGuard removed from web middleware group'], array_map(fn ($issue) => $issue->message, $result->getIssues()));
+        $this->assertEquals(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    /**
      * Skip the test unless the running framework's default web group holds the CSRF middleware
      * of the given Laravel major: PreventRequestForgery from 13, ValidateCsrfToken before it.
      */
@@ -4231,14 +4405,16 @@ PHP,
     }
 
     /**
+     * Each case: a statement whose list may remove or replace CSRF middleware out of sight. An
+     * append or prepend that cannot be read only adds entries (see
+     * appendOnlySpreadExclusionProvider()).
+     *
      * @return array<string, array{string}>
      */
     public static function unreadableWebGroupListProvider(): array
     {
         return [
-            'web(append:)' => ['$middleware->web(append: $extra);'],
             'web(remove:)' => ['$middleware->web(remove: $extra);'],
-            'appendToGroup()' => ["\$middleware->appendToGroup('web', \$extra);"],
             'removeFromGroup()' => ["\$middleware->removeFromGroup('web', \$extra);"],
             'web(replace:)' => ['$middleware->web(replace: $map);'],
             'a replace key' => ['$middleware->web(replace: [$search => \\App\\Http\\Middleware\\VerifyCsrfToken::class]);'],
@@ -4682,9 +4858,10 @@ PHP,
         $this->assertPassed($result);
     }
 
-    public function test_exclusion_written_with_a_leading_backslash_names_the_class(): void
+    public function test_exclusion_written_with_a_leading_backslash_does_not_name_the_class(): void
     {
-        $this->assertTrue($this->webPhpExclusionReported(
+        // Router::resolveMiddleware() compares the strings exactly, and a class is not a subclass of itself
+        $this->assertFalse($this->webPhpExclusionReported(
             "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
             "'\\App\\Http\\Middleware\\VerifyCsrfToken'",
             literal: true,
@@ -4692,8 +4869,252 @@ PHP,
 
         $result = $this->analyzeRouteFile("<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class)->withoutMiddleware('\\App\\Http\\Middleware\\VerifyCsrfToken');\n");
 
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider parameterisedExclusionProvider
+     */
+    #[DataProvider('parameterisedExclusionProvider')]
+    public function test_exclusion_with_parameters_does_not_strip_an_unsettled_web_group(string $excluded): void
+    {
+        // Router::resolveMiddleware() drops 'Class:params' only for an entry of the same string
+        $result = $this->analyzeRouteFiles(['routes/web.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->withoutMiddleware({$excluded});\n"]);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function parameterisedExclusionProvider(): array
+    {
+        return [
+            'a string' => ["'App\\Http\\Middleware\\VerifyCsrfToken:strict'"],
+            'a concatenation' => ["\\App\\Http\\Middleware\\VerifyCsrfToken::class.':strict'"],
+        ];
+    }
+
+    /**
+     * @dataProvider bootstrapSubclassExclusionProvider
+     */
+    #[DataProvider('bootstrapSubclassExclusionProvider')]
+    public function test_exclusion_removes_a_csrf_subclass_the_bootstrap_web_group_holds(string $statement, string $excluded): void
+    {
+        $this->skipUnlessDefaultWebGroupOf(13);
+
+        $this->assertTrue($this->webPhpExclusionReported(
+            $statement,
+            $excluded,
+            files: ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"],
+        ));
+    }
+
+    /**
+     * Each case: a withMiddleware() statement that leaves an own-named CSRF subclass in the web
+     * group, and the class a routes/web.php route excludes, the subclass or its framework parent.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function bootstrapSubclassExclusionProvider(): array
+    {
+        $guard = '\\App\\Http\\Middleware\\FormTokenGuard';
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\PreventRequestForgery::class';
+        $statements = [
+            'group redefined with the subclass' => "\$middleware->group('web', [{$guard}::class]);",
+            'CSRF middleware replaced with the subclass' => "\$middleware->web(replace: [{$framework} => {$guard}::class]);",
+            'CSRF middleware removed and the subclass appended' => "\$middleware->web(remove: [{$framework}], append: [{$guard}::class]);",
+        ];
+        $exclusions = [
+            'the subclass excluded' => $guard,
+            'its framework parent excluded' => '\\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken',
+        ];
+
+        $cases = [];
+        foreach ($statements as $statementLabel => $statement) {
+            foreach ($exclusions as $exclusionLabel => $excluded) {
+                $cases["{$statementLabel}, {$exclusionLabel}"] = [$statement, $excluded];
+            }
+        }
+
+        return $cases;
+    }
+
+    public function test_custom_route_file_applying_a_csrf_subclass_is_protected(): void
+    {
+        $guard = "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n";
+
+        $this->assertPassed($this->analyzeRouteFiles([
+            'app/Http/Middleware/FormTokenGuard.php' => $guard,
+            'routes/partner.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\FormTokenGuard::class);\n",
+        ]));
+
+        // Control: a class whose parents reach another framework class protects nothing
+        $result = $this->analyzeRouteFiles([
+            'app/Http/Middleware/FormTokenGuard.php' => str_replace('Foundation\\Http\\Middleware\\VerifyCsrfToken', 'Cookie\\Middleware\\EncryptCookies', $guard),
+            'routes/partner.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->middleware(\\App\\Http\\Middleware\\FormTokenGuard::class);\n",
+        ]);
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * @dataProvider unsettledWebGroupSubclassExclusionProvider
+     */
+    #[DataProvider('unsettledWebGroupSubclassExclusionProvider')]
+    public function test_unsettled_web_group_is_stripped_by_excluding_an_own_named_csrf_subclass(int $laravelMajor, string $source, string $excluded, bool $reported): void
+    {
+        $files = ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"];
+
+        $this->assertSame($reported, $this->onLaravelMajor($laravelMajor, fn (): bool => $source === 'bootstrap'
+            ? $this->webPhpExclusionReported(
+                "\$extra = [];\n        \$middleware->group('web', [\\App\\Http\\Middleware\\FormTokenGuard::class]);\n        \$middleware->web(append: [...\$extra]);",
+                $excluded,
+                files: $files,
+            )
+            : $this->kernelExclusionReported(
+                "    use Concerns\\Extra;\n\n    protected \$middlewareGroups = ['web' => [\\Illuminate\\Session\\Middleware\\StartSession::class, \\App\\Http\\Middleware\\FormTokenGuard::class]];",
+                $excluded,
+                $files,
+            )));
+    }
+
+    /**
+     * Each case: the Laravel major, whether bootstrap/app.php or a Kernel holds the web group
+     * the analysis cannot settle (an unpacked append, or a trait), the class a routes/web.php
+     * route excludes, and whether that route is reported.
+     *
+     * @return array<string, array{int, string, string, bool}>
+     */
+    public static function unsettledWebGroupSubclassExclusionProvider(): array
+    {
+        $guard = '\\App\\Http\\Middleware\\FormTokenGuard';
+        $sibling = '\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken';
+
+        return [
+            'Laravel 12 bootstrap, the subclass excluded' => [12, 'bootstrap', $guard, true],
+            'Laravel 13 bootstrap, the subclass excluded' => [13, 'bootstrap', $guard, true],
+            'Laravel 12 Kernel, the subclass excluded' => [12, 'kernel', $guard, true],
+            'Laravel 13 Kernel, the subclass excluded' => [13, 'kernel', $guard, true],
+            // On Laravel 13 the framework's ValidateCsrfToken is no parent of the subclass
+            'Laravel 13 bootstrap, a framework sibling excluded' => [13, 'bootstrap', $sibling, false],
+            'Laravel 13 Kernel, a framework sibling excluded' => [13, 'kernel', $sibling, false],
+        ];
+    }
+
+    public function test_spread_append_keeps_the_default_csrf_entry_so_excluding_a_subclass_strips_nothing(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n",
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(web: __DIR__.'/../routes/web.php')\n    ->withMiddleware(function (\$middleware) {\n        \$extra = [];\n        \$middleware->web(append: [...\$extra]);\n    })\n    ->create();\n",
+            'routes/web.php' => "<?php\n\nRoute::post('/orders', OrderController::class)->withoutMiddleware(\\App\\Http\\Middleware\\FormTokenGuard::class);\n",
+        ]);
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @dataProvider appendOnlySpreadExclusionProvider
+     */
+    #[DataProvider('appendOnlySpreadExclusionProvider')]
+    public function test_append_or_prepend_that_cannot_be_read_keeps_the_known_csrf_entries(int $laravelMajor, string $statement, string $excluded, bool $reported): void
+    {
+        $this->assertSame($reported, $this->onLaravelMajor($laravelMajor, fn (): bool => $this->webPhpExclusionReported(
+            $statement,
+            $excluded,
+            files: ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\Illuminate\\Foundation\\Http\\Middleware\\VerifyCsrfToken\n{\n}\n"],
+        )));
+    }
+
+    /**
+     * Each case: the Laravel major, a withMiddleware() statement, the class a routes/web.php
+     * route excludes, and whether that route is reported. Appends and prepends only add entries
+     * (Middleware::getMiddlewareGroups()), so the default or the readable group's CSRF entry
+     * stays, and excluding a class it does not equal or extend leaves the check running.
+     *
+     * @return array<string, array{int, string, string, bool}>
+     */
+    public static function appendOnlySpreadExclusionProvider(): array
+    {
+        $framework = '\\Illuminate\\Foundation\\Http\\Middleware\\';
+        $append = "\$extra = [];\n        \$middleware->web(append: [...\$extra]);";
+        $prepend = "\$extra = [];\n        \$middleware->prependToGroup('web', [...\$extra]);";
+        $group = "\$extra = [];\n        \$middleware->group('web', [\\App\\Http\\Middleware\\FormTokenGuard::class]);\n        \$middleware->web(append: [...\$extra]);";
+        $spreadGroup = "\$extra = [];\n        \$middleware->group('web', [...\$extra]);";
+
+        return [
+            'Laravel 12 append, an own-named subclass excluded' => [12, $append, '\\App\\Http\\Middleware\\FormTokenGuard', false],
+            'Laravel 13 append, an own-named subclass excluded' => [13, $append, '\\App\\Http\\Middleware\\FormTokenGuard', false],
+            'Laravel 13 prepend, an own-named subclass excluded' => [13, $prepend, '\\App\\Http\\Middleware\\FormTokenGuard', false],
+            'Laravel 12 append, the application VerifyCsrfToken excluded' => [12, $append, '\\App\\Http\\Middleware\\VerifyCsrfToken', false],
+            'Laravel 13 append, the application VerifyCsrfToken excluded' => [13, $append, '\\App\\Http\\Middleware\\VerifyCsrfToken', false],
+            'Laravel 13 unreadable web(append:) list, the application VerifyCsrfToken excluded' => [13, '$middleware->web(append: $extra);', '\\App\\Http\\Middleware\\VerifyCsrfToken', false],
+            'Laravel 13 unreadable appendToGroup() list, the application VerifyCsrfToken excluded' => [13, "\$middleware->appendToGroup('web', \$extra);", '\\App\\Http\\Middleware\\VerifyCsrfToken', false],
+            // Excluding the default entry itself still removes it
+            'Laravel 12 append, the default ValidateCsrfToken excluded' => [12, $append, "{$framework}ValidateCsrfToken", true],
+            'Laravel 13 append, the default PreventRequestForgery excluded' => [13, $append, "{$framework}PreventRequestForgery", true],
+            // A readable group keeps its own entry, which excluding it removes
+            'Laravel 13 readable group with an append, its subclass excluded' => [13, $group, '\\App\\Http\\Middleware\\FormTokenGuard', true],
+            'Laravel 13 append, ValidateCsrfToken excluded' => [13, $append, "{$framework}ValidateCsrfToken", false],
+            'Laravel 13 append, ValidateCsrfToken excluded in lowercase' => [13, $append, '\\illuminate\\foundation\\http\\middleware\\validatecsrftoken', false],
+            // A group that cannot be read leaves the version fallback, whose Laravel 13 check ignores case
+            'Laravel 13 unreadable group, ValidateCsrfToken excluded' => [13, $spreadGroup, "{$framework}ValidateCsrfToken", false],
+            'Laravel 13 unreadable group, ValidateCsrfToken excluded in lowercase' => [13, $spreadGroup, '\\illuminate\\foundation\\http\\middleware\\validatecsrftoken', false],
+            'Laravel 13 unreadable group, PreventRequestForgery excluded in lowercase' => [13, $spreadGroup, '\\illuminate\\foundation\\http\\middleware\\preventrequestforgery', true],
+            'Laravel 13 unreadable group, an own-named subclass excluded' => [13, $spreadGroup, '\\App\\Http\\Middleware\\FormTokenGuard', true],
+        ];
+    }
+
+    public function test_exclusion_written_as_the_applied_string_removes_it(): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\nRoute::post('/orders', OrderController::class)->middleware('\\App\\Http\\Middleware\\VerifyCsrfToken')->withoutMiddleware('\\App\\Http\\Middleware\\VerifyCsrfToken');\n");
+
         $this->assertFailed($result);
         $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    public function test_exclusion_by_class_does_not_remove_an_applied_string_with_a_leading_backslash(): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\nRoute::post('/orders', OrderController::class)->middleware('\\App\\Http\\Middleware\\VerifyCsrfToken')->withoutMiddleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class);\n");
+
+        $this->assertPassed($result);
+    }
+
+    public function test_string_web_group_entry_with_a_leading_backslash_survives_excluding_its_class_in_bootstrap(): void
+    {
+        $this->assertFalse($this->webPhpExclusionReported(
+            "\$middleware->group('web', ['\\App\\Http\\Middleware\\VerifyCsrfToken']);",
+            '\\App\\Http\\Middleware\\VerifyCsrfToken',
+        ));
+
+        // Control: the same entry as Class::class is removed
+        $this->assertTrue($this->webPhpExclusionReported(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class]);",
+            '\\App\\Http\\Middleware\\VerifyCsrfToken',
+        ));
+    }
+
+    public function test_concatenated_bootstrap_web_group_entry_is_read(): void
+    {
+        // Read, the group keeps its application class; unread, any CSRF name strips it before Laravel 13
+        $this->assertFalse($this->onLaravelMajor(12, fn (): bool => $this->webPhpExclusionReported(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':web']);",
+            '\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken',
+            files: ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN],
+        )));
+
+        // Read, a redefined group that holds no CSRF middleware beside the concatenation is reported
+        $result = $this->analyzeBootstrapMiddleware("\$middleware->group('web', [\\Illuminate\\Cookie\\Middleware\\EncryptCookies::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':web']);");
+        $this->assertSame(['web middleware group redefined without CSRF middleware'], array_map(fn ($issue) => $issue->message, $result->getIssues()));
+
+        // Control: excluding the group's own class still removes it
+        $this->assertTrue($this->onLaravelMajor(12, fn (): bool => $this->webPhpExclusionReported(
+            "\$middleware->group('web', [\\App\\Http\\Middleware\\VerifyCsrfToken::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':web']);",
+            '\\App\\Http\\Middleware\\VerifyCsrfToken',
+            files: ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN],
+        )));
     }
 
     public function test_route_exclusions_add_up_along_the_chain(): void
@@ -4829,6 +5250,23 @@ PHP,
             // The global check counts an application class by the CSRF class its parents reach
             'Laravel 12 global application class without a CSRF name, a web class excluded' => [12, "    protected \$middleware = [\\App\\Http\\Middleware\\TokenGuard::class];\n\n".$web("{$app}::class"), $app, false, ['app/Http/Middleware/TokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass TokenGuard extends {$framework}VerifyCsrfToken\n{\n}\n"]],
             'Laravel 12 alias with parameters, the same string excluded' => [12, $web("'csrf:strict'")."\n\n    protected \$middlewareAliases = ['csrf' => {$app}::class];", "'App\\Http\\Middleware\\VerifyCsrfToken:strict'", true, [], true],
+            // A Class::class.':params' entry reads as the string 'Class:params', as a literal one does
+            'Laravel 12 application class beside a concatenated entry, sibling excluded' => [12, $web("{$app}::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':web'"), "{$framework}ValidateCsrfToken", false, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            'Laravel 12 application class beside a concatenated entry, itself excluded' => [12, $web("{$app}::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.':web'"), $app, true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            'Laravel 12 concatenated CSRF entry, its class excluded' => [12, $web("{$app}::class.':strict'"), $app, false, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            'Laravel 12 concatenated CSRF entry, the same string excluded' => [12, $web("{$app}::class.':strict'"), "'App\\Http\\Middleware\\VerifyCsrfToken:strict'", true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN], true],
+            // Any other concatenation stays unread, so the version fallback judges the exclusion
+            'Laravel 12 application class beside a concatenation with a constant, sibling excluded' => [12, $web("{$app}::class, \\Illuminate\\Routing\\Middleware\\ThrottleRequests::class.self::LIMITER"), "{$framework}ValidateCsrfToken", true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            // Router::resolveMiddleware() drops an entry equal to an exclusion as written, or a subclass of one
+            'Laravel 12 string entry with a leading backslash, the class excluded' => [12, $web("'{$app}'"), $app, false, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            'Laravel 12 string entry with a leading backslash, the same string excluded' => [12, $web("'{$app}'"), "'{$app}'", true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN], true],
+            'Laravel 12 string entry with a leading backslash, its framework parent excluded' => [12, $web("'{$app}'"), "{$framework}VerifyCsrfToken", true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN]],
+            'Laravel 12 application class, the class excluded as a string with a leading backslash' => [12, $web("{$app}::class"), "'{$app}'", false, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN], true],
+            'Laravel 12 application class, its framework parent excluded as a string with a leading backslash' => [12, $web("{$app}::class"), "'{$framework}VerifyCsrfToken'", true, ['app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN], true],
+            // Laravel's isSubclassOf() ignores case, so a parent written in lowercase is still matched
+            'Laravel 12 application class with a lowercase framework parent, that parent excluded' => [12, $web('\\App\\Http\\Middleware\\FormTokenGuard::class'), "{$framework}ValidateCsrfToken", true, ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\illuminate\\foundation\\http\\middleware\\validatecsrftoken\n{\n}\n"]],
+            'Laravel 13 application class with a lowercase framework parent, that parent excluded' => [13, $web('\\App\\Http\\Middleware\\FormTokenGuard::class'), "{$framework}ValidateCsrfToken", true, ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\illuminate\\foundation\\http\\middleware\\validatecsrftoken\n{\n}\n"]],
+            'Laravel 13 application class with a lowercase framework parent, its sibling excluded' => [13, $web('\\App\\Http\\Middleware\\FormTokenGuard::class'), "{$framework}VerifyCsrfToken", false, ['app/Http/Middleware/FormTokenGuard.php' => "<?php\n\nnamespace App\\Http\\Middleware;\n\nclass FormTokenGuard extends \\illuminate\\foundation\\http\\middleware\\validatecsrftoken\n{\n}\n"]],
         ];
     }
 

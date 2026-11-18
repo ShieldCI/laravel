@@ -41,7 +41,8 @@ use ShieldCI\Support\BootstrapRouteParser;
  *   - $middleware->web(replace: [...]) or replaceInGroup('web', ...) swapping CSRF middleware out
  *   - validateCsrfTokens(except: ['*']) / preventRequestForgery(except: ['*'])
  *
- * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>, api: bool}
+ * @phpstan-type CsrfState array{group: bool, applied: list<string>, excluded: list<string|null>, api: bool, unread: bool}
+ * @phpstan-type RouteLoad array{state: CsrfState, known: bool, proven: bool, once: bool, apiFile: bool}
  * @phpstan-type ActionMiddleware array{middleware: list<string|null>|null, excluded: list<string|null>|null, dropsRegistrar: bool}
  * @phpstan-type RouteWalk array{
  *     routes: list<array{line: int, method: string, states: non-empty-list<CsrfState>, closures: list<int>}>,
@@ -80,9 +81,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * The CSRF state of a chain that applies and excludes nothing.
      *
-     * @var array{group: false, applied: list<string>, excluded: list<string|null>, api: false}
+     * @var array{group: false, applied: list<string>, excluded: list<string|null>, api: false, unread: false}
      */
-    private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => [], 'api' => false];
+    private const NO_CSRF = ['group' => false, 'applied' => [], 'excluded' => [], 'api' => false, 'unread' => false];
 
     /**
      * What an action that names no middleware gives a route (see routeActionMiddleware()).
@@ -93,7 +94,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * The most registrations of one route statesReaching() follows, one per group() call that
-     * runs each reused group callback around it; the walk stops once it has this many.
+     * runs each reused group callback around it; the walk stops once it has this many. Also the
+     * most loads of one route file addLoad() keeps.
      */
     private const MAX_REGISTRATIONS = 64;
 
@@ -1558,31 +1560,36 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check custom route files for state-changing routes the 'web' middleware does not reach.
+     * Check custom route files for state-changing routes a load of their file leaves without
+     * CSRF protection.
      *
      * IMPORTANT: routes/web.php automatically has 'web' middleware applied globally
      * via RouteServiceProvider (Laravel 10) or bootstrap/app.php (Laravel 11+).
      *
-     * routes/api.php, files registered under 'api', and any file they load where neither 'web'
-     * nor a CSRF class reaches the load are api files, unless something also loads them under
-     * 'web', stripped or not. So is a file a route file loads inside a group 'api' reaches, and
-     * any file such a file loads where neither 'web' nor a CSRF class reaches the load and no
-     * group excludes 'api' again, unless a plain load also loads it: one neither 'api' nor 'web'
-     * or a CSRF class reaches, made by bootstrap/app.php or a provider, group or not, or by a
-     * route file that is not itself loaded only under 'api'. Such an api load counts even from a
-     * route file nothing is known to load, which is the exception to such a file never taking
-     * findings away. In an api file only a route that applies 'web' or a CSRF class itself is
-     * judged, and it is reported when its own exclusions or a strip on the file's load remove the
-     * check; in a file only api-group loads reach, a route that excludes 'api' itself is judged
-     * as in any other file. A route 'api' reaches through its own chain or a group around it is
-     * judged as one in an api file. A route file loads a file by requiring it or through a
-     * group() path argument, which then counts as a require at that place. routes/web.php is
-     * covered, and so is a file registered under 'web' externally, a file loaded by a group 'web'
-     * or the CSRF middleware reaches, and any file a covered file requires outside a group that
-     * removes CSRF. In a covered file only routes that exclude the CSRF middleware are reported.
-     * A file a load 'web' or a CSRF class reaches strips CSRF from has every route reported, and
-     * so does any file it requires; a file stripped by a plain load and covered by another counts
-     * as covered (see #567 for judging each load). Every file is read through the AST: see
+     * Laravel registers a route file's routes once per load, merging the middleware and excluded
+     * middleware of every group around the load into each of them, so each load of a file is
+     * judged separately and a route is reported when any load leaves it unprotected (see
+     * unprotectedBy()). A load carries the CSRF state of the groups around it, merged down require
+     * chains of any depth. routes/web.php and a file registered under 'web' externally are loaded
+     * under 'web'. routes/api.php and a file registered under 'api' externally are api files, and
+     * so is a file such a file loads where neither 'web' nor a CSRF class reaches the load. A load
+     * in bootstrap/app.php or a provider, group or not, carries the state of the groups around it.
+     * A route file loads a file by requiring it or through a group() path argument, which then
+     * counts as a require at that place, and the loaded file gets each load of the route file
+     * merged with the groups around the require.
+     *
+     * Only a load proven to run with its middleware read adds a registration to a file a proven
+     * load reaches: not one from a route file nothing is known to load, from a provider method
+     * Laravel never calls, or through a group whose middleware or exclusions cannot be read (see
+     * externalLoads()). Of the loads through a require_once or include_once only one registers,
+     * so they count only when every one of them leaves a route unprotected. A load that a later
+     * load of the same routes replaces is dropped.
+     *
+     * A route file nothing is known to load, and no other route file loads, may never run: it is
+     * judged as loaded plainly, and so are the files it loads and any file in a require cycle no
+     * known load reaches. Such a file's requires count only where no proven load reaches: a
+     * require from it can extend coverage but never take it away, and one there that excludes
+     * the CSRF middleware passes nothing on. Every file is read through the AST: see
      * walkRouteNode() for what reaches a route.
      *
      * 'auth' and other middleware do not count: they do not include CSRF protection.
@@ -1599,166 +1606,112 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         array $webProtectedFiles = [],
         array $apiRegisteredFiles = [],
     ): void {
-        $walks = [];
-        $covered = array_fill_keys($webProtectedFiles, true);
-        // routes/api.php and files registered under 'api' use token authentication, not CSRF
-        // cookies, and so does any file they load where neither 'web' nor a CSRF class reaches
-        $api = array_fill_keys($apiRegisteredFiles, true);
+        $web = ['state' => [...self::NO_CSRF, 'group' => true], 'known' => true, 'proven' => true, 'once' => false, 'apiFile' => false];
+        // routes/api.php and files registered under 'api' use token authentication, not CSRF cookies
+        $api = ['state' => self::NO_CSRF, 'known' => true, 'proven' => true, 'once' => false, 'apiFile' => true];
 
+        /** @var list<array{string, RouteLoad}> $known */
+        $known = [];
+        foreach ($webProtectedFiles as $file) {
+            $known[] = [$file, $web];
+        }
+        foreach ($apiRegisteredFiles as $file) {
+            $known[] = [$file, $api];
+        }
+
+        $walks = [];
         foreach ($routeFiles as $file) {
             $real = realpath($file);
             $normalizedPath = str_replace('\\', '/', $real !== false ? $real : $file);
 
             if (str_ends_with($normalizedPath, '/routes/api.php')) {
-                $api[$normalizedPath] = true;
+                $known[] = [$normalizedPath, $api];
             }
 
             // routes/web.php gets 'web' applied globally
             if (str_ends_with($normalizedPath, '/routes/web.php')) {
-                $covered[$normalizedPath] = true;
+                $known[] = [$normalizedPath, $web];
             }
 
             $walks[$normalizedPath] = ['file' => $file, 'walk' => $this->walkRouteFile($file, $routeParser)];
         }
 
+        $known = [...$known, ...$this->externalLoads($routeParser)];
+
         // The files each route file loads, by a require or a group() path argument, as the walk reads them
-        $loads = array_map(fn (array $entry): array => $entry['walk']['includes'], $walks);
+        $includes = array_map(fn (array $entry): array => $entry['walk']['includes'], $walks);
 
-        // A group in bootstrap/app.php or a provider that loads a file covers it when it or an
-        // enclosing group applies 'web' or the CSRF middleware, and strips it when one excludes
-        // either. Groups in route files are read by the walk
-        $stripped = [];
-        // Files stripped by a load 'web' or a CSRF class reaches: they run as web routes. A strip
-        // on an api load leaves the file an api file, removing only what a route applies itself
-        $webStripped = [];
-        // Files a route file loads inside a group 'api' reaches, and any file they load where
-        // neither 'web' nor a CSRF class reaches and no group excludes 'api' again. Unlike $api,
-        // a plain load of the same file wins
-        $apiGrouped = [];
-        // Files a plain load reaches, one that neither 'api' nor 'web' or a CSRF class reaches:
-        // made by bootstrap or a provider, group or not, by a $this->loadRoutesFrom() or a
-        // require there, or by a route file that is not itself loaded only under 'api'
-        $plain = [];
-        foreach ($routeParser->getExternalRouteFileLoads() as $load) {
-            $state = $this->csrfFlags($load['calls'] === [] ? self::NO_CSRF : $this->groupsCsrfState($load['calls'], $routeParser));
-            if (! $state['reached'] && ! $state['api']) {
-                $plain[$load['file']] = true;
+        /** @var array<string, array<string, RouteLoad>> $fileLoads */
+        $fileLoads = [];
+        $queue = [];
+        foreach ($known as [$file, $load]) {
+            if ($this->addLoad($fileLoads, $file, $load)) {
+                $queue[] = [$file, $load];
             }
         }
-        $loaded = $covered + $api;
-        foreach ($routeParser->getGroupRegisteredRouteFiles(routeFiles: false) as $registration) {
-            $state = $this->csrfFlags($this->groupsCsrfState($registration['calls'], $routeParser));
-            $loaded[$registration['file']] = true;
-            if ($state['strips']) {
-                $stripped[$registration['file']] = true;
-                if ($state['reached']) {
-                    $webStripped[$registration['file']] = true;
+        $this->propagateLoads($includes, $fileLoads, $queue);
+
+        // A route file no known load reaches is read as loaded plainly for what it loads: first
+        // those no other route file loads, then whatever is left, such as a require cycle. The
+        // plain load is not one of its own loads, so a file that gets a load another way is
+        // judged by that load alone
+        $plain = ['state' => self::NO_CSRF, 'known' => false, 'proven' => false, 'once' => false, 'apiFile' => false];
+        $targets = [];
+        foreach ($includes as $path => $list) {
+            foreach ($list as $include) {
+                if ($include['file'] !== $path) {
+                    $targets[$include['file']] = true;
                 }
-            } elseif ($state['web']) {
-                $covered[$registration['file']] = true;
             }
         }
+        $unloaded = array_keys(array_diff_key($walks, $fileLoads, $targets));
+        $this->propagateLoads($includes, $fileLoads, array_map(fn (string $path): array => [$path, $plain], $unloaded));
+        $unloaded = array_keys(array_diff_key($walks, $fileLoads));
+        $this->propagateLoads($includes, $fileLoads, array_map(fn (string $path): array => [$path, $plain], $unloaded));
 
-        // Coverage passes down require chains of any depth, and so does stripping, which Laravel
-        // merges into every nested group. A group in a route file that excludes CSRF strips every
-        // file it requires, but only once that route file is known to load: routes/web.php, a
-        // file bootstrap or a provider registers, or a file one of them requires. A file nothing is
-        // known to load may never run, so its require can extend coverage but never take it away;
-        // its load inside an api group is the exception, read below through $apiGrouped.
-        // Every set here only grows, whatever order the files come in, and the report weighs them
-        // afterwards: a strip on a web load first, then coverage, then a strip on a plain load
-        do {
-            $changed = false;
-            foreach ($loads as $path => $includes) {
-                foreach ($includes as $include) {
-                    $file = $include['file'];
-                    if (isset($loaded[$path]) && ! isset($loaded[$file])) {
-                        $changed = true;
-                        $loaded[$file] = true;
-                    }
-
-                    if (isset($api[$path]) && ! $include['reached'] && ! isset($api[$file])) {
-                        $changed = true;
-                        $api[$file] = true;
-                    }
-
-                    if (((isset($apiGrouped[$path]) && ! $include['dropsApi']) || $include['api']) && ! $include['reached'] && ! isset($apiGrouped[$file])) {
-                        $changed = true;
-                        $apiGrouped[$file] = true;
-                    }
-
-                    if (isset($stripped[$path]) || ($include['strips'] && isset($loaded[$path]))) {
-                        $changed = $changed || ! isset($stripped[$file]);
-                        $stripped[$file] = true;
-
-                        // A strip meets a web load when the load itself applies 'web' or a CSRF class
-                        // (Laravel merges an outer exclusion into it), or the stripping group sits in
-                        // a covered file; a strip inherited only from an api load does not pass on
-                        $meetsWeb = $include['reached'] || ($include['strips'] && isset($covered[$path]));
-                        if (! isset($webStripped[$file]) && (isset($webStripped[$path]) || $meetsWeb)) {
-                            $changed = true;
-                            $webStripped[$file] = true;
-                        }
-                    }
-
-                    if (! isset($covered[$file]) && ! $include['strips'] && ($include['web'] || isset($covered[$path]))) {
-                        $changed = true;
-                        $covered[$file] = true;
-                    }
-                }
-            }
-        } while ($changed);
-
-        // A plain load passes down require chains too, once the api sets are known: a load from a
-        // file a plain load reaches, or one not loaded only under 'api', is plain, and so is a
-        // load from an $apiGrouped file that excludes 'api' again
-        do {
-            $changed = false;
-            foreach ($loads as $path => $includes) {
-                foreach ($includes as $include) {
-                    $plainSource = isset($plain[$path])
-                        || (! isset($api[$path]) && (! isset($apiGrouped[$path]) || $include['dropsApi']));
-                    if ($plainSource && ! $include['reached'] && ! $include['api'] && ! isset($plain[$include['file']])) {
-                        $changed = true;
-                        $plain[$include['file']] = true;
-                    }
-                }
-            }
-        } while ($changed);
-
+        // What unprotectedBy() said, by load key (see addLoad()) and serialized route state
+        /** @var array<string, array<string, 'missing'|'stripped'|'excluded'|null>> $verdicts */
+        $verdicts = [];
         foreach ($walks as $path => $entry) {
-            // A file only the api routes load runs without CSRF cookies, so only a route that applies
-            // 'web' or a CSRF class itself is judged there: by its own exclusions, and by a strip on
-            // the load, which Laravel merges into it
-            $apiOnly = isset($api[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
-            // A file loaded only inside groups 'api' reaches is judged the same way, but a route
-            // that excludes 'api' itself drops what the load gave it
-            $apiGroupedOnly = isset($apiGrouped[$path]) && ! isset($plain[$path]) && ! isset($covered[$path]) && ! isset($webStripped[$path]);
-
-            // A strip on a web load strips every route. A strip on an api load or a plain load
-            // removes only what a route applies itself
-            $fileStripped = isset($webStripped[$path]);
-            $fileCovered = isset($covered[$path]) && ! $fileStripped;
-            $plainStripped = ! $fileStripped && ! $fileCovered && isset($stripped[$path]);
+            // A file no load reaches is judged as loaded plainly. A load not proven to run with the
+            // middleware read adds nothing to a file a proven load reaches
+            $loads = $fileLoads[$path] ?? ['plain' => $plain];
+            // A require_once or include_once is not proven to register anything either, as PHP
+            // skips it for a file already loaded, so a proven plain require leaves it nothing
+            $certain = array_filter($loads, fn (array $load): bool => $load['proven'] && ! $load['once']);
+            if ($certain !== []) {
+                $loads = $certain;
+                $once = [];
+            } else {
+                $proven = array_filter($loads, fn (array $load): bool => $load['proven']);
+                $loads = $proven !== [] ? $proven : $loads;
+                // Of the loads through a require_once or include_once only one registers, which
+                // one is not known, so they leave a route unprotected only when every one does
+                $once = array_filter($loads, fn (array $load): bool => $load['once']);
+                $loads = array_diff_key($loads, $once);
+            }
 
             $unprotected = [];
             foreach ($entry['walk']['routes'] as $route) {
-                // Each state is one registration of the route; any that leaves it unprotected is
-                // reported, the weakest first
+                // Each state is one registration of the route in its file, and each load of the
+                // file registers it again; any that leaves it unprotected is reported, the weakest first
                 $reasons = [];
                 foreach ($route['states'] as $state) {
-                    ['group' => $group, 'applied' => $applied, 'excluded' => $excluded] = $state;
-                    $reasons[] = match (true) {
-                        $fileStripped => 'stripped',
-                        // The file's 'web' reaches the route, so only an exclusion leaves it unprotected
-                        $fileCovered => $this->csrfRuns(true, $applied, $excluded) ? null : 'excluded',
-                        // A registration 'api' reaches, through the route's own chain or a group around
-                        // it, is judged as a route in an api file
-                        $apiOnly || ($apiGroupedOnly && ! in_array('api', $excluded, true)) || $this->apiReaches($state) => ($group || $applied !== []) && (isset($stripped[$path]) || ! $this->csrfRuns($group, $applied, $excluded)) ? 'stripped' : null,
-                        ! $group && $applied === [] => 'missing',
-                        $plainStripped => 'stripped',
-                        default => $this->csrfRuns($group, $applied, $excluded) ? null : 'stripped',
-                    };
+                    // Routes of one group share a state, so each load judges it once
+                    $stateKey = serialize($state);
+                    foreach ($loads as $loadKey => $load) {
+                        $reasons[] = $this->judgedOnce($verdicts, (string) $loadKey, $load, $stateKey, $state);
+                    }
+                    if ($once !== []) {
+                        $onceReasons = [];
+                        foreach ($once as $loadKey => $load) {
+                            $onceReasons[] = $this->judgedOnce($verdicts, (string) $loadKey, $load, $stateKey, $state);
+                        }
+                        if (! in_array(null, $onceReasons, true)) {
+                            // The mildest, as the one that registers may be any of them
+                            $reasons[] = in_array('excluded', $onceReasons, true) ? 'excluded' : (in_array('stripped', $onceReasons, true) ? 'stripped' : 'missing');
+                        }
+                    }
                 }
                 foreach (['missing', 'stripped', 'excluded'] as $reason) {
                     if (in_array($reason, $reasons, true)) {
@@ -1770,6 +1723,452 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             }
             $this->reportUnprotectedRoutes($entry['file'], $unprotected, $issues);
         }
+    }
+
+    /**
+     * unprotectedBy() for a load and a route state, kept in $verdicts by their keys, as the
+     * routes of one group share a state.
+     *
+     * @param  array<string, array<string, 'missing'|'stripped'|'excluded'|null>>  $verdicts
+     * @param  RouteLoad  $load
+     * @param  CsrfState  $state
+     * @return 'missing'|'stripped'|'excluded'|null
+     */
+    private function judgedOnce(array &$verdicts, string $loadKey, array $load, string $stateKey, array $state): ?string
+    {
+        if (! isset($verdicts[$loadKey]) || ! array_key_exists($stateKey, $verdicts[$loadKey])) {
+            $verdicts[$loadKey][$stateKey] = $this->unprotectedBy($load, $state);
+        }
+
+        return $verdicts[$loadKey][$stateKey];
+    }
+
+    /**
+     * Each load bootstrap/app.php or a provider makes, with the CSRF state of the groups around
+     * it there. A load is proven when it runs and its middleware is read: a load in a provider
+     * method Laravel never calls, or in a withRouting(using: ...) callback beside then:, is not
+     * (see sourceScopes()), nor is one with a middleware or exclusion that cannot be read. Of
+     * two loads of the same file in the same function with the same prefix and domain only the
+     * later in the order they run registers, as RouteCollection keys a route by its method,
+     * domain and URI and the later one replaces the earlier.
+     *
+     * @return list<array{string, RouteLoad}>
+     */
+    private function externalLoads(BootstrapRouteParser $routeParser): array
+    {
+        $scopes = [];
+        $ordered = [];
+        foreach ($routeParser->getExternalRouteFileLoads() as $load) {
+            $calls = $load['calls'];
+            $state = $calls === [] ? self::NO_CSRF : $this->groupsCsrfState($calls, $routeParser);
+            $scopes[$load['source']] ??= $this->sourceScopes($load['source']);
+            // The outermost group runs its callback where it is called, so its place orders the load
+            [$live, $scope, $order] = $this->scopeOf($calls[0] ?? $load['node'], $load['node'], $scopes[$load['source']]);
+            $place = $this->registrationPlace($calls, $routeParser);
+
+            $ordered[] = [
+                'key' => $place === null ? null : serialize([$load['source'], $scope, $load['file'], $place]),
+                'order' => [$load['source'], ...$order],
+                'load' => [$load['file'], ['state' => $state, 'known' => true, 'proven' => $live && ! $state['unread'], 'once' => false, 'apiFile' => false]],
+            ];
+        }
+        usort($ordered, fn (array $a, array $b): int => $a['order'] <=> $b['order']);
+
+        $loads = [];
+        foreach ($ordered as $entry) {
+            if ($entry['key'] === null) {
+                $loads[] = $entry['load'];
+            } else {
+                unset($loads[$entry['key']]);
+                $loads[$entry['key']] = $entry['load'];
+            }
+        }
+
+        return array_values($loads);
+    }
+
+    /**
+     * What decides whether and in what order a bootstrap or provider file's loads run, by file
+     * position. Dead: each method Laravel never runs, and a withRouting(using: ...) callback
+     * beside then:, which ApplicationBuilder then discards. A method runs when it is boot() or
+     * register(), map() in a class that extends the framework's RouteServiceProvider and never
+     * calls $this->routes(), as loadRoutes() calls map() only then, or a method one of those
+     * names in its own class, by a call or as a string, such as a callable, at any depth.
+     * Functions: each function or closure, the order of its loads; a $this->routes() callback
+     * runs after the method that sets it, so it counts as that method's, deferred.
+     *
+     * @return array{dead: list<array{int, int}>, functions: list<array{start: int, end: int, id: string, deferred: bool}>}
+     */
+    private function sourceScopes(string $source): array
+    {
+        $ast = $this->resolveNamesForMatching($this->parser->parseFile($source));
+
+        $dead = [];
+        foreach ($this->parser->findNodes($ast, Stmt\ClassLike::class) as $class) {
+            if (! $class instanceof Stmt\ClassLike) {
+                continue;
+            }
+            $live = ['boot' => true, 'register' => true];
+            if ($class instanceof Stmt\Class_ && $this->extendsRouteServiceProvider($class) && ! in_array('routes', $this->namesCalledIn($class->getMethods()), true)) {
+                $live['map'] = true;
+            }
+            do {
+                $changed = false;
+                foreach ($class->getMethods() as $method) {
+                    if (! isset($live[$method->name->toLowerString()])) {
+                        continue;
+                    }
+                    foreach ($this->namesCalledIn([$method]) as $name) {
+                        if (! isset($live[$name])) {
+                            $live[$name] = true;
+                            $changed = true;
+                        }
+                    }
+                }
+            } while ($changed);
+
+            foreach ($class->getMethods() as $method) {
+                if (! isset($live[$method->name->toLowerString()])) {
+                    $dead[] = [$method->getStartFilePos(), $method->getEndFilePos()];
+                }
+            }
+        }
+
+        $deferred = [];
+        foreach ($this->parser->findNodes($ast, Expr\MethodCall::class) as $call) {
+            if (! $call instanceof Expr\MethodCall || ! $call->name instanceof Identifier) {
+                continue;
+            }
+            $name = $call->name->toLowerString();
+            if ($name === 'withrouting') {
+                // ApplicationBuilder::withRouting() takes $using first and $then ninth, and
+                // replaces $using when $then is callable, which null is not
+                $arguments = [];
+                foreach ($call->args as $index => $arg) {
+                    if ($arg instanceof Node\Arg) {
+                        $arguments[$arg->name?->toLowerString() ?? [0 => 'using', 8 => 'then'][$index] ?? ''] = $arg->value;
+                    }
+                }
+                $then = $arguments['then'] ?? null;
+                if (isset($arguments['using']) && $then !== null
+                    && ! ($then instanceof Expr\ConstFetch && $then->name->toLowerString() === 'null')) {
+                    $dead[] = [$arguments['using']->getStartFilePos(), $arguments['using']->getEndFilePos()];
+                }
+            }
+            $first = $call->args[0] ?? null;
+            if ($name === 'routes' && $call->var instanceof Expr\Variable && $call->var->name === 'this'
+                && $first instanceof Node\Arg && ($first->value instanceof Expr\Closure || $first->value instanceof Expr\ArrowFunction)) {
+                $deferred[spl_object_id($first->value)] = true;
+            }
+        }
+
+        $functions = [];
+        foreach ($this->parser->findNodes($ast, Node\FunctionLike::class) as $node) {
+            $functions[] = [
+                'start' => $node->getStartFilePos(),
+                'end' => $node->getEndFilePos(),
+                'id' => $node->getStartFilePos().':'.$node->getEndFilePos(),
+                'deferred' => isset($deferred[spl_object_id($node)]),
+            ];
+        }
+        // A deferred callback belongs to the function around it
+        foreach ($functions as $index => $function) {
+            if ($function['deferred']) {
+                $around = $this->innermostFunction($functions, $function['start'] - 1, $function['end'] + 1);
+                $functions[$index]['id'] = $around['id'] ?? 'file';
+            }
+        }
+
+        return ['dead' => $dead, 'functions' => $functions];
+    }
+
+    /**
+     * The innermost function that spans the positions $start to $end.
+     *
+     * @param  list<array{start: int, end: int, id: string, deferred: bool}>  $functions
+     * @return array{start: int, end: int, id: string, deferred: bool}|null
+     */
+    private function innermostFunction(array $functions, int $start, int $end): ?array
+    {
+        $innermost = null;
+        foreach ($functions as $function) {
+            if ($function['start'] <= $start && $end <= $function['end']
+                && ($innermost === null || $function['end'] - $function['start'] < $innermost['end'] - $innermost['start'])) {
+                $innermost = $function;
+            }
+        }
+
+        return $innermost;
+    }
+
+    /**
+     * Whether a class extends the framework's RouteServiceProvider, directly or through
+     * application classes read from their files (see applicationParent()).
+     */
+    private function extendsRouteServiceProvider(Stmt\Class_ $class): bool
+    {
+        if ($class->extends === null) {
+            return false;
+        }
+        $resolved = $class->extends->getAttribute('resolvedName');
+        $parent = ltrim(($resolved instanceof Name ? $resolved : $class->extends)->toString(), '\\');
+
+        for ($depth = 0; $depth < 5; $depth++) {
+            if ($parent === 'Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider') {
+                return true;
+            }
+            $next = $this->applicationParent($parent);
+            if (! is_string($next)) {
+                return false;
+            }
+            $parent = ltrim($next, '\\');
+        }
+
+        return false;
+    }
+
+    /**
+     * The method names methods may call: those of their method and static calls, and their
+     * strings, which a callable may name. Lowercased, as PHP matches method names.
+     *
+     * @param  array<Stmt\ClassMethod>  $methods
+     * @return list<string>
+     */
+    private function namesCalledIn(array $methods): array
+    {
+        $names = [];
+        foreach ($this->parser->findNodes($methods, Node::class) as $node) {
+            if (($node instanceof Expr\MethodCall || $node instanceof Expr\NullsafeMethodCall || $node instanceof Expr\StaticCall)
+                && $node->name instanceof Identifier) {
+                $names[] = $node->name->toLowerString();
+            } elseif ($node instanceof String_) {
+                $names[] = strtolower($node->value);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * Whether a load runs, false inside anything dead (see sourceScopes()), the innermost
+     * function around $anchor, its outermost group call or the load itself, whose loads run in
+     * order, and the load's place in that order: a deferred callback's loads after the rest.
+     *
+     * @param  array{dead: list<array{int, int}>, functions: list<array{start: int, end: int, id: string, deferred: bool}>}  $scopes
+     * @return array{bool, string, array{int, int}}
+     */
+    private function scopeOf(Node $anchor, Node $node, array $scopes): array
+    {
+        $position = $node->getStartFilePos();
+
+        $live = true;
+        foreach ($scopes['dead'] as [$start, $end]) {
+            if ($start <= $position && $position <= $end) {
+                $live = false;
+            }
+        }
+
+        $function = $this->innermostFunction($scopes['functions'], $anchor->getStartFilePos(), $anchor->getEndFilePos());
+
+        return [$live, $function['id'] ?? 'file', [($function['deferred'] ?? false) ? 1 : 0, $position]];
+    }
+
+    /**
+     * The prefixes and domains these nested group calls give the routes they load, outermost
+     * first, or null when one cannot be read.
+     *
+     * @param  list<Expr\MethodCall|Expr\StaticCall>  $calls
+     */
+    private function registrationPlace(array $calls, BootstrapRouteParser $routeParser): ?string
+    {
+        $place = [];
+        foreach ($calls as $group) {
+            // Within one chain a later prefix() or domain() replaces the one before it, as
+            // RouteRegistrar::attribute() sets the attribute; nested groups add to it
+            $chain = [];
+            foreach ($routeParser->groupChain($group) as $link) {
+                $name = $link->name instanceof Identifier ? $link->name->toLowerString() : null;
+                if ($name === 'attribute' || $name === null) {
+                    return null;
+                }
+
+                $values = [];
+                if ($name === 'prefix' || $name === 'domain') {
+                    $first = $link->args[0] ?? null;
+                    $values = [$name => $first instanceof Node\Arg ? [BootstrapRouteParser::heldValue($first->value)] : [null]];
+                } elseif ($name === 'group' && count($link->args) > 1) {
+                    $first = $link->args[0];
+                    if (! $first instanceof Node\Arg || ! BootstrapRouteParser::heldValue($first->value) instanceof Expr\Array_) {
+                        return null;
+                    }
+                    foreach (['prefix', 'domain'] as $key) {
+                        $values[$key] = $routeParser->groupAttributeEntries([$first], $key);
+                    }
+                }
+
+                foreach ($values as $key => $entries) {
+                    foreach ($entries as $entry) {
+                        if (! $entry instanceof String_) {
+                            return null;
+                        }
+                        // An empty prefix or domain gives the same URI as none
+                        $value = trim($entry->value, '/');
+                        if ($value === '') {
+                            unset($chain[$key]);
+                        } else {
+                            $chain[$key] = $value;
+                        }
+                    }
+                }
+            }
+            if ($chain !== []) {
+                ksort($chain);
+                $place[] = $chain;
+            }
+        }
+
+        return serialize($place);
+    }
+
+    /**
+     * Follow loads down require chains: each file a loaded route file loads gets that load merged
+     * with the groups around the require (see loadThrough()). A file keeps at most
+     * MAX_REGISTRATIONS distinct loads, so a require cycle or a file loaded many ways ends.
+     *
+     * @param  array<string, list<array{file: string, state: CsrfState, once: bool}>>  $includes  The files each route file loads
+     * @param  array<string, array<string, RouteLoad>>  $fileLoads  Each file's loads, keyed as addLoad() keys them
+     * @param  list<array{string, RouteLoad}>  $queue  Loads of files whose own loads are still to follow
+     */
+    private function propagateLoads(array $includes, array &$fileLoads, array $queue): void
+    {
+        while ($queue !== []) {
+            [$path, $load] = array_pop($queue);
+            foreach ($includes[$path] ?? [] as $include) {
+                $child = $this->loadThrough($load, $include['state'], $include['once']);
+                if ($child !== null && $this->addLoad($fileLoads, $include['file'], $child)) {
+                    $queue[] = [$include['file'], $child];
+                }
+            }
+        }
+    }
+
+    /**
+     * Record a load of a file unless the file already has it, or has MAX_REGISTRATIONS loads. Its
+     * middleware lists are kept sorted and without repeats, so two ways to the same load are one.
+     *
+     * @param  array<string, array<string, RouteLoad>>  $fileLoads
+     * @param  RouteLoad  $load
+     */
+    private function addLoad(array &$fileLoads, string $file, array $load): bool
+    {
+        $state = $load['state'];
+        $applied = array_values(array_unique($state['applied']));
+        sort($applied);
+        $names = array_values(array_unique(array_filter($state['excluded'], is_string(...))));
+        sort($names);
+        $load['state'] = [
+            ...$state,
+            'applied' => $applied,
+            'excluded' => in_array(null, $state['excluded'], true) ? [...$names, null] : $names,
+        ];
+
+        $key = serialize($load);
+        if (isset($fileLoads[$file][$key]) || count($fileLoads[$file] ?? []) >= self::MAX_REGISTRATIONS) {
+            return false;
+        }
+        $fileLoads[$file][$key] = $load;
+
+        return true;
+    }
+
+    /**
+     * The load a route file's load gives a file it loads, with $state the groups around the
+     * require: both merged, as Laravel merges a group's middleware into what it encloses. A
+     * load stays an api file's while neither 'web' nor a CSRF class reaches it. From a file no
+     * known load reaches, a require that excludes the CSRF middleware cannot take protection
+     * away, so it passes nothing on: null.
+     *
+     * A load is proven while every load on its way runs and its middleware is read, and once
+     * from the first require_once or include_once on its way.
+     *
+     * @param  RouteLoad  $load
+     * @param  CsrfState  $state
+     * @return RouteLoad|null
+     */
+    private function loadThrough(array $load, array $state, bool $once): ?array
+    {
+        if (! $load['known'] && $this->namesStripCsrf($state['excluded'])) {
+            return null;
+        }
+
+        $merged = $this->mergeCsrfState($load['state'], $state);
+
+        return [
+            'state' => $merged,
+            'known' => $load['known'],
+            'proven' => $load['proven'] && ! $merged['unread'],
+            'once' => $load['once'] || $once,
+            'apiFile' => $load['apiFile'] && ! $this->appliesCsrf($merged),
+        ];
+    }
+
+    /**
+     * Whether a load leaves a route unprotected, with $route the route's own state in its file,
+     * merged with the load's as Laravel merges a group's middleware into every route inside it:
+     * null when it does not, and otherwise the reason reportUnprotectedRoutes() reports.
+     *
+     * A load 'web' or a CSRF class reaches is a web load, unless its own exclusions remove the
+     * check without stripping the web group's, as excluding the exact class it applies does:
+     * such a load is judged as a plain one. On a web load the route is reported when its merged
+     * exclusions remove every check, as 'stripped' when the load itself excludes CSRF and as
+     * 'excluded' when only the route does. In an api file, or where 'api' reaches the route
+     * through the load, its own chain or a group around it, only a route that applies 'web' or a
+     * CSRF class itself is judged, by the exclusions merged into it, as 'api' routes run
+     * without CSRF cookies. Otherwise a route 'web' never reaches is 'missing', and one whose
+     * check its exclusions remove is 'stripped'.
+     *
+     * @param  RouteLoad  $load
+     * @param  CsrfState  $route
+     * @return 'missing'|'stripped'|'excluded'|null
+     */
+    private function unprotectedBy(array $load, array $route): ?string
+    {
+        $state = $this->mergeCsrfState($load['state'], $route);
+        $runs = $this->csrfRuns($state['group'], $state['applied'], $state['excluded']);
+
+        ['group' => $loadGroup, 'applied' => $loadApplied, 'excluded' => $loadExcluded] = $load['state'];
+        $strips = $this->namesStripCsrf($loadExcluded);
+        if ($this->appliesCsrf($load['state']) && ($strips || $this->csrfRuns($loadGroup, $loadApplied, $loadExcluded))) {
+            return match (true) {
+                $runs => null,
+                $strips => 'stripped',
+                default => 'excluded',
+            };
+        }
+
+        // Only what the route applies itself counts from here: the load applies nothing, or what
+        // it applies its own exclusions remove
+        $reached = $this->appliesCsrf($route);
+        if ($load['apiFile'] || $this->apiReaches($state)) {
+            return $reached && ! $runs ? 'stripped' : null;
+        }
+
+        return match (true) {
+            ! $reached => 'missing',
+            $runs => null,
+            default => 'stripped',
+        };
+    }
+
+    /**
+     * Whether 'web' or a CSRF class is applied at all, so a load is a web load even when the
+     * check is then excluded.
+     *
+     * @param  CsrfState  $state
+     */
+    private function appliesCsrf(array $state): bool
+    {
+        return $state['group'] || $state['applied'] !== [];
     }
 
     /**
@@ -1819,9 +2218,11 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     /**
      * Walk a route file once and resolve what reaches each route: its state-changing routes,
      * each with the CSRF state of its chain and every group around it, and the files it loads
-     * by a require or a group() path argument, each with the flags csrfFlags() hands them.
+     * by a require or a group() path argument, each with the CSRF state of the groups around
+     * the load, which the loaded file's routes merge with what loads this file, and whether it
+     * is a require_once or include_once.
      *
-     * @return array{routes: list<array{line: int, method: string, states: list<CsrfState>}>, includes: list<array{file: string, web: bool, strips: bool, reached: bool, api: bool, dropsApi: bool}>}
+     * @return array{routes: list<array{line: int, method: string, states: list<CsrfState>}>, includes: list<array{file: string, state: CsrfState, once: bool}>}
      */
     private function walkRouteFile(string $file, BootstrapRouteParser $routeParser): array
     {
@@ -1864,8 +2265,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             if ($path === null) {
                 continue;
             }
+            // A require_once of a file already required registers nothing
+            $once = in_array($include['include']->type, [Expr\Include_::TYPE_INCLUDE_ONCE, Expr\Include_::TYPE_REQUIRE_ONCE], true);
             foreach ($this->statesReaching($include['closures'], $groups, self::NO_CSRF) as $state) {
-                $includes[] = ['file' => $path, ...$this->csrfFlags($state)];
+                $includes[] = ['file' => $path, 'state' => $state, 'once' => $once];
             }
         }
         foreach ($walk['paths'] as $load) {
@@ -1874,7 +2277,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
             foreach ($this->statesReaching($load['closures'], $groups, $load['state']) as $state) {
-                $includes[] = ['file' => $path, ...$this->csrfFlags($state)];
+                $includes[] = ['file' => $path, 'state' => $state, 'once' => false];
             }
         }
 
@@ -1935,6 +2338,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             'applied' => [...$a['applied'], ...$b['applied']],
             'excluded' => [...$a['excluded'], ...$b['excluded']],
             'api' => $a['api'] || $b['api'],
+            'unread' => $a['unread'] || $b['unread'],
         ];
     }
 
@@ -1982,28 +2386,6 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
-    }
-
-    /**
-     * What a group or registration hands the file it loads: 'web' when a CSRF check runs there,
-     * strips when an exclusion removes the web group's CSRF from everything inside it, reached
-     * when 'web' or a CSRF class is applied at all, so the load is a web load even when the
-     * check is then excluded, api when 'api' reaches it (see apiReaches()), which makes the
-     * loaded file an api file unless the load is reached or a plain load also loads it, and
-     * dropsApi when it excludes 'api', which an api-grouped file's load then does not pass on.
-     *
-     * @param  CsrfState  $state
-     * @return array{web: bool, strips: bool, reached: bool, api: bool, dropsApi: bool}
-     */
-    private function csrfFlags(array $state): array
-    {
-        return [
-            'web' => $this->csrfRuns($state['group'], $state['applied'], $state['excluded']),
-            'strips' => $this->namesStripCsrf($state['excluded']),
-            'reached' => $state['group'] || $state['applied'] !== [],
-            'api' => $this->apiReaches($state),
-            'dropsApi' => in_array('api', $state['excluded'], true),
-        ];
     }
 
     /**
@@ -2360,7 +2742,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             if ($registers) {
                 $action = $this->routeActionMiddleware($link, $routeParser);
             } elseif ($name === 'middleware') {
-                $names = $this->entryNames($routeParser->middlewareEntries($link));
+                $names = $this->entryNames(BootstrapRouteParser::heldEntries($routeParser->middlewareEntries($link)));
                 if ($registered) {
                     $applied = [...$applied, ...$names];
                 } else {
@@ -2368,7 +2750,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             } elseif ($name === 'withoutmiddleware') {
                 // Route::withoutMiddleware() and the registrar take one argument and wrap it
-                $names = $this->entryNames($this->wrappedFirstArgument($link));
+                $names = $this->entryNames(BootstrapRouteParser::heldEntries($this->wrappedFirstArgument($link)));
                 if ($registered) {
                     $excluded = [...$excluded, ...$names];
                 } else {
@@ -2483,6 +2865,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             'applied' => array_values(array_filter($middleware, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null)),
             'excluded' => $excluded,
             'api' => in_array('api', $middleware, true),
+            'unread' => in_array(null, $middleware, true) || in_array(null, $excluded, true),
         ];
     }
 

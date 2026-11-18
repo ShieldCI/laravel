@@ -4550,7 +4550,11 @@ PHP,
             "routes/{$shared}-inner.php" => "<?php\n\nRoute::post('/checkout', CheckoutController::class);\n",
         ]);
 
-        $this->assertPassed($result);
+        // The provider's partner load registers both files again without 'web'
+        $lines = $this->issueLines($result);
+        sort($lines);
+        $this->assertSame(["{$shared}-inner.php:3", "{$shared}.php:3"], $lines);
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
     }
 
     /**
@@ -8173,5 +8177,312 @@ PHP;
 
         // Should pass — both versioned API files are registered under 'api' middleware in provider
         $this->assertPassed($result);
+    }
+
+    // ==================== Each Load of a Route File ====================
+
+    /**
+     * @dataProvider csrfClassExcludedUnderApiProvider
+     *
+     * @param  array<string, string>  $files
+     * @param  string  $line  The reported route as file:line
+     */
+    #[DataProvider('csrfClassExcludedUnderApiProvider')]
+    public function test_reports_route_excluding_the_csrf_class_its_api_group_applies(array $files, string $line): void
+    {
+        $result = $this->analyzeRouteFiles($files);
+
+        $this->assertFailed($result);
+        $this->assertSame([$line], $this->issueLines($result));
+    }
+
+    /**
+     * Each case: an api group that applies the CSRF class, loading a route that excludes it,
+     * whether bootstrap/app.php or the route file itself declares the group.
+     *
+     * @return array<string, array{array<string, string>, string}>
+     */
+    public static function csrfClassExcludedUnderApiProvider(): array
+    {
+        $csrf = '\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class';
+        $route = "Route::post('/spa/carts', CartController::class)->withoutMiddleware({$csrf});";
+
+        return [
+            'group in bootstrap/app.php' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware(['api', {$csrf}])->group(base_path('routes/spa.php'));"),
+                'routes/spa.php' => "<?php\n\n{$route}\n",
+            ], 'spa.php:3'],
+            'group in the route file' => [[
+                'routes/spa.php' => "<?php\n\nRoute::middleware(['api', {$csrf}])->group(function () {\n    {$route}\n});\n",
+            ], 'spa.php:4'],
+        ];
+    }
+
+    public function test_csrf_class_a_route_applies_survives_a_load_excluding_a_class_it_does_not_extend(): void
+    {
+        $csrf = '\\Illuminate\\Foundation\\Http\\Middleware\\ValidateCsrfToken::class';
+        $result = $this->onLaravelMajor(12, fn (): ResultInterface => $this->analyzeRouteFiles([
+            'app/Http/Middleware/VerifyCsrfToken.php' => self::APP_VERIFY_CSRF_TOKEN,
+            'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->withoutMiddleware({$csrf})->group(base_path('routes/partner.php'));"),
+            'routes/partner.php' => "<?php\n\nRoute::post('/partner/quotes', QuoteController::class)->middleware(\\App\\Http\\Middleware\\VerifyCsrfToken::class);\nRoute::post('/partner/invoices', InvoiceController::class);\n",
+        ]));
+
+        // Before Laravel 13 ValidateCsrfToken extends VerifyCsrfToken, so excluding it leaves the
+        // application class the first route applies; the second route has no check left
+        $this->assertFailed($result);
+        $this->assertSame(['partner.php:4'], $this->issueLines($result));
+        $this->assertHasIssueContaining('the CSRF middleware is excluded from it', $result);
+    }
+
+    /**
+     * @dataProvider loadsWithoutWebProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('loadsWithoutWebProvider')]
+    public function test_reports_route_file_one_of_its_loads_leaves_without_web(array $files): void
+    {
+        $result = $this->analyzeRouteFiles($files);
+
+        $this->assertFailed($result);
+        $this->assertSame(['shop.php:3'], $this->issueLines($result));
+        $this->assertHasIssueContaining('no "web" middleware detected', $result);
+    }
+
+    /**
+     * Each case: a route file one load registers under 'web' and another without it, which
+     * Laravel registers once per load.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function loadsWithoutWebProvider(): array
+    {
+        $shop = "<?php\n\nRoute::post('/checkout', CheckoutController::class);\n";
+
+        return [
+            'two groups in bootstrap/app.php' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'two plain loads and a web load' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n            Route::prefix('archive')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'two route files, one inside a web group' => [[
+                'routes/storefront.php' => "<?php\n\nRoute::middleware('web')->group(function () {\n    require __DIR__.'/shop.php';\n});\n",
+                'routes/legacy.php' => "<?php\n\nRoute::prefix('legacy')->group(function () {\n    require __DIR__.'/shop.php';\n});\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'one route file, inside and outside a web group' => [[
+                'routes/storefront.php' => "<?php\n\nRoute::middleware('web')->group(base_path('routes/shop.php'));\nRoute::prefix('legacy')->group(base_path('routes/shop.php'));\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a provider routes() closure' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        \$this->routes(function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n        });\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'provider methods map() calls' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function map(): void\n    {\n        \$this->mapWebRoutes();\n        \$this->mapLegacyRoutes();\n    }\n\n    protected function mapWebRoutes(): void\n    {\n        Route::middleware('web')->group(base_path('routes/shop.php'));\n    }\n\n    protected function mapLegacyRoutes(): void\n    {\n        Route::prefix('legacy')->group(base_path('routes/shop.php'));\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later plain load replacing a web load made by loadRoutesFrom() in a group' => [[
+                'app/Providers/AppServiceProvider.php' => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass AppServiceProvider extends \\Illuminate\\Support\\ServiceProvider\n{\n    public function boot(): void\n    {\n        Route::middleware('web')->group(function () {\n            \$this->loadRoutesFrom(base_path('routes/shop.php'));\n        });\n        Route::group([], base_path('routes/shop.php'));\n    }\n}\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a later plain load through a path variable' => [[
+                'bootstrap/app.php' => self::bootstrapThen("\$shop = base_path('routes/shop.php');\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::group([], \$shop);"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later plain load through a variable holding a list of paths' => [[
+                'bootstrap/app.php' => self::bootstrapThen("\$files = [base_path('routes/shop.php')];\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::group([], \$files);"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a using: callback beside then: null, which Laravel keeps' => [[
+                'app/Providers/AppServiceProvider.php' => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass AppServiceProvider extends \\Illuminate\\Support\\ServiceProvider\n{\n    public function boot(): void\n    {\n        Route::middleware('web')->group(base_path('routes/shop.php'));\n    }\n}\n",
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        using: function () {\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n        },\n        then: null,\n    )\n    ->create();\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a later plain load replacing a web load of the same routes' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::group([], base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider loadsUnderWebProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('loadsUnderWebProvider')]
+    public function test_skips_route_file_every_load_registers_under_web(array $files): void
+    {
+        $this->assertPassed($this->analyzeRouteFiles($files));
+    }
+
+    /**
+     * Each case: a route file every load of which registers under 'web', including through
+     * require cycles, which must end.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function loadsUnderWebProvider(): array
+    {
+        $shop = "<?php\n\nRoute::post('/checkout', CheckoutController::class);\n";
+
+        return [
+            'one web group in bootstrap/app.php' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'two web groups in bootstrap/app.php' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::middleware('web')->prefix('legacy')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'routes/web.php and a web group in another route file' => [[
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/shop.php';\n",
+                'routes/storefront.php' => "<?php\n\nRoute::middleware('web')->prefix('store')->group(base_path('routes/shop.php'));\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'routes/web.php and a require from a route file nothing loads' => [[
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/shop.php';\n",
+                'routes/legacy.php' => "<?php\n\nrequire __DIR__.'/shop.php';\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'routes/web.php required by a route file nothing loads' => [[
+                'routes/web.php' => $shop,
+                'routes/mirror.php' => "<?php\n\nRoute::prefix('m')->group(function () {\n    require __DIR__.'/web.php';\n});\n",
+            ]],
+            'a require_once of a file routes/web.php already required' => [[
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('legacy')->group(base_path('routes/legacy.php'));\n        },\n    )\n    ->create();\n",
+                'routes/web.php' => "<?php\n\nrequire_once __DIR__.'/shop.php';\n",
+                'routes/legacy.php' => "<?php\n\nrequire_once __DIR__.'/shop.php';\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a provider method nothing calls' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        Route::middleware('web')->group(base_path('routes/shop.php'));\n    }\n\n    protected function mapLegacyRoutes(): void\n    {\n        Route::prefix('legacy')->group(base_path('routes/shop.php'));\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a load whose middleware cannot be read' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));\n            Route::middleware(config('shop.middleware'))->prefix('m')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later web load replacing a plain load of the same routes' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::group([], base_path('routes/shop.php'));\n            Route::middleware('web')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'map() beside a routes() closure, which Laravel then never calls' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        \$this->routes(function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n        });\n    }\n\n    public function map(): void\n    {\n        Route::prefix('legacy')->group(base_path('routes/shop.php'));\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'map() on a provider that is not a RouteServiceProvider' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->group(base_path('routes/shop.php'));"),
+                'app/Providers/AppServiceProvider.php' => "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass AppServiceProvider extends \\Illuminate\\Support\\ServiceProvider\n{\n    public function map(): void\n    {\n        Route::prefix('legacy')->group(base_path('routes/shop.php'));\n    }\n}\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a require_once after a plain require' => [[
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        web: __DIR__.'/../routes/web.php',\n        then: function () {\n            Route::prefix('legacy')->group(base_path('routes/legacy.php'));\n        },\n    )\n    ->create();\n",
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/shop.php';\n",
+                'routes/legacy.php' => "<?php\n\nrequire_once __DIR__.'/shop.php';\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a chained prefix() replacing the one before it' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::prefix('x')->prefix('legacy')->group(base_path('routes/shop.php'));\n            Route::middleware('web')->prefix('legacy')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a require in map() beside a routes() closure' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        \$this->routes(function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n        });\n    }\n\n    public function map(): void\n    {\n        require base_path('routes/shop.php');\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'loadRoutesFrom() in a provider method nothing calls' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        Route::middleware('web')->group(base_path('routes/shop.php'));\n    }\n\n    protected function legacyRoutes(): void\n    {\n        \$this->loadRoutesFrom(base_path('routes/shop.php'));\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a group in a provider method nothing calls' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        Route::middleware('web')->group(base_path('routes/shop.php'));\n    }\n\n    protected function legacyRoutes(): void\n    {\n        Route::group([], base_path('routes/shop.php'));\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later web load replacing a require inside a group callback' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::group([], function () {\n                require base_path('routes/shop.php');\n            });\n            Route::middleware('web')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later web load replacing a load under an empty prefix' => [[
+                'bootstrap/app.php' => self::bootstrapThen("Route::prefix('/')->group(base_path('routes/shop.php'));\n            Route::middleware('web')->prefix('')->group(base_path('routes/shop.php'));"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a using: callback beside then:, which Laravel discards' => [[
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        using: function () {\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n        },\n        then: function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n        },\n    )\n    ->create();\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a routes() closure load replacing a load boot() makes first' => [[
+                'app/Providers/RouteServiceProvider.php' => self::routeServiceProvider("public function boot(): void\n    {\n        Route::group([], base_path('routes/shop.php'));\n        \$this->routes(function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n        });\n    }"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later web load through a path variable' => [[
+                'bootstrap/app.php' => self::bootstrapThen("\$shop = base_path('routes/shop.php');\n            Route::group([], base_path('routes/shop.php'));\n            Route::middleware('web')->group(\$shop);"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a later web load through a variable holding a list of paths' => [[
+                'bootstrap/app.php' => self::bootstrapThen("\$files = [base_path('routes/shop.php')];\n            Route::group([], base_path('routes/shop.php'));\n            Route::middleware('web')->group(\$files);"),
+                'routes/shop.php' => $shop,
+            ]],
+            'a positional using callback beside then:' => [[
+                'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        function () {\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n        },\n        then: function () {\n            Route::middleware('web')->group(base_path('routes/shop.php'));\n        },\n    )\n    ->create();\n",
+                'routes/shop.php' => $shop,
+            ]],
+            'a require cycle under routes/web.php' => [[
+                'routes/web.php' => "<?php\n\nrequire __DIR__.'/shop.php';\n",
+                'routes/shop.php' => "<?php\n\nRoute::post('/checkout', CheckoutController::class);\nRoute::prefix('again')->group(function () {\n    require_once __DIR__.'/cart.php';\n});\n",
+                'routes/cart.php' => "<?php\n\nRoute::post('/cart', CartController::class);\nRoute::prefix('more')->group(function () {\n    require_once __DIR__.'/shop.php';\n});\n",
+            ]],
+        ];
+    }
+
+    public function test_reports_route_once_when_several_loads_leave_it_unprotected(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'bootstrap/app.php' => self::bootstrapThen("Route::middleware('web')->withoutMiddleware('web')->group(base_path('routes/shop.php'));\n            Route::prefix('legacy')->group(base_path('routes/shop.php'));\n            Route::prefix('archive')->group(base_path('routes/shop.php'));"),
+            'routes/shop.php' => "<?php\n\nRoute::post('/checkout', CheckoutController::class);\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['shop.php:3'], $this->issueLines($result));
+    }
+
+    public function test_require_cycle_outside_any_known_load_ends(): void
+    {
+        $result = $this->analyzeRouteFiles([
+            'routes/shop.php' => "<?php\n\nRoute::post('/checkout', CheckoutController::class);\nRoute::middleware('web')->group(function () {\n    require __DIR__.'/cart.php';\n});\n",
+            'routes/cart.php' => "<?php\n\nRoute::post('/cart', CartController::class);\nrequire __DIR__.'/shop.php';\n",
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertSame(['shop.php:3'], $this->issueLines($result));
+    }
+
+    /**
+     * bootstrap/app.php registering routes in withRouting(then: ...).
+     */
+    private static function bootstrapThen(string $then): string
+    {
+        return "<?php\n\nuse Illuminate\\Foundation\\Application;\nuse Illuminate\\Support\\Facades\\Route;\n\nreturn Application::configure(basePath: dirname(__DIR__))\n    ->withRouting(\n        then: function () {\n            {$then}\n        },\n    )\n    ->create();\n";
+    }
+
+    /**
+     * app/Providers/RouteServiceProvider.php with $body as its class body.
+     */
+    private static function routeServiceProvider(string $body): string
+    {
+        return "<?php\n\nnamespace App\\Providers;\n\nuse Illuminate\\Support\\Facades\\Route;\n\nclass RouteServiceProvider extends \\Illuminate\\Foundation\\Support\\Providers\\RouteServiceProvider\n{\n    {$body}\n}\n";
+    }
+
+    /**
+     * Each issue as file:line, the file by its base name.
+     *
+     * @return list<string>
+     */
+    private function issueLines(ResultInterface $result): array
+    {
+        return array_values(array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues()));
     }
 }

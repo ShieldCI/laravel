@@ -229,6 +229,57 @@ class DatabaseConnectionCheckerTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_checks_the_live_read_pdo_of_a_connection_missing_from_config(): void
+    {
+        // A connection registered at runtime, such as through DB::connectUsing(), has no config
+        // entry to probe, so only the live connection can show its read side.
+        $connection = Mockery::mock(Connection::class);
+        $connection->shouldReceive('getPdo')->andReturn(Mockery::mock(PDO::class));
+        $connection->shouldReceive('getReadPdo')
+            ->once()
+            ->andThrow(new \PDOException('SQLSTATE[HY000] [2002] Connection refused'));
+
+        $manager = Mockery::mock(DatabaseManager::class);
+        $manager->shouldReceive('connection')->with('runtime')->andReturn($connection);
+
+        $factory = Mockery::mock(ConnectionFactory::class);
+        $factory->shouldNotReceive('make');
+
+        $checker = new DatabaseConnectionChecker($manager, $factory);
+        $result = $checker->check('runtime');
+
+        $this->assertFalse($result->successful);
+        $this->assertSame('Read connection: SQLSTATE[HY000] [2002] Connection refused', $result->message);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_checks_the_live_read_pdo_of_a_connection_without_a_driver(): void
+    {
+        // A resolver keyed by the connection name runs before the manager reads the driver, so
+        // such a config may name none; the factory could not build it from that config.
+        config(['database.connections.resolved' => [
+            'read' => ['host' => 'replica.internal'],
+            'write' => ['host' => 'primary.internal'],
+        ]]);
+
+        $connection = Mockery::mock(Connection::class);
+        $connection->shouldReceive('getPdo')->andReturn(Mockery::mock(PDO::class));
+        $connection->shouldReceive('getReadPdo')->once()->andReturn(Mockery::mock(PDO::class));
+
+        $manager = Mockery::mock(DatabaseManager::class);
+        $manager->shouldReceive('connection')->with('resolved')->andReturn($connection);
+
+        $factory = Mockery::mock(ConnectionFactory::class);
+        $factory->shouldNotReceive('make');
+
+        $checker = new DatabaseConnectionChecker($manager, $factory);
+
+        $this->assertTrue($checker->check('resolved')->successful);
+    }
+
+    /** @test */
+    #[Test]
     public function it_checks_the_live_read_pdo_when_a_resolver_is_registered_for_the_driver(): void
     {
         config(['database.connections.split' => [

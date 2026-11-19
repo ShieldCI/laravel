@@ -157,6 +157,16 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     private ?array $webGroupCsrf = null;
 
     /**
+     * The CSRF middleware a bootstrap/app.php web group surely keeps when it is not modelled only
+     * because an append or prepend list cannot be read. Appends and prepends only add entries
+     * (Middleware::getMiddlewareGroups()), so the default or readable group's CSRF entries left
+     * after replacements and removals still run. Null otherwise.
+     *
+     * @var list<string>|null
+     */
+    private ?array $webGroupCsrfKept = null;
+
+    /**
      * Whether the Kernel's global $middleware runs CSRF middleware, as read from a Kernel the
      * application uses and nothing may change. withoutMiddleware() and excluded_middleware filter
      * route middleware only, so no route exclusion removes that check.
@@ -205,6 +215,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     {
         $issues = [];
         $this->webGroupCsrf = null;
+        $this->webGroupCsrfKept = null;
         $this->globalCsrf = false;
 
         // Check Blade templates for forms without @csrf
@@ -827,7 +838,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         // A Kernel that cannot be read conclusively counts as registering CSRF if its code names it
-        $registered = $runsCsrf ?? $this->csrfMiddlewareIn(FileParser::stripAllComments($content)) !== null;
+        $registered = $runsCsrf ?? ($this->csrfMiddlewareIn(FileParser::stripAllComments($content)) !== null || $this->kernelNamesCsrfSubclass($kernelFile));
 
         // A commented-out entry is the more specific finding for a Kernel that registers none
         if ($commentedOut === [] && ! $registered) {
@@ -846,6 +857,25 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         array_push($issues, ...$commentedOut);
+    }
+
+    /**
+     * Whether the Kernel's code names, as a string or X::class, an application class whose parents
+     * read from app/ reach the framework's CSRF middleware under any name (see csrfChain()), so
+     * that an inconclusive Kernel credits such a class, such as an alias target, as it credits a
+     * CSRF name in its text.
+     */
+    private function kernelNamesCsrfSubclass(string $kernelFile): bool
+    {
+        foreach ($this->parser->findNodes($this->resolveNamesForMatching($this->parser->parseFile($kernelFile)), Expr::class) as $expr) {
+            $name = $expr instanceof Expr ? $this->middlewareName($expr) : null;
+
+            if ($name !== null && $this->csrfChain(explode(':', $name, 2)[0]) === 'framework') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1187,12 +1217,15 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $class = ltrim($parent, '\\');
         }
 
-        $framework = 'Illuminate\\Foundation\\Http\\Middleware\\';
-        if (str_starts_with($class, $framework) && in_array(substr($class, strlen($framework)), self::CSRF_MIDDLEWARE, true)) {
+        // PHP class names are case-insensitive, so a lowercase \illuminate\...\verifycsrftoken names the same class
+        $framework = 'illuminate\\foundation\\http\\middleware\\';
+        $lower = strtolower($class);
+        if (str_starts_with($lower, $framework)
+            && in_array(substr($lower, strlen($framework)), array_map(strtolower(...), self::CSRF_MIDDLEWARE), true)) {
             return 'framework';
         }
 
-        if (str_starts_with($class, 'Illuminate\\')) {
+        if (str_starts_with($lower, 'illuminate\\')) {
             return 'other';
         }
 
@@ -1232,15 +1265,17 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
     /**
      * Whether a Kernel entry that is not a known group or alias names a CSRF middleware class,
-     * matched case-sensitively by its exact basename, as the registration check's text match is.
-     * Null when it may be a group or alias the maps do not show, or a class whose name only
-     * contains a CSRF middleware name, such as CustomVerifyCsrfToken, which may extend it.
+     * matched case-sensitively by its exact basename, as the registration check's text match is,
+     * or an application class whose parents read from app/ reach the framework's CSRF middleware
+     * under any name (see csrfChain()). Null when it may be a group or alias the maps do not
+     * show, or a class whose name only contains a CSRF middleware name, such as
+     * CustomVerifyCsrfToken, which may extend it.
      */
     private function kernelClassRunsCsrf(string $name, bool $complete): ?bool
     {
         $basename = substr((string) strrchr('\\'.$name, '\\'), 1);
 
-        if (in_array($basename, self::CSRF_MIDDLEWARE, true)) {
+        if (in_array($basename, self::CSRF_MIDDLEWARE, true) || $this->csrfChain($name) === 'framework') {
             return true;
         }
 
@@ -1451,9 +1486,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         $removals = [];
         /** @var list<string|null> $additions */
         $additions = [];
-        // An append, prepend, removal or replacement that cannot be read leaves the group unknown,
-        // and so does a withMiddleware() not given a closure, whose calls are not read at all
+        // A removal or replacement that cannot be read leaves the group unknown, and so does a
+        // withMiddleware() not given a closure, whose calls are not read at all; an append or
+        // prepend that cannot be read only adds entries, so the ones the group keeps stay known
         $unreadable = $opaque;
+        $additionsUnreadable = false;
+        $removalsUnknown = false;
 
         foreach ($calls as $call) {
             if (! $call->name instanceof Identifier) {
@@ -1470,7 +1508,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     $this->middlewareList($this->callArgument($call, 0, 'append')),
                     $this->middlewareList($this->callArgument($call, 1, 'prepend')),
                 ];
-                $unreadable = $unreadable || in_array(null, $lists, true);
+                $unreadable = $unreadable || $lists[0] === null;
+                $additionsUnreadable = $additionsUnreadable || $lists[1] === null || $lists[2] === null;
                 $removing = $lists[0] ?? [];
                 $additions = array_merge($additions, $lists[1] ?? [], $lists[2] ?? []);
 
@@ -1496,7 +1535,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
                     case 'appendtogroup':
                     case 'prependtogroup':
-                        $unreadable = $unreadable || $middleware === null;
+                        $additionsUnreadable = $additionsUnreadable || $middleware === null;
                         $additions = array_merge($additions, $middleware ?? []);
                         break;
 
@@ -1517,6 +1556,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 }
             }
 
+            $removalsUnknown = $removalsUnknown || in_array(null, $removing, true);
             foreach ($removing as $name) {
                 if ($name !== null && ! isset($removals[$name])) {
                     $removals[$name] = $line;
@@ -1529,7 +1569,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         // An entry that cannot be read may be CSRF middleware, so a CSRF name may match it
         $unknown = in_array(null, $entries, true);
 
-        if ($group !== null && ! $unknown && $this->csrfMiddlewareInList($entries) === null) {
+        if ($group !== null && ! $unknown && ! $this->listHoldsCsrf($entries)) {
             $found[] = $this->createIssueWithSnippet(
                 message: 'web middleware group redefined without CSRF middleware',
                 filePath: $file,
@@ -1541,18 +1581,18 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                     'laravel_version' => '11+',
                     'status' => 'missing_from_web',
                     'line' => $group['line'],
-                    'severity_reason' => 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
+                    'severity_reason' => 'High rather than Critical because a CSRF subclass whose parents cannot be read, such as a vendor class, is not recognised',
                 ]
             );
         }
 
         foreach ($replacements as $search => [$replacement, $line]) {
-            $replaced = $this->csrfMiddlewareIn($search);
+            $replaced = $this->csrfMiddlewareNamed($search);
 
             // Swapping in an application subclass such as App\Http\Middleware\VerifyCsrfToken keeps protection
             if ($replaced === null
                 || (! $unknown && ! in_array($search, $entries, true))
-                || ($replacement !== null && $this->csrfMiddlewareIn($replacement) !== null)) {
+                || ($replacement !== null && $this->listHoldsCsrf([$replacement]))) {
                 continue;
             }
 
@@ -1570,12 +1610,12 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         // The group the routes run with: removals take exact names, then prepends and appends join
         $final = [...array_diff($entries, array_keys($removals)), ...$additions];
-        $this->webGroupCsrf = $unreadable || in_array(null, $final, true)
-            ? null
-            : array_values(array_map($this->groupEntry(...), array_filter($final, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null)));
+        $csrfIn = fn (array $names): array => array_values(array_map($this->groupEntry(...), array_filter($names, fn (?string $name): bool => $name !== null && $this->namesCsrfMiddleware($name))));
+        $this->webGroupCsrf = $unreadable || $additionsUnreadable || in_array(null, $final, true) ? null : $csrfIn($final);
+        $this->webGroupCsrfKept = $this->webGroupCsrf === null && ! $unreadable && ! $removalsUnknown && ! $unknown ? $csrfIn($final) : null;
 
         foreach ($removals as $name => $line) {
-            $removed = $this->csrfMiddlewareIn($name);
+            $removed = $this->csrfMiddlewareNamed($name);
 
             if ($removed !== null && ($unknown || in_array($name, $entries, true))) {
                 $found[] = $this->webGroupRemovalIssue($removed, $file, $line);
@@ -1583,7 +1623,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
         }
 
         // Prepends and appends run last, so CSRF middleware added there protects the group
-        if ($this->csrfMiddlewareInList($additions) !== null) {
+        if ($this->listHoldsCsrf($additions)) {
             return;
         }
 
@@ -1636,13 +1676,20 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The string a middleware value puts in the group: a string as written, or the fully
-     * qualified name of X::class. Null for anything else.
+     * The string a middleware value puts in the group: a string as written, the fully qualified
+     * name of X::class, or that name followed by the string of X::class.':params'. Null for
+     * anything else.
      */
     private function middlewareName(?Expr $expr): ?string
     {
         if ($expr instanceof String_) {
             return $expr->value;
+        }
+
+        if ($expr instanceof Expr\BinaryOp\Concat && $expr->right instanceof String_ && $expr->left instanceof Expr\ClassConstFetch) {
+            $class = $this->middlewareName($expr->left);
+
+            return $class !== null ? $class.$expr->right->value : null;
         }
 
         if ($expr instanceof Expr\ClassConstFetch
@@ -1658,21 +1705,45 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * The first CSRF middleware name a list of middleware names mentions, or null.
+     * Whether a middleware name, with any :parameters, is CSRF middleware: it mentions a CSRF
+     * middleware name, or it is an application class whose parents read from app/ reach the
+     * framework's CSRF middleware under any name (see csrfChain()).
+     */
+    private function namesCsrfMiddleware(string $name): bool
+    {
+        return $this->csrfMiddlewareIn($name) !== null || $this->csrfChain(explode(':', $name, 2)[0]) === 'framework';
+    }
+
+    /**
+     * The CSRF middleware name a middleware name is reported by: the CSRF name it mentions, or
+     * the short name of an application class whose parents reach the framework's CSRF
+     * middleware (see namesCsrfMiddleware()). Null when it is not CSRF middleware.
+     */
+    private function csrfMiddlewareNamed(string $name): ?string
+    {
+        $named = $this->csrfMiddlewareIn($name);
+        if ($named !== null || ! $this->namesCsrfMiddleware($name)) {
+            return $named;
+        }
+
+        return substr((string) strrchr('\\'.explode(':', $name, 2)[0], '\\'), 1);
+    }
+
+    /**
+     * Whether a list of bootstrap/app.php middleware names holds CSRF middleware (see
+     * namesCsrfMiddleware()).
      *
      * @param  list<string|null>  $names
      */
-    private function csrfMiddlewareInList(array $names): ?string
+    private function listHoldsCsrf(array $names): bool
     {
         foreach ($names as $name) {
-            $middleware = $name !== null ? $this->csrfMiddlewareIn($name) : null;
-
-            if ($middleware !== null) {
-                return $middleware;
+            if ($name !== null && $this->namesCsrfMiddleware($name)) {
+                return true;
             }
         }
 
-        return null;
+        return false;
     }
 
     /**
@@ -1696,7 +1767,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
                 'line' => $line,
                 'severity_reason' => $replacement === null
                     ? 'Medium because the replacement cannot be read and may be a CSRF subclass'
-                    : 'High rather than Critical because a CSRF subclass with a custom name is not recognised',
+                    : 'High rather than Critical because a CSRF subclass whose parents cannot be read, such as a vendor class, is not recognised',
             ]
         );
     }
@@ -2542,7 +2613,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return true;
         }
 
-        $names = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($excluded, is_string(...)));
+        $names = array_values(array_filter($excluded, is_string(...)));
         if (in_array('web', $names, true)) {
             // With the group not settled, any CSRF class is assumed to be in it, as namesStripCsrf()
             // assumes before Laravel 13; on 13 every CSRF class extends PreventRequestForgery anyway
@@ -2552,7 +2623,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             $names = [...$names, ...$this->webGroupCsrf];
         }
         foreach ($applied as $class) {
-            if (array_intersect($this->csrfAncestors($class), $names) === []) {
+            if (! $this->excludedBy($class, $names)) {
                 return true;
             }
         }
@@ -3074,7 +3145,7 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
     {
         return [
             'group' => in_array('web', $middleware, true),
-            'applied' => array_values(array_filter($middleware, fn (?string $name): bool => $name !== null && $this->csrfMiddlewareIn($name) !== null)),
+            'applied' => array_values(array_filter($middleware, fn (?string $name): bool => $name !== null && $this->namesCsrfMiddleware($name))),
             'excluded' => $excluded,
             'api' => in_array('api', $middleware, true),
             'unread' => in_array(null, $middleware, true) || in_array(null, $excluded, true),
@@ -3364,7 +3435,10 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * PreventRequestForgery the base, with VerifyCsrfToken and ValidateCsrfToken as empty
      * subclasses, so there only PreventRequestForgery, an application's own CSRF class, or the
      * framework's VerifyCsrfToken when the application has a CSRF subclass in
-     * app/Http/Middleware, which extends it, removes the check.
+     * app/Http/Middleware, which extends it, removes the check. A name with :parameters is not
+     * a class to subclass, so it removes only an entry of the same string, which is not assumed.
+     * An application class counts as a CSRF name when its parents reach the framework's CSRF
+     * middleware (see namesCsrfMiddleware()).
      *
      * @param  list<string|null>  $names
      */
@@ -3380,9 +3454,9 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
 
         if ($this->webGroupCsrf !== null) {
             // Every CSRF entry the group holds has to go: one left behind still checks the token
-            $excluded = array_map(fn (string $name): string => ltrim($name, '\\'), array_filter($names, is_string(...)));
+            $excluded = array_values(array_filter($names, is_string(...)));
             foreach ($this->webGroupCsrf as $entry) {
-                if (array_intersect($this->csrfAncestors($entry), $excluded) === []) {
+                if (! $this->excludedBy($entry, $excluded)) {
                     return false;
                 }
             }
@@ -3390,22 +3464,55 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return $this->webGroupCsrf !== [];
         }
 
+        if ($this->webGroupCsrfKept !== null) {
+            // An entry the group surely keeps and the exclusions leave still checks the token
+            $excluded = array_values(array_filter($names, is_string(...)));
+            foreach ($this->webGroupCsrfKept as $entry) {
+                if (! $this->excludedBy($entry, $excluded)) {
+                    return false;
+                }
+            }
+        }
+
         foreach ($names as $name) {
-            if ($name === null || $this->csrfMiddlewareIn($name) === null) {
+            if ($name === null || str_contains($name, ':') || ! $this->namesCsrfMiddleware($name)) {
                 continue;
             }
 
+            // PHP class names are case-insensitive
             $class = ltrim($name, '\\');
+            $lower = strtolower($class);
 
             if (! $this->isLaravel13OrNewer()
-                || ! str_starts_with($class, 'Illuminate\\')
-                || str_ends_with($class, '\\PreventRequestForgery')
-                || ($class === self::FRAMEWORK_VERIFY_CSRF && $this->csrfMiddlewareFile() !== null)) {
+                || ! str_starts_with($lower, 'illuminate\\')
+                || str_ends_with($lower, '\\preventrequestforgery')
+                || (strcasecmp($class, self::FRAMEWORK_VERIFY_CSRF) === 0 && $this->csrfMiddlewareFile() !== null)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Whether excluding these middleware names drops $entry, as Router::resolveMiddleware()
+     * decides: the entry equals an excluded name as written, so '\App\X' and App\X::class
+     * differ, or it is a subclass of one, which ReflectionClass::isSubclassOf() settles in any
+     * letter case and whether or not the name has a leading backslash. A class is not a subclass
+     * of itself, so only the exact string removes the entry itself.
+     *
+     * @param  list<string>  $excluded
+     */
+    private function excludedBy(string $entry, array $excluded): bool
+    {
+        if (in_array($entry, $excluded, true)) {
+            return true;
+        }
+
+        // isSubclassOf() matches class names case-insensitively
+        $parents = array_map(strtolower(...), array_slice($this->csrfAncestors($entry), 1));
+
+        return array_intersect($parents, array_map(fn (string $name): string => strtolower(ltrim($name, '\\')), $excluded)) !== [];
     }
 
     /**
@@ -3431,14 +3538,20 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return [$class];
         }
 
-        // A few levels of application subclasses, then the framework hierarchy
-        for ($depth = 0; $depth < 5 && ! str_starts_with($class, 'Illuminate\\'); $depth++) {
+        // A few levels of application subclasses, then the framework hierarchy, whose names PHP
+        // matches case-insensitively, so a parent written in lowercase is the framework class
+        for ($depth = 0; $depth < 5 && ! str_starts_with(strtolower($class), 'illuminate\\'); $depth++) {
             $ancestors[] = $class;
             $parent = $this->applicationParent($class);
             if ($parent === false) {
                 return $ancestors;
             }
-            $class = $parent ?? self::FRAMEWORK_VERIFY_CSRF;
+            $class = $parent !== null ? ltrim($parent, '\\') : self::FRAMEWORK_VERIFY_CSRF;
+        }
+        foreach (self::CSRF_MIDDLEWARE as $name) {
+            if (strcasecmp($class, $framework.$name) === 0) {
+                $class = $framework.$name;
+            }
         }
         $ancestors[] = $class;
 

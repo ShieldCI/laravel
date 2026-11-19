@@ -2989,6 +2989,58 @@ PHP;
         ];
     }
 
+    /**
+     * @dataProvider capturedRegistrarProvider
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('capturedRegistrarProvider')]
+    public function test_a_registrar_a_closure_captures_by_value_is_read_only_when_asked(string $code, bool $byValueCaptures, array $expected): void
+    {
+        $tempDir = $this->createTempDir([
+            'bootstrap/app.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\n{$code}\n",
+            'routes/kiosk.php' => '<?php',
+        ]);
+
+        try {
+            $parser = new BootstrapRouteParser($tempDir, $this->parser, byValueCaptures: $byValueCaptures);
+            $chains = [];
+            foreach ($parser->getExternalRouteFileLoads() as $load) {
+                $last = end($load['calls']);
+                if ($last !== false) {
+                    $chains[] = array_map(fn (MethodCall|StaticCall $call): string => $call->name instanceof Node\Identifier ? $call->name->toString() : '', $parser->groupChain($last));
+                }
+            }
+
+            $this->assertSame([$expected], $chains);
+        } finally {
+            $this->removeDir($tempDir);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool, list<string>}>
+     */
+    public static function capturedRegistrarProvider(): array
+    {
+        $kiosk = "\$kiosk = Route::prefix('kiosk');";
+        $group = "\$kiosk->group(base_path('routes/kiosk.php'));";
+        $captured = fn (string $body, string $use = '$kiosk'): string => "{$kiosk}\n\$map = function () use ({$use}) {\n    {$body}\n};";
+
+        return [
+            'by value' => [$captured($group), true, ['prefix', 'group']],
+            'by value, not asked' => [$captured($group), false, ['group']],
+            'by value beside a route verb' => [$captured("\$kiosk->post('/checkins', fn () => 1);\n    {$group}"), true, ['prefix', 'group']],
+            'by reference' => [$captured($group, '&$kiosk'), true, ['group']],
+            'reassigned after the closure' => [$captured($group)."\n\$kiosk = Route::prefix('lobby');", true, ['group']],
+            'changed after the closure' => [$captured($group)."\n\$kiosk->prefix('lobby');", true, ['group']],
+            'changed inside the closure' => [$captured("\$kiosk->prefix('lobby');\n    {$group}"), true, ['group']],
+            'group value kept inside the closure' => [$captured("\$again = {$group}"), true, ['group']],
+            'captured again by a nested closure' => [$captured("Route::middleware('web')->group(function () use (\$kiosk) {\n        {$group}\n    });"), true, ['group']],
+            'closure requiring a file' => [$captured("require __DIR__.'/extra.php';\n    {$group}"), true, ['group']],
+        ];
+    }
+
     public function test_throttled_group_ranges_read_a_held_middleware_name(): void
     {
         $routes = <<<'PHP'

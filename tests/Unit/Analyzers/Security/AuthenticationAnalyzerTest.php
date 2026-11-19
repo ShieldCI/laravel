@@ -8997,7 +8997,7 @@ PHP);
     #[DataProvider('canAttributeProvider')]
     public function test_credits_a_can_attribute_as_authorization(string $routes): void
     {
-        $this->assertPassed($this->analyzeWebRoutes($routes));
+        $this->assertPassed($this->analyzeWebRoutesOnLaravel('11.0.0', $routes));
     }
 
     /**
@@ -9025,28 +9025,37 @@ PHP);
 
     public function test_credits_a_can_attribute_held_in_a_variable(): void
     {
-        $this->assertPassed($this->analyzeWebRoutes("\$abilities = [['manage']];\nRoute::group(['can' => \$abilities], function () {\n    Route::post('/settings', fn () => 1);\n});"));
+        $this->assertPassed($this->analyzeWebRoutesOnLaravel('11.0.0', "\$abilities = [['manage']];\nRoute::group(['can' => \$abilities], function () {\n    Route::post('/settings', fn () => 1);\n});"));
     }
 
     public function test_a_can_attribute_gives_no_credit_before_laravel_11(): void
     {
-        $realApp = $this->app;
-        $this->assertNotNull($realApp);
-
-        /** @var Application&MockInterface $legacyApp */
-        $legacyApp = Mockery::mock(Application::class);
-        $legacyApp->shouldReceive('version')->andReturn('10.48.0');
-        $legacyApp->shouldReceive('make')->andReturnUsing(fn (string $abstract, array $parameters = []) => $realApp->make($abstract, $parameters));
-        Container::setInstance($legacyApp);
-
-        try {
-            $result = $this->analyzeWebRoutes("Route::group(['can' => [['manage']]], function () {\n    Route::post('/settings', fn () => 1);\n});\nRoute::post('/settings/{setting}', ['can' => [['manage']], 'uses' => fn () => 1]);");
-        } finally {
-            Container::setInstance($realApp);
-        }
+        $result = $this->analyzeWebRoutesOnLaravel('10.48.0', "Route::group(['can' => [['manage']]], function () {\n    Route::post('/settings', fn () => 1);\n});\nRoute::post('/settings/{setting}', ['can' => [['manage']], 'uses' => fn () => 1]);");
 
         $this->assertHasIssueContaining('Route group without authentication middleware', $result);
         $this->assertCount(2, array_filter($this->issueMessages($result), fn (string $message): bool => str_contains($message, 'route without authentication middleware')));
+    }
+
+    /**
+     * The 'can' attribute is version-gated, so these tests pin the version the analyzer reads
+     * rather than depending on the Laravel the suite runs against.
+     */
+    private function analyzeWebRoutesOnLaravel(string $version, string $routes): ResultInterface
+    {
+        $realApp = $this->app;
+        $this->assertNotNull($realApp);
+
+        /** @var Application&MockInterface $versionedApp */
+        $versionedApp = Mockery::mock(Application::class);
+        $versionedApp->shouldReceive('version')->andReturn($version);
+        $versionedApp->shouldReceive('make')->andReturnUsing(fn (string $abstract, array $parameters = []) => $realApp->make($abstract, $parameters));
+        Container::setInstance($versionedApp);
+
+        try {
+            return $this->analyzeWebRoutes($routes);
+        } finally {
+            Container::setInstance($realApp);
+        }
     }
 
     public function test_a_top_level_route_file_required_inside_an_auth_group_takes_its_auth(): void

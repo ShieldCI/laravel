@@ -136,7 +136,18 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
             $domain = $host !== null && $host !== false ? $host : $domain;
         }
 
-        return strtolower($domain);
+        $domain = strtolower($domain);
+
+        // A wildcard or leading-dot entry (*.acme.io, .acme.io) names the domain and its
+        // subdomains, which is what a plain entry already covers
+        if (str_starts_with($domain, '*.')) {
+            $domain = substr($domain, 2);
+        } elseif (str_starts_with($domain, '.')) {
+            $domain = substr($domain, 1);
+        }
+
+        // A fully qualified entry may end in one dot (github.com.); hosts are matched without it
+        return str_ends_with($domain, '.') ? substr($domain, 0, -1) : $domain;
     }
 
     /**
@@ -150,10 +161,16 @@ class ConfigOutsideConfigAnalyzer extends AbstractFileAnalyzer
         $userExcludedDomains = $analyzerConfig['excluded_domains'] ?? [];
         $userExcludedDomains = is_array($userExcludedDomains) ? $userExcludedDomains : [];
 
-        // Normalize user domains only (visitor handles defaults internally)
-        $this->excludedDomains = array_values(array_unique(
-            array_filter(array_map([$this, 'normalizeDomain'], $userExcludedDomains))
-        ));
+        // Normalize user domains only (visitor handles defaults internally). Skip entries that
+        // are not strings or Stringable, such as the null an unset env() leaves
+        $normalizedDomains = [];
+        foreach ($userExcludedDomains as $domain) {
+            if (is_string($domain) || $domain instanceof \Stringable) {
+                $normalizedDomains[] = $this->normalizeDomain((string) $domain);
+            }
+        }
+
+        $this->excludedDomains = array_values(array_unique(array_filter($normalizedDomains)));
 
         // Load strict URL detection mode (default: false - heuristics-based)
         $this->strictUrlDetection = (bool) ($analyzerConfig['strict_url_detection'] ?? false);
@@ -176,6 +193,13 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
     /** @var int Digits in one snake_case segment that read as key material rather than a word */
     private const MIN_KEY_SEGMENT_DIGITS = 3;
+
+    /** @var string Character sets for the identifier checks */
+    private const LOWERCASE = 'abcdefghijklmnopqrstuvwxyz';
+
+    private const UPPERCASE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    private const DIGITS = '0123456789';
 
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
@@ -349,11 +373,14 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
         $host = strtolower($host);
 
+        // A fully qualified host may end in one dot (github.com.), which names the same host
+        $excludableHost = str_ends_with($host, '.') ? substr($host, 0, -1) : $host;
+
         foreach ($this->excludedDomains as $domain) {
             $domain = strtolower(trim($domain));
 
             // Exact match or subdomain match (host ends with ".domain")
-            if ($host === $domain || str_ends_with($host, '.'.$domain)) {
+            if ($excludableHost === $domain || str_ends_with($excludableHost, '.'.$domain)) {
                 return false;
             }
         }
@@ -456,19 +483,24 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
         $hasKeyPrefix = preg_match(self::API_KEY_PREFIX_PATTERN, $value) === 1;
 
+        // The identifier checks below use character spans and segment checks rather than a
+        // repeated regex group, which hits the JIT stack limit on long input and then reads
+        // as a non-match. They ignore one trailing newline, as the regex $ anchor they replace did
+        $identifier = str_ends_with($value, "\n") ? substr($value, 0, -1) : $value;
+
         // Exclude snake_case identifiers (method names, constants, etc.)
-        // Pattern: lowercase words separated by underscores. Prefixed strings are graded below
-        if (! $hasKeyPrefix && preg_match('/^[a-z][a-z0-9]*(_[a-z][a-z0-9]*){2,}$/', $value)) {
+        // Pattern: three or more lowercase words separated by underscores. Prefixed strings are graded below
+        if (! $hasKeyPrefix && $this->isUnderscoreSeparatedWords($identifier, self::LOWERCASE)) {
             return false;
         }
 
         // Exclude SCREAMING_SNAKE_CASE constants
-        if (preg_match('/^[A-Z][A-Z0-9]*(_[A-Z][A-Z0-9]*){2,}$/', $value)) {
+        if ($this->isUnderscoreSeparatedWords($identifier, self::UPPERCASE)) {
             return false;
         }
 
         // Exclude camelCase identifiers (require lowercase after each capital)
-        if (preg_match('/^[a-z][a-z0-9]*([A-Z][a-z0-9]+){2,}$/', $value)) {
+        if ($this->isCamelCase($identifier)) {
             return false;
         }
 
@@ -476,11 +508,10 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         // (api_response_cache_for_dashboard, auth_2fa_challenge, a concatenated api_cache_ key
         // prefix) with no digit-heavy segment such as the abc123def456 in test_key_abc123def456...
         // The prefix guarantees the leading word and underscore, so a character span suffices
-        // (a repeated regex group hits the JIT stack limit on long input)
         if ($hasKeyPrefix) {
-            $isLowercaseWords = strspn($value, 'abcdefghijklmnopqrstuvwxyz0123456789_') === $length;
+            $isLowercaseWords = strspn($identifier, self::LOWERCASE.self::DIGITS.'_') === strlen($identifier);
 
-            return ! $isLowercaseWords || $this->hasDigitHeavySegment($value);
+            return ! $isLowercaseWords || $this->hasDigitHeavySegment($identifier);
         }
 
         // Exclude CSS class combinations (only check if contains dashes, which are typical in CSS)
@@ -493,8 +524,8 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             }
         }
 
-        // Exclude known hash formats
-        if ($this->isKnownHashFormat($value, $length)) {
+        // Exclude known hash and identifier formats
+        if ($this->isKnownHashFormat($value, $length) || $this->isCanonicalUuid($value)) {
             return false;
         }
 
@@ -509,6 +540,43 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
         // Likely an API key if it passes all filters
         return true;
+    }
+
+    /**
+     * Check if a string is three or more underscore-separated words, each starting with a
+     * letter from $letters and holding only those letters and digits.
+     */
+    private function isUnderscoreSeparatedWords(string $value, string $letters): bool
+    {
+        if (strspn($value, $letters.self::DIGITS.'_') !== strlen($value)) {
+            return false;
+        }
+
+        $segments = explode('_', $value);
+
+        if (count($segments) < 3) {
+            return false;
+        }
+
+        foreach ($segments as $segment) {
+            if (strspn($segment, $letters, 0, 1) !== 1) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if a string is a camelCase identifier: a lowercase start, then two or more humps
+     * of one capital followed by at least one lowercase letter or digit.
+     */
+    private function isCamelCase(string $value): bool
+    {
+        return strspn($value, self::LOWERCASE.self::UPPERCASE.self::DIGITS) === strlen($value)
+            && strspn($value, self::LOWERCASE, 0, 1) === 1
+            && preg_match_all('/[A-Z]/', $value) >= 2
+            && preg_match('/[A-Z](?![a-z0-9])/', $value) === 0;
     }
 
     /**
@@ -551,6 +619,14 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Check if a string is a canonical UUID (8-4-4-4-12 hex digits, either case): an identifier, like a hash.
+     */
+    private function isCanonicalUuid(string $value): bool
+    {
+        return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i', $value) === 1;
     }
 
     /**

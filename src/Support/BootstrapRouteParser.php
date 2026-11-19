@@ -38,7 +38,7 @@ use ShieldCI\Concerns\ResolvesClassNames;
  * A group counts as throttled by the middleware MiddlewareThrottleDetector recognises,
  * with class names resolved against the imports of the file that declares the group.
  *
- * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>, bindings: array<int, string>}
+ * @phpstan-type RouteFileWalk array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>, node: Node}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>, node: Node}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>, bindings: array<int, string>}
  * @phpstan-type RouterHold 'router'|'registrar'|'name'|null
  */
 class BootstrapRouteParser
@@ -328,10 +328,11 @@ class BootstrapRouteParser
      * Every route file bootstrap/app.php and app/Providers/*.php load, group or not: the
      * loads {@see self::getGroupRegisteredRouteFiles()} reads, the files they
      * require/include inside a group or outside one, and those $this->loadRoutesFrom(...)
-     * requires, each with the source file and the group calls enclosing the load, outermost
-     * first, which may be none.
+     * requires, each with the source file, the group calls enclosing the load, outermost
+     * first, which may be none, and the node that loads it: the require or include, the
+     * loadRoutesFrom() call, or the group() call that takes the path.
      *
-     * @return list<array{file: string, source: string, calls: list<MethodCall|StaticCall>}>
+     * @return list<array{file: string, source: string, calls: list<MethodCall|StaticCall>, node: Node}>
      *
      * @internal An implementation detail of csrf-protection, outside this package's backward-compatibility promise.
      */
@@ -341,7 +342,7 @@ class BootstrapRouteParser
         foreach ([$this->basePath.'/bootstrap/app.php', ...$this->phpFilesUnder('app/Providers')] as $source) {
             $walk = $this->walkFile($source);
             foreach ([...$walk['loads'], ...$walk['routesFrom']] as $load) {
-                $found[] = ['file' => $load['file'], 'source' => $source, 'calls' => $load['calls']];
+                $found[] = ['file' => $load['file'], 'source' => $source, 'calls' => $load['calls'], 'node' => $load['node']];
             }
         }
 
@@ -1057,7 +1058,7 @@ class BootstrapRouteParser
      * The route files $source loads: those {@see self::groupRegistrations()} reads, and
      * the files it require's/include's outside any group, with no group calls.
      *
-     * @return list<array{file: string, calls: list<MethodCall|StaticCall>}>
+     * @return list<array{file: string, calls: list<MethodCall|StaticCall>, node: Node}>
      */
     private function routeFileLoads(string $source): array
     {
@@ -1234,7 +1235,7 @@ class BootstrapRouteParser
         if ($node instanceof Include_ && $dir !== null) {
             $path = $this->includedFile($node, $dir);
             if ($path !== null) {
-                $walk['loads'][] = ['file' => $path, 'calls' => $groups];
+                $walk['loads'][] = ['file' => $path, 'calls' => $groups, 'node' => $node];
             }
         }
 
@@ -1244,7 +1245,7 @@ class BootstrapRouteParser
             $first = $this->firstArgument($node);
             $path = $first !== null ? $this->groupRouteFile($first, $dir) : null;
             if ($path !== null) {
-                $walk['routesFrom'][] = ['file' => $path, 'calls' => $groups];
+                $walk['routesFrom'][] = ['file' => $path, 'calls' => $groups, 'node' => $node];
             }
         }
 
@@ -1258,7 +1259,8 @@ class BootstrapRouteParser
             foreach ($routes as $entry) {
                 $path = $dir !== null ? $this->groupRouteFile($entry, $dir) : null;
                 if ($path !== null) {
-                    $walk['loads'][] = ['file' => $path, 'calls' => $inner];
+                    // The group call, not the path, as a path held in a variable was written elsewhere
+                    $walk['loads'][] = ['file' => $path, 'calls' => $inner, 'node' => $node];
                 } else {
                     $isCallback = $entry instanceof Node\Expr\Closure || $entry instanceof Node\Expr\ArrowFunction;
                     $this->walkRouteNode($entry, $inner, $routers, $paths, $values, $dir, $walk, $isCallback);
@@ -2755,8 +2757,10 @@ class BootstrapRouteParser
      *
      * @param  array<Node\Expr>  $entries
      * @return list<Node\Expr>
+     *
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
      */
-    private static function heldEntries(array $entries): array
+    public static function heldEntries(array $entries): array
     {
         $held = [];
         foreach ($entries as $entry) {

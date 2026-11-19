@@ -252,7 +252,8 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
      * - csrf_field() - Helper function
      * - <input name="_token" ... /> - Manual token input
      *
-     * Scans until </form> is found (no hardcoded line limit).
+     * Scans the form body up to its </form>, never past the next <form>, with Blade and
+     * HTML comments blanked, so a token or a closing tag that is commented out does not count.
      *
      * @param  array<int, Issue>  &$issues
      */
@@ -263,56 +264,205 @@ class CsrfAnalyzer extends AbstractFileAnalyzer
             return;
         }
 
-        $lines = FileParser::getLines($file);
+        foreach ($this->mutatingForms($content) as [$lineNumber, $method, $body]) {
+            // Check for CSRF token patterns:
+            // - @csrf or @csrf() - Blade directive (with or without parentheses)
+            // - <x-csrf /> or <x-csrf/> - Blade component
+            // - csrf_field() - Helper function
+            // - <input name="_token" ... /> - Manual token input
+            $hasCsrf = preg_match('/@csrf(\(\))?|<x-csrf\s*\/?>|csrf_field\(\)|<input[^<>]*name\s*=\s*["\']_token["\']/', $body) === 1;
 
-        foreach ($lines as $lineNumber => $line) {
-            if (! is_string($line)) {
+            if (! $hasCsrf) {
+                $issues[] = $this->createIssueWithSnippet(
+                    message: 'Form without CSRF protection - missing @csrf directive',
+                    filePath: $file,
+                    lineNumber: $lineNumber + 1,
+                    severity: Severity::High,
+                    recommendation: 'Add the @csrf Blade directive inside the form tag to include a hidden CSRF token field.',
+                    metadata: [
+                        'file' => basename($file),
+                        'form_method' => $method,
+                        'line' => $lineNumber + 1,
+                    ]
+                );
+            }
+        }
+    }
+
+    /**
+     * Every form whose opening tag names POST, PUT, PATCH or DELETE, as its 0-indexed
+     * line, the upper-cased method and its body.
+     *
+     * One forward pass over the whole template, so a tag whose attributes span several
+     * lines is read like a one-line tag. Blade and HTML comments are blanked first,
+     * keeping every newline, so a commented-out form, token or closing tag does not
+     * count and line numbers stay exact.
+     *
+     * The tag itself is read with Blade echoes blanked too. Blade replaces an echo before
+     * a browser ever parses the tag, so a quote or an arrow inside `{{ __("It's") }}` or
+     * `{{ $attributes->merge([...]) }}` is not the tag's own. The body keeps its echoes,
+     * since `{{ csrf_field() }}` is one of the tokens looked for there.
+     *
+     * A tag ends at the first `>` outside a quoted attribute value, so an arrow or a
+     * comparison inside `action="..."` or `:class="..."` does not cut it short. Both the
+     * tag end and the body are only looked for before the next `<form`: an unbalanced
+     * quote then falls back to the first bare `>` rather than swallowing the following
+     * form, a tag with no `>` before the next one is skipped, a missing `</form>` does
+     * not lend a later form's token to this one, and no stretch of the file is read
+     * twice, which keeps the pass linear in the file size.
+     *
+     * @return list<array{int, string, string}>
+     */
+    private function mutatingForms(string $content): array
+    {
+        $masked = $this->blankDelimited($content, ['{{--' => ['--}}'], '<!--' => ['-->', '--!>']]);
+        $opaque = $this->blankDelimited($masked, ['{{' => ['}}'], '{!!' => ['!!}']]);
+        $length = strlen($opaque);
+
+        $forms = [];
+        $lineNumber = 0;
+        $countedTo = 0;
+        $next = $this->nextFormTagStart($opaque, 0);
+
+        while ($next !== null) {
+            $tagStart = $next;
+            $next = $this->nextFormTagStart($opaque, $tagStart + 1);
+            $windowEnd = $next ?? $length;
+            $window = substr($opaque, $tagStart, $windowEnd - $tagStart);
+
+            if (preg_match('/\A<form(?:[^>"\']++|"[^"]*+"|\'[^\']*+\')*+>/i', $window, $close) === 1) {
+                $tag = $close[0];
+                $method = $this->mutatingFormMethod($tag, true);
+            } else {
+                $bare = strpos($window, '>');
+                if ($bare === false) {
+                    continue;
+                }
+
+                // The quotes do not pair up, so they cannot be skipped as values either.
+                $tag = substr($window, 0, $bare + 1);
+                $method = $this->mutatingFormMethod($tag, false);
+            }
+
+            if ($method === null) {
                 continue;
             }
 
-            // Check for form opening tags (POST, PUT, PATCH, DELETE)
-            if (preg_match('/<form[^>]*method\s*=\s*["\'](?:POST|PUT|PATCH|DELETE)["\'][^>]*>/i', $line, $matches)) {
-                $hasCsrf = false;
-                $method = preg_match('/method\s*=\s*["\']([^"\']+)["\']/', $matches[0], $methodMatch) ? strtoupper($methodMatch[1]) : 'POST';
+            $bodyStart = $tagStart + strlen($tag);
+            $body = substr($masked, $bodyStart, $windowEnd - $bodyStart);
+            if (preg_match('/<\/form\s*>/i', $body, $closing, PREG_OFFSET_CAPTURE) === 1) {
+                $body = substr($body, 0, $closing[0][1]);
+            }
 
-                // Scan from form opening until </form> is found
-                for ($i = $lineNumber; $i < count($lines); $i++) {
-                    if (! isset($lines[$i]) || ! is_string($lines[$i])) {
-                        continue;
-                    }
+            $lineNumber += substr_count($opaque, "\n", $countedTo, $tagStart - $countedTo);
+            $countedTo = $tagStart;
+            $forms[] = [$lineNumber, $method, $body];
+        }
 
-                    // Check for CSRF token patterns:
-                    // - @csrf or @csrf() - Blade directive (with or without parentheses)
-                    // - <x-csrf /> or <x-csrf/> - Blade component
-                    // - csrf_field() - Helper function
-                    // - <input name="_token" ... /> - Manual token input
-                    if (preg_match('/@csrf(\(\))?|<x-csrf\s*\/?>|csrf_field\(\)|<input[^>]*name\s*=\s*["\']_token["\']/', $lines[$i])) {
-                        $hasCsrf = true;
-                        break;
-                    }
+        return $forms;
+    }
 
-                    // Stop if we hit the closing form tag
-                    if (str_contains($lines[$i], '</form>')) {
-                        break;
-                    }
+    /**
+     * Byte offset of the next `<form` that opens a form element, not a longer tag name
+     * such as `<formation` or `<form-wizard`.
+     */
+    private function nextFormTagStart(string $text, int $offset): ?int
+    {
+        return preg_match('/<form(?=[\s>\/])/i', $text, $open, PREG_OFFSET_CAPTURE, $offset) === 1
+            ? $open[0][1]
+            : null;
+    }
+
+    /**
+     * The text with every span from one of the given openers to its nearest closer
+     * replaced by spaces, keeping every newline so byte offsets and line numbers are
+     * unchanged. An opener with no closer after it is left as text.
+     *
+     * HTML also ends a comment at `--!>`, and treats `<!-->` and `<!--->` as complete
+     * empty comments, so those never blank the text up to a later `-->`.
+     *
+     * The next position of each closer is remembered and only searched for again once
+     * the scan has passed it, and a closer found missing is never searched for again,
+     * so the pass stays linear in the file size.
+     *
+     * @param  array<string, list<string>>  $closers  Each opener and the closers that end it.
+     */
+    private function blankDelimited(string $text, array $closers): string
+    {
+        $openers = '/'.implode('|', array_map(static fn (string $opener): string => preg_quote($opener, '/'), array_keys($closers))).'/';
+        $nextAt = [];
+        $pieces = [];
+        $copiedTo = 0;
+        $offset = 0;
+
+        while (preg_match($openers, $text, $open, PREG_OFFSET_CAPTURE, $offset) === 1) {
+            [$opener, $start] = $open[0];
+            $offset = $start + strlen($opener);
+            $end = null;
+
+            if ($opener === '<!--') {
+                $probe = substr($text, $offset, 2);
+                $end = str_starts_with($probe, '>') ? $offset + 1 : ($probe === '->' ? $offset + 2 : null);
+            }
+
+            foreach ($end === null ? $closers[$opener] : [] as $closer) {
+                // Remembered as the offset just past the closer, which \K reports directly.
+                if (! array_key_exists($closer, $nextAt) || ($nextAt[$closer] !== false && $offset > $nextAt[$closer] - strlen($closer))) {
+                    $nextAt[$closer] = preg_match('/'.preg_quote($closer, '/').'\K/', $text, $found, PREG_OFFSET_CAPTURE, $offset) === 1
+                        ? $found[0][1]
+                        : false;
                 }
 
-                if (! $hasCsrf) {
-                    $issues[] = $this->createIssueWithSnippet(
-                        message: 'Form without CSRF protection - missing @csrf directive',
-                        filePath: $file,
-                        lineNumber: $lineNumber + 1,
-                        severity: Severity::High,
-                        recommendation: 'Add the @csrf Blade directive inside the form tag to include a hidden CSRF token field.',
-                        metadata: [
-                            'file' => basename($file),
-                            'form_method' => $method,
-                            'line' => $lineNumber + 1,
-                        ]
-                    );
+                $closerEnd = $nextAt[$closer];
+                if ($closerEnd !== false && ($end === null || $closerEnd < $end)) {
+                    $end = $closerEnd;
                 }
             }
+
+            if ($end === null) {
+                continue;
+            }
+
+            $pieces[] = substr($text, $copiedTo, $start - $copiedTo);
+            $pieces[] = (string) preg_replace('/[^\n]/', ' ', substr($text, $start, $end - $start));
+            $copiedTo = $end;
+            $offset = $end;
         }
+
+        $pieces[] = substr($text, $copiedTo);
+
+        return implode('', $pieces);
+    }
+
+    /**
+     * The upper-cased value of a form tag's `method` attribute when it is POST, PUT,
+     * PATCH or DELETE, quoted or not. Only the first `method` attribute counts, as in
+     * a browser.
+     *
+     * The name has to stand alone, so `data-method`, `formmethod` and a bound
+     * `:method` or `x-bind:method` are not read as the form's own. When the tag's quotes
+     * pair up, quoted values are consumed whole before `method` is looked for, so a
+     * `method=` written inside another attribute's value is not read either.
+     */
+    private function mutatingFormMethod(string $tag, bool $quotesPair): ?string
+    {
+        $attribute = '(?<![\w:.@-])method\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s"\'>]+))';
+        $pattern = $quotesPair ? '/"[^"]*"|\'[^\']*\'|'.$attribute.'/i' : '/'.$attribute.'/i';
+
+        preg_match_all($pattern, $tag, $matches, PREG_SET_ORDER | PREG_UNMATCHED_AS_NULL);
+
+        foreach ($matches as $match) {
+            $value = $match[1] ?? $match[2] ?? $match[3] ?? null;
+            if ($value === null) {
+                continue;
+            }
+
+            $value = strtoupper($value);
+
+            return in_array($value, ['POST', 'PUT', 'PATCH', 'DELETE'], true) ? $value : null;
+        }
+
+        return null;
     }
 
     /**

@@ -358,6 +358,255 @@ BLADE;
         $this->assertHasIssueContaining('CSRF', $result);
     }
 
+    /**
+     * @dataProvider unprotectedFormProvider
+     */
+    #[DataProvider('unprotectedFormProvider')]
+    public function test_reports_unprotected_form_at_its_opening_line(string $blade, int $line, string $method): void
+    {
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Form without CSRF protection - missing @csrf directive', $issue->message);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame($line, $issue->location?->line);
+        $this->assertSame($method, $issue->metadata['form_method']);
+    }
+
+    /**
+     * @return array<string, array{string, int, string}>
+     */
+    public static function unprotectedFormProvider(): array
+    {
+        return [
+            'one-line tag' => [
+                "<div>\n<form action=\"/widgets\" method=\"POST\">\n    <button>Save</button>\n</form>\n</div>",
+                2,
+                'POST',
+            ],
+            'tag with attributes on separate lines' => [
+                "<div>\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>\n</div>",
+                2,
+                'POST',
+            ],
+            'method on a later line than other attributes' => [
+                "<form action=\"/widgets/1\"\n      class=\"inline\"\n      method=\"put\">\n    <button>Save</button>\n</form>",
+                1,
+                'PUT',
+            ],
+            'method spoofing inside a multi-line POST tag' => [
+                "<form\n    action=\"/widgets/1\"\n    method=\"POST\">\n    @method('DELETE')\n    <button>Remove</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'arrow inside a quoted action before a multi-line method' => [
+                "<form\n    action=\"{{ route('widgets.update', \$widget->id) }}\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'array arrow inside a quoted action on one line' => [
+                "<form action=\"{{ route('widgets.index', ['page' => 1]) }}\" method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'comparison inside a bound attribute' => [
+                "<form\n    :class=\"{ wide: count > 1 }\"\n    method=\"PATCH\">\n    <button>Save</button>\n</form>",
+                1,
+                'PATCH',
+            ],
+            'live form after a commented-out one' => [
+                "{{-- <form method=\"POST\"> --}}\n<form\n    method=\"POST\">\n    <button>Save</button>\n</form>",
+                2,
+                'POST',
+            ],
+            'unquoted method value' => [
+                "<form action=\"/widgets\" method=post>\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'csrf directive only inside a Blade comment' => [
+                "<form method=\"POST\">\n    {{-- @csrf --}}\n</form>",
+                1,
+                'POST',
+            ],
+            'unprotected form sharing a line with a protected one' => [
+                '<form method="POST">@csrf</form><form method="DELETE" action="/widgets"></form>',
+                1,
+                'DELETE',
+            ],
+            'upper-case closing tag before a protected form' => [
+                "<FORM METHOD=\"POST\">\n    <button>Save</button>\n</FORM>\n<form method=\"POST\">\n    @csrf\n</form>",
+                1,
+                'POST',
+            ],
+            'escaped quote inside an echo before method' => [
+                "<form title=\"{{ \"9\\\" panel\" }}\" method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'form after an empty HTML comment' => [
+                "<!-->\n<form method=\"POST\">\n    <button>Save</button>\n</form>\n<!-- note -->",
+                2,
+                'POST',
+            ],
+            'form after an empty HTML comment with a dash' => [
+                "<!--->\n<form method=\"PUT\">\n    <button>Save</button>\n</form>\n<!-- note -->",
+                2,
+                'PUT',
+            ],
+            'echo holding an apostrophe inside a quoted attribute before method' => [
+                "<form title=\"{{ __(\"It's saved\") }}\" method=\"POST\" action=\"/widgets\">\n    <p>Owner's note</p>\n</form>",
+                1,
+                'POST',
+            ],
+            'raw echo holding an apostrophe inside a quoted attribute before method' => [
+                "<form data-labels=\"{!! json_encode(['one' => \"it's\"]) !!}\" method=\"PATCH\">\n    <p>Owner's note</p>\n</form>",
+                1,
+                'PATCH',
+            ],
+            'unquoted attribute bag echo with an arrow before method' => [
+                "<form {{ \$attributes->merge(['class' => 'wide']) }} method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'form after an HTML comment closed with --!>' => [
+                "<!-- note --!>\n<form method=\"POST\" action=\"/widgets\">\n</form>\n<!-- footer -->",
+                2,
+                'POST',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider protectedOrSafeFormProvider
+     */
+    #[DataProvider('protectedOrSafeFormProvider')]
+    public function test_passes_protected_or_safe_form(string $blade): void
+    {
+        $this->assertPassed($this->analyzeBladeForm($blade));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function protectedOrSafeFormProvider(): array
+    {
+        return [
+            'csrf directive after a multi-line tag' => [
+                "<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    @csrf\n    <button>Save</button>\n</form>",
+            ],
+            'csrf_field helper after a multi-line tag' => [
+                "<form\n    method=\"PATCH\"\n    action=\"/widgets/1\">\n    {{ csrf_field() }}\n</form>",
+            ],
+            'multi-line GET tag' => [
+                "<form\n    action=\"/widgets\"\n    method=\"GET\"\n>\n    <input name=\"q\">\n</form>",
+            ],
+            'multi-line tag without a method' => [
+                "<form\n    action=\"/widgets\"\n>\n    <input name=\"q\">\n</form>",
+            ],
+            'tag never closed before the end of the file' => [
+                "<form\n    action=\"/widgets\"\n    method=\"POST\"",
+            ],
+            'multi-line form inside a Blade comment' => [
+                "{{--\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>\n--}}",
+            ],
+            'multi-line form inside an HTML comment' => [
+                "<!--\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n</form>\n-->",
+            ],
+            'one-line form inside a Blade comment' => [
+                '{{-- <form method="POST" action="/widgets"></form> --}}',
+            ],
+            'one-line form inside an HTML comment' => [
+                '<!-- <form method="DELETE" action="/widgets/1"></form> -->',
+            ],
+            'element whose name only starts with form' => [
+                "<formation method=\"POST\">\n</formation>",
+            ],
+            'hyphenated component whose name starts with form' => [
+                "<form-wizard\n    method=\"POST\">\n</form-wizard>",
+            ],
+            'method named only inside a quoted value of a GET form' => [
+                "<form action=\"/widgets?method='post'\" method=\"GET\">\n</form>",
+            ],
+            'data-method on a later line of a GET form' => [
+                "<form\n    data-method=\"DELETE\"\n    method=\"GET\">\n    <input name=\"q\">\n</form>",
+            ],
+            'data-method on a one-line GET form' => [
+                "<form data-method=\"DELETE\" method=\"GET\">\n</form>",
+            ],
+            'formmethod on a GET form' => [
+                "<form formmethod=\"post\" method=\"get\">\n</form>",
+            ],
+            'bound method attribute on a GET form' => [
+                "<form x-bind:method=\"post\" method=\"get\">\n</form>",
+            ],
+            'two protected forms joined on one line' => [
+                "<form method=\"POST\">\n    @csrf\n</form><form method=\"POST\">\n    @csrf\n</form>",
+            ],
+            'closing tag only inside a Blade comment' => [
+                "<form method=\"POST\">\n    {{-- </form> --}}\n    @csrf\n</form>",
+            ],
+            'echo holding an apostrophe inside a quoted attribute of a protected form' => [
+                "<form method=\"POST\" action=\"/widgets\" title=\"{{ __(\"It's saved\") }}\">\n    @csrf\n    <p>{{ \$owner->name }}'s widget</p>\n</form>",
+            ],
+        ];
+    }
+
+    public function test_reports_only_the_unprotected_one_of_two_multi_line_forms(): void
+    {
+        $blade = <<<'BLADE'
+<form
+    action="/widgets"
+    method="POST"
+>
+    @csrf
+</form>
+
+<form
+    action="/gadgets"
+    method="DELETE"
+>
+    <button>Remove</button>
+</form>
+BLADE;
+
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(8, $result->getIssues()[0]->location?->line);
+        $this->assertSame('DELETE', $result->getIssues()[0]->metadata['form_method']);
+    }
+
+    public function test_unbalanced_quote_does_not_swallow_the_next_form(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" title='unclosed>
+</form>
+<form method="DELETE" title='also unclosed>
+</form>
+BLADE;
+
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertCount(2, $result->getIssues());
+        $this->assertSame(1, $result->getIssues()[0]->location?->line);
+        $this->assertSame(3, $result->getIssues()[1]->location?->line);
+    }
+
+    private function analyzeBladeForm(string $blade): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory(['resources/views/widget.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        return $analyzer->analyze();
+    }
+
     // ==================== Blade AJAX Tests (8 tests) ====================
 
     public function test_detects_jquery_ajax_post_without_csrf(): void

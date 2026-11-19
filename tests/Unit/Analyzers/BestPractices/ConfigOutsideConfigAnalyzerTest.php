@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use Illuminate\Support\Str;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\ConfigOutsideConfigAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -1937,6 +1938,368 @@ PHP;
             'trailing dot' => ['http://192.168.1.10./api'],
             'with userinfo' => ['http://user:pass@192.168.1.10/api'],
         ];
+    }
+
+    public function test_canonical_uuids_are_not_flagged_as_api_keys(): void
+    {
+        // A UUID is an identifier format, like a hash, wherever it appears
+        $code = <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class Identifiers
+{
+    public const TENANT_NAMESPACE = '3f2c9a71-5b8e-4d06-a1c4-7e9b2d58f013';
+
+    private $tenantId = '9d41e6b2-07ac-4f3e-b85d-2c6a1f7e904b';
+
+    public function upper(): string
+    {
+        return 'C80B3E5A-41F7-4D29-9E06-B7A2D4C1F358';
+    }
+
+    public function lookup(): mixed
+    {
+        return $this->find('e57a0c93-6d2b-48f1-a3e9-0b4c7d26f851');
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Support/Identifiers.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_uuid_lookalikes_and_prefixed_keys_are_still_flagged(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class BillingService
+{
+    private $misgrouped = '3f2c9a715b8e-4d06-a1c4-7e9b-2d58f013';
+    private $notHex = 'q7x2k9m4-p3w8-z5n1-r6t0-y4v7b2c9d8e1';
+    private $secret = 'sk_test_4eC39HqLyjWDarjtT1zdp7dc';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/BillingService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(3, $result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    /**
+     * @dataProvider caseStyleIdentifierProvider
+     */
+    #[DataProvider('caseStyleIdentifierProvider')]
+    public function test_case_style_identifiers_are_not_keys_at_any_length(string $value): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($value)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function caseStyleIdentifierProvider(): array
+    {
+        return [
+            'snake_case' => ['report_q2_widget_totals_for_page_view'],
+            'SCREAMING_SNAKE_CASE' => ['REPORT_Q2_WIDGET_TOTALS_FOR_PAGE_VIEW'],
+            'camelCase' => ['reportQ2WidgetTotalsForDashboardPage'],
+            'snake_case, thousands of segments' => ['summary'.str_repeat('_b2', 6000)],
+            'SCREAMING_SNAKE_CASE, thousands of segments' => ['SUMMARY'.str_repeat('_B2', 6000)],
+            'camelCase, thousands of humps' => ['summary'.str_repeat('B2', 6000)],
+        ];
+    }
+
+    /**
+     * @dataProvider caseStyleNearMissProvider
+     */
+    #[DataProvider('caseStyleNearMissProvider')]
+    public function test_case_style_near_misses_are_still_keys(string $value): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($value)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function caseStyleNearMissProvider(): array
+    {
+        return [
+            'snake, double underscore' => ['report__widget_totals_for_q2_page'],
+            'snake, trailing underscore' => ['report_widget_totals_for_q2_reporting_'],
+            'snake, leading underscore' => ['_report_widget_totals_for_q2_reporting'],
+            'snake, digit-led segment' => ['report_2fa_challenge_for_session_page'],
+            'snake, digit-led first segment' => ['2report_widget_totals_for_reporting_page'],
+            'snake, two segments' => ['reportwidget_totalsforq2reportingpage'],
+            'screaming, double underscore' => ['REPORT__WIDGET_TOTALS_FOR_Q2_PAGE'],
+            'screaming, trailing underscore' => ['REPORT_WIDGET_TOTALS_FOR_Q2_REPORTING_'],
+            'screaming, digit-led segment' => ['REPORT_2FA_CHALLENGE_FOR_SESSION_PAGE'],
+            'screaming, two segments' => ['REPORTWIDGET_TOTALSFORQ2REPORTINGPAGE'],
+            'camel, consecutive capitals' => ['reportWidgetTotalsForQ2HTMLDashboardPage'],
+            'camel, one hump' => ['reportwidgettotalsforq2reportingPage'],
+            'camel, trailing capital' => ['reportWidgetTotalsForQ2DashboardPageX'],
+            'camel, leading capital' => ['ReportWidgetTotalsForQ2DashboardPage'],
+            'camel, digit-led' => ['2reportWidgetTotalsForDashboardPage'],
+            'snake, thousands of segments then a digit-led tail' => ['summary'.str_repeat('_b2', 6000).'_7k3q9z'],
+        ];
+    }
+
+    /**
+     * @dataProvider newlineTerminatedLiteralProvider
+     */
+    #[DataProvider('newlineTerminatedLiteralProvider')]
+    public function test_identifier_checks_ignore_one_trailing_newline(string $literal, bool $reported): void
+    {
+        // $literal is double-quoted PHP source, so \n is an escape in the analyzed string
+        $code = <<<PHP
+<?php
+
+namespace App\\Services;
+
+class CacheService
+{
+    private \$name = "{$literal}";
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        if ($reported) {
+            $this->assertFailed($result);
+            $this->assertIssueCount(1, $result);
+            $this->assertHasIssueContaining('API key', $result);
+        } else {
+            $this->assertPassed($result);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function newlineTerminatedLiteralProvider(): array
+    {
+        return [
+            'snake_case, one newline' => ['report_q2_widget_totals_for_page_view\n', false],
+            'SCREAMING_SNAKE_CASE, one newline' => ['REPORT_Q2_WIDGET_TOTALS_FOR_PAGE_VIEW\n', false],
+            'camelCase, one newline' => ['reportQ2WidgetTotalsForDashboardPage\n', false],
+            'snake_case, two newlines' => ['report_q2_widget_totals_for_page_view\n\n', false],
+            'SCREAMING_SNAKE_CASE, two newlines' => ['REPORT_Q2_WIDGET_TOTALS_FOR_PAGE_VIEW\n\n', false],
+            'camelCase, two newlines' => ['reportQ2WidgetTotalsForDashboardPage\n\n', false],
+            'snake near-miss, one newline' => ['report__widget_totals_for_q2_page\n', true],
+            'SCREAMING near-miss, one newline' => ['REPORT_2FA_CHALLENGE_FOR_SESSION_PAGE\n', true],
+            'camel near-miss, one newline' => ['reportWidgetTotalsForQ2HTMLDashboardPage\n', true],
+            'prefixed lowercase words, one newline' => ['api_response_cache_for_dashboard\n', false],
+            'prefixed digit-heavy, 29 characters with the newline, under the length gate' => ['api_key_7f3k9q2m8x4w1z6v5b0n\n', false],
+            'prefixed digit-heavy, longer, one newline' => ['api_key_7f3k9q2m8x4w1z6v5b0n4r8t\n', true],
+            'prefixed mixed case, one newline' => ['sk_test_4eC39HqLyjWDarjtT1zdp7dc\n', true],
+        ];
+    }
+
+    public function test_null_excluded_domain_entry_does_not_error(): void
+    {
+        // An unset env() inside excluded_domains yields null; the string entries still apply
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture('http://192.168.1.11/x')]);
+
+        $analyzer = $this->createAnalyzer(['excluded_domains' => [null, '192.168.1.11']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_non_string_excluded_domain_entries_do_not_exclude_other_hosts(): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture('http://192.168.1.11/x')]);
+
+        $analyzer = $this->createAnalyzer(['excluded_domains' => [null, 42, ['192.168.1.11'], '192.168.1.10']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('192.168.1.11', $result);
+    }
+
+    public function test_stringable_excluded_domain_entries_are_read(): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/Probe.php' => $this->urlPropertyFixture('https://api.acme.io/x')]);
+
+        $analyzer = $this->createAnalyzer([
+            'strict_url_detection' => true,
+            'excluded_domains' => [Str::of('acme.io')],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_excluded_domain_does_not_match_a_host_with_two_trailing_dots(): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/Probe.php' => $this->urlPropertyFixture('http://192.168.1.10../api')]);
+
+        $analyzer = $this->createAnalyzer(['excluded_domains' => ['192.168.1.10']]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('192.168.1.10..', $result);
+    }
+
+    /**
+     * @dataProvider leadingDotExcludedDomainProvider
+     */
+    #[DataProvider('leadingDotExcludedDomainProvider')]
+    public function test_leading_dot_excluded_domain_entries_cover_the_domain_and_its_subdomains(string $entry): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class Probe
+{
+    private $covered = 'https://api.acme.io/x';
+    private $collision = 'https://notacme.io/x';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/Probe.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'strict_url_detection' => true,
+            'excluded_domains' => [$entry],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('notacme.io', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function leadingDotExcludedDomainProvider(): array
+    {
+        return [
+            'leading dot' => ['.acme.io'],
+            'leading wildcard' => ['*.acme.io'],
+        ];
+    }
+
+    public function test_excluded_domains_match_a_host_written_with_a_trailing_dot(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class CacheService
+{
+    private $excluded = 'http://192.168.1.10./api';
+    private $neighbour = 'http://192.168.1.11./api';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'excluded_domains' => ['192.168.1.10'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('192.168.1.11', $result);
+    }
+
+    public function test_strict_mode_excluded_domains_match_a_host_written_with_a_trailing_dot(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Services;
+
+class LinkService
+{
+    private $configured = 'https://github.com./acme/widgets';
+    private $configuredWithDot = 'https://api.acme.io/v1';
+    private $builtIn = 'https://laravel.com./docs';
+    private $other = 'https://gitlab.com./acme/widgets';
+    private $collision = 'https://notgithub.com./acme/widgets';
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Services/LinkService.php' => $code]);
+
+        $analyzer = $this->createAnalyzer([
+            'strict_url_detection' => true,
+            'excluded_domains' => ['github.com', 'acme.io.'],
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertHasIssueContaining('gitlab.com.', $result);
+        $this->assertHasIssueContaining('notgithub.com.', $result);
     }
 
     private function urlPropertyFixture(string $url): string

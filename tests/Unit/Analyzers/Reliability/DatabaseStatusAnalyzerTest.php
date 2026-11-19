@@ -5,8 +5,12 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
 use Illuminate\Contracts\Config\Repository as Config;
+use Illuminate\Database\Connection;
+use Illuminate\Database\Connectors\SQLiteConnector;
+use Illuminate\Database\SQLiteConnection;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Reliability\DatabaseStatusAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\Support\DatabaseConnectionChecker;
@@ -1068,6 +1072,382 @@ class DatabaseStatusAnalyzerTest extends AnalyzerTestCase
             $issues = $result->getIssues();
             $this->assertSame('high', $issues[0]->severity->value, "Failed for error: {$errorMessage}");
         }
+    }
+
+    public function test_fails_when_the_read_side_of_a_split_connection_is_unreachable(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('does not exist', $issues[0]->message);
+        // Graded like any other persistent failure on the default connection.
+        $this->assertSame('critical', $issues[0]->severity->value);
+    }
+
+    public function test_passes_when_both_sides_of_a_split_connection_are_reachable(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => ':memory:'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reports_an_unreachable_plain_connection_without_a_read_prefix(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('plain', [
+            'driver' => 'sqlite',
+            'database' => $tempDir.'/absent/primary.sqlite',
+            'prefix' => '',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('does not exist', $issues[0]->message);
+        $this->assertStringNotContainsString('Read connection', $issues[0]->message);
+    }
+
+    public function test_reports_the_write_failure_when_the_write_side_of_a_split_connection_is_unreachable(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => ':memory:'],
+            'write' => ['database' => $tempDir.'/absent/primary.sqlite'],
+            'prefix' => '',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertStringContainsString('primary.sqlite', $issues[0]->message);
+        $this->assertStringNotContainsString('Read connection', $issues[0]->message);
+    }
+
+    /**
+     * Laravel picks one entry of a read list at random per connection, so probing through the
+     * live connection found a dead replica only when it happened to be the one picked.
+     *
+     * @dataProvider deadReplicaPositionProvider
+     */
+    #[DataProvider('deadReplicaPositionProvider')]
+    public function test_fails_when_any_replica_in_a_read_list_is_unreachable(int $deadIndex, string $expectedPrefix): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $replicas = [['database' => ':memory:'], ['database' => ':memory:']];
+        $replicas[$deadIndex] = ['database' => $tempDir.'/absent/replica.sqlite'];
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => $replicas,
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        // Repeated so a random pick cannot land on the live replica every time and pass.
+        for ($run = 0; $run < 10; $run++) {
+            app('db')->purge('split');
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining($expectedPrefix, $result);
+        }
+    }
+
+    /**
+     * @return array<string, array{int, string}>
+     */
+    public static function deadReplicaPositionProvider(): array
+    {
+        return [
+            'first replica unreachable' => [0, 'Read connection #1: '],
+            'second replica unreachable' => [1, 'Read connection #2: '],
+        ];
+    }
+
+    public function test_fails_when_the_replica_is_unreachable_after_a_sticky_write(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'sticky' => true,
+            'prefix' => '',
+        ]);
+
+        // A write on a sticky connection routes its later reads to the write PDO.
+        app('db')->connection('split')->statement('create table probe (a integer)');
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+    }
+
+    public function test_fails_when_the_replica_is_unreachable_inside_an_open_transaction(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        // Inside a transaction a connection serves reads from the write PDO.
+        $connection = app('db')->connection('split');
+        $connection->beginTransaction();
+
+        try {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+        } finally {
+            $connection->rollBack();
+        }
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+    }
+
+    public function test_passes_when_a_resolver_for_the_connection_name_supplies_a_reachable_replica(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        // The app never connects with the raw read config: its resolver swaps the replica.
+        app('db')->extend('split', static fn (array $config, string $name) => app('db.factory')
+            ->make(array_merge($config, ['read' => ['database' => ':memory:']]), $name));
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_a_resolver_for_the_driver_supplies_a_reachable_replica(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        // Keyed by a built-in driver, as a resolver injecting credentials at connect time is.
+        app('db')->extend('sqlite', static fn (array $config, string $name) => app('db.factory')
+            ->make(array_merge($config, isset($config['read']) ? ['read' => ['database' => ':memory:']] : []), $name));
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_fails_when_a_resolver_for_the_connection_name_keeps_an_unreachable_replica(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => 'sqlite',
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        app('db')->extend('split', static fn (array $config, string $name) => app('db.factory')
+            ->make($config, $name));
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+    }
+
+    public function test_fails_when_a_custom_factory_driver_has_an_unreachable_replica(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => $this->registerFactoryDriver(),
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+    }
+
+    public function test_fails_when_a_custom_factory_driver_has_an_unreachable_replica_inside_an_open_transaction(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => $this->registerFactoryDriver(),
+            'read' => ['database' => $tempDir.'/absent/replica.sqlite'],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        $connection = app('db')->connection('split');
+        $connection->beginTransaction();
+
+        try {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+        } finally {
+            $connection->rollBack();
+        }
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Read connection: ', $result);
+    }
+
+    public function test_fails_when_any_replica_in_a_read_list_of_a_custom_factory_driver_is_unreachable(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        $this->useDefaultConnection('split', [
+            'driver' => $this->registerFactoryDriver(),
+            'read' => [['database' => ':memory:'], ['database' => $tempDir.'/absent/replica.sqlite']],
+            'write' => ['database' => ':memory:'],
+            'prefix' => '',
+        ]);
+
+        // Repeated so a random pick cannot land on the live replica every time and pass.
+        for ($run = 0; $run < 10; $run++) {
+            app('db')->purge('split');
+
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+
+            $result = $analyzer->analyze();
+
+            $this->assertFailed($result);
+            $this->assertHasIssueContaining('Read connection #2: ', $result);
+        }
+    }
+
+    /**
+     * Register a custom driver wired through the factory itself, with no DB::extend() resolver:
+     * a container-bound connector plus a Connection resolver. The resolver is static state, so
+     * it is removed again before the application goes.
+     */
+    private function registerFactoryDriver(): string
+    {
+        $driver = 'shieldci-probe-sqlite';
+
+        app()->bind("db.connector.{$driver}", static fn () => new SQLiteConnector);
+        Connection::resolverFor($driver, static fn ($pdo, $database, $prefix, $config) => new SQLiteConnection($pdo, $database, $prefix, $config));
+
+        $this->beforeApplicationDestroyed(static function () use ($driver): void {
+            $resolvers = new \ReflectionProperty(Connection::class, 'resolvers');
+            $registered = $resolvers->getValue();
+
+            if (is_array($registered)) {
+                unset($registered[$driver]);
+                $resolvers->setValue(null, $registered);
+            }
+        });
+
+        return $driver;
+    }
+
+    /**
+     * Make a real connection the default one for this test.
+     *
+     * A split connection has no top-level 'database' key, which Testbench's teardown reads off
+     * the default connection, so the default goes back to Testbench's own before it runs.
+     *
+     * @param  array<string, mixed>  $connection
+     */
+    private function useDefaultConnection(string $name, array $connection): void
+    {
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set("database.connections.{$name}", $connection);
+        $config->set('database.default', $name);
+
+        $this->beforeApplicationDestroyed(static function () use ($config): void {
+            $config->set('database.default', 'testing');
+        });
     }
 
     /**

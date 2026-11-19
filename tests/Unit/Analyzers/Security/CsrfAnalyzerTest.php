@@ -358,6 +358,255 @@ BLADE;
         $this->assertHasIssueContaining('CSRF', $result);
     }
 
+    /**
+     * @dataProvider unprotectedFormProvider
+     */
+    #[DataProvider('unprotectedFormProvider')]
+    public function test_reports_unprotected_form_at_its_opening_line(string $blade, int $line, string $method): void
+    {
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Form without CSRF protection - missing @csrf directive', $issue->message);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame($line, $issue->location?->line);
+        $this->assertSame($method, $issue->metadata['form_method']);
+    }
+
+    /**
+     * @return array<string, array{string, int, string}>
+     */
+    public static function unprotectedFormProvider(): array
+    {
+        return [
+            'one-line tag' => [
+                "<div>\n<form action=\"/widgets\" method=\"POST\">\n    <button>Save</button>\n</form>\n</div>",
+                2,
+                'POST',
+            ],
+            'tag with attributes on separate lines' => [
+                "<div>\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>\n</div>",
+                2,
+                'POST',
+            ],
+            'method on a later line than other attributes' => [
+                "<form action=\"/widgets/1\"\n      class=\"inline\"\n      method=\"put\">\n    <button>Save</button>\n</form>",
+                1,
+                'PUT',
+            ],
+            'method spoofing inside a multi-line POST tag' => [
+                "<form\n    action=\"/widgets/1\"\n    method=\"POST\">\n    @method('DELETE')\n    <button>Remove</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'arrow inside a quoted action before a multi-line method' => [
+                "<form\n    action=\"{{ route('widgets.update', \$widget->id) }}\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'array arrow inside a quoted action on one line' => [
+                "<form action=\"{{ route('widgets.index', ['page' => 1]) }}\" method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'comparison inside a bound attribute' => [
+                "<form\n    :class=\"{ wide: count > 1 }\"\n    method=\"PATCH\">\n    <button>Save</button>\n</form>",
+                1,
+                'PATCH',
+            ],
+            'live form after a commented-out one' => [
+                "{{-- <form method=\"POST\"> --}}\n<form\n    method=\"POST\">\n    <button>Save</button>\n</form>",
+                2,
+                'POST',
+            ],
+            'unquoted method value' => [
+                "<form action=\"/widgets\" method=post>\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'csrf directive only inside a Blade comment' => [
+                "<form method=\"POST\">\n    {{-- @csrf --}}\n</form>",
+                1,
+                'POST',
+            ],
+            'unprotected form sharing a line with a protected one' => [
+                '<form method="POST">@csrf</form><form method="DELETE" action="/widgets"></form>',
+                1,
+                'DELETE',
+            ],
+            'upper-case closing tag before a protected form' => [
+                "<FORM METHOD=\"POST\">\n    <button>Save</button>\n</FORM>\n<form method=\"POST\">\n    @csrf\n</form>",
+                1,
+                'POST',
+            ],
+            'escaped quote inside an echo before method' => [
+                "<form title=\"{{ \"9\\\" panel\" }}\" method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'form after an empty HTML comment' => [
+                "<!-->\n<form method=\"POST\">\n    <button>Save</button>\n</form>\n<!-- note -->",
+                2,
+                'POST',
+            ],
+            'form after an empty HTML comment with a dash' => [
+                "<!--->\n<form method=\"PUT\">\n    <button>Save</button>\n</form>\n<!-- note -->",
+                2,
+                'PUT',
+            ],
+            'echo holding an apostrophe inside a quoted attribute before method' => [
+                "<form title=\"{{ __(\"It's saved\") }}\" method=\"POST\" action=\"/widgets\">\n    <p>Owner's note</p>\n</form>",
+                1,
+                'POST',
+            ],
+            'raw echo holding an apostrophe inside a quoted attribute before method' => [
+                "<form data-labels=\"{!! json_encode(['one' => \"it's\"]) !!}\" method=\"PATCH\">\n    <p>Owner's note</p>\n</form>",
+                1,
+                'PATCH',
+            ],
+            'unquoted attribute bag echo with an arrow before method' => [
+                "<form {{ \$attributes->merge(['class' => 'wide']) }} method=\"POST\">\n    <button>Save</button>\n</form>",
+                1,
+                'POST',
+            ],
+            'form after an HTML comment closed with --!>' => [
+                "<!-- note --!>\n<form method=\"POST\" action=\"/widgets\">\n</form>\n<!-- footer -->",
+                2,
+                'POST',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider protectedOrSafeFormProvider
+     */
+    #[DataProvider('protectedOrSafeFormProvider')]
+    public function test_passes_protected_or_safe_form(string $blade): void
+    {
+        $this->assertPassed($this->analyzeBladeForm($blade));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function protectedOrSafeFormProvider(): array
+    {
+        return [
+            'csrf directive after a multi-line tag' => [
+                "<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    @csrf\n    <button>Save</button>\n</form>",
+            ],
+            'csrf_field helper after a multi-line tag' => [
+                "<form\n    method=\"PATCH\"\n    action=\"/widgets/1\">\n    {{ csrf_field() }}\n</form>",
+            ],
+            'multi-line GET tag' => [
+                "<form\n    action=\"/widgets\"\n    method=\"GET\"\n>\n    <input name=\"q\">\n</form>",
+            ],
+            'multi-line tag without a method' => [
+                "<form\n    action=\"/widgets\"\n>\n    <input name=\"q\">\n</form>",
+            ],
+            'tag never closed before the end of the file' => [
+                "<form\n    action=\"/widgets\"\n    method=\"POST\"",
+            ],
+            'multi-line form inside a Blade comment' => [
+                "{{--\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n    <button>Save</button>\n</form>\n--}}",
+            ],
+            'multi-line form inside an HTML comment' => [
+                "<!--\n<form\n    action=\"/widgets\"\n    method=\"POST\"\n>\n</form>\n-->",
+            ],
+            'one-line form inside a Blade comment' => [
+                '{{-- <form method="POST" action="/widgets"></form> --}}',
+            ],
+            'one-line form inside an HTML comment' => [
+                '<!-- <form method="DELETE" action="/widgets/1"></form> -->',
+            ],
+            'element whose name only starts with form' => [
+                "<formation method=\"POST\">\n</formation>",
+            ],
+            'hyphenated component whose name starts with form' => [
+                "<form-wizard\n    method=\"POST\">\n</form-wizard>",
+            ],
+            'method named only inside a quoted value of a GET form' => [
+                "<form action=\"/widgets?method='post'\" method=\"GET\">\n</form>",
+            ],
+            'data-method on a later line of a GET form' => [
+                "<form\n    data-method=\"DELETE\"\n    method=\"GET\">\n    <input name=\"q\">\n</form>",
+            ],
+            'data-method on a one-line GET form' => [
+                "<form data-method=\"DELETE\" method=\"GET\">\n</form>",
+            ],
+            'formmethod on a GET form' => [
+                "<form formmethod=\"post\" method=\"get\">\n</form>",
+            ],
+            'bound method attribute on a GET form' => [
+                "<form x-bind:method=\"post\" method=\"get\">\n</form>",
+            ],
+            'two protected forms joined on one line' => [
+                "<form method=\"POST\">\n    @csrf\n</form><form method=\"POST\">\n    @csrf\n</form>",
+            ],
+            'closing tag only inside a Blade comment' => [
+                "<form method=\"POST\">\n    {{-- </form> --}}\n    @csrf\n</form>",
+            ],
+            'echo holding an apostrophe inside a quoted attribute of a protected form' => [
+                "<form method=\"POST\" action=\"/widgets\" title=\"{{ __(\"It's saved\") }}\">\n    @csrf\n    <p>{{ \$owner->name }}'s widget</p>\n</form>",
+            ],
+        ];
+    }
+
+    public function test_reports_only_the_unprotected_one_of_two_multi_line_forms(): void
+    {
+        $blade = <<<'BLADE'
+<form
+    action="/widgets"
+    method="POST"
+>
+    @csrf
+</form>
+
+<form
+    action="/gadgets"
+    method="DELETE"
+>
+    <button>Remove</button>
+</form>
+BLADE;
+
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(8, $result->getIssues()[0]->location?->line);
+        $this->assertSame('DELETE', $result->getIssues()[0]->metadata['form_method']);
+    }
+
+    public function test_unbalanced_quote_does_not_swallow_the_next_form(): void
+    {
+        $blade = <<<'BLADE'
+<form method="POST" title='unclosed>
+</form>
+<form method="DELETE" title='also unclosed>
+</form>
+BLADE;
+
+        $result = $this->analyzeBladeForm($blade);
+
+        $this->assertCount(2, $result->getIssues());
+        $this->assertSame(1, $result->getIssues()[0]->location?->line);
+        $this->assertSame(3, $result->getIssues()[1]->location?->line);
+    }
+
+    private function analyzeBladeForm(string $blade): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory(['resources/views/widget.blade.php' => $blade]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['resources']);
+
+        return $analyzer->analyze();
+    }
+
     // ==================== Blade AJAX Tests (8 tests) ====================
 
     public function test_detects_jquery_ajax_post_without_csrf(): void
@@ -999,6 +1248,144 @@ PHP;
         $result = $this->analyzeCsrfMiddlewareExcept("[\n        // '*',\n        'stripe/*',\n    ]");
 
         $this->assertPassed($result);
+    }
+
+    // ==================== Every-Route Wildcard Patterns (#570) ====================
+
+    /**
+     * @dataProvider everyRouteWildcardProvider
+     */
+    #[DataProvider('everyRouteWildcardProvider')]
+    public function test_fails_critical_when_except_pattern_matches_every_route(string $pattern): void
+    {
+        $result = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('All routes excluded from CSRF protection with wildcard', $issue->message);
+        $this->assertEquals(Severity::Critical, $issue->severity);
+        $this->assertSame($pattern, $issue->metadata['exception']);
+    }
+
+    /**
+     * @dataProvider everyRouteWildcardProvider
+     */
+    #[DataProvider('everyRouteWildcardProvider')]
+    public function test_fails_critical_when_bootstrap_except_pattern_matches_every_route(string $pattern): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->validateCsrfTokens(except: ['{$pattern}']);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('All routes excluded from CSRF protection in bootstrap/app.php', $issue->message);
+        $this->assertEquals(Severity::Critical, $issue->severity);
+        $this->assertSame($pattern, $issue->metadata['exception']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function everyRouteWildcardProvider(): array
+    {
+        return [
+            'single wildcard' => ['*'],
+            'slash wildcard' => ['/*'],
+            'double wildcard' => ['**'],
+            'slash double wildcard' => ['/**'],
+            'wildcard slash wildcard' => ['*/*'],
+            'wildcard slash double wildcard' => ['*/**'],
+            'double slash wildcard' => ['//*'],
+            'wildcard trailing slash' => ['*/'],
+            'wildcard double slash wildcard' => ['*//*'],
+            'two slashes between three wildcards' => ['*/*/*'],
+        ];
+    }
+
+    /**
+     * @dataProvider patternsNotMatchingEveryRequestProvider
+     */
+    #[DataProvider('patternsNotMatchingEveryRequestProvider')]
+    public function test_does_not_grade_every_route_when_pattern_spares_some_requests(string $pattern): void
+    {
+        $kernel = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+        $bootstrap = $this->analyzeBootstrapMiddleware("\$middleware->validateCsrfTokens(except: ['{$pattern}']);");
+
+        foreach ([...$kernel->getIssues(), ...$bootstrap->getIssues()] as $issue) {
+            $this->assertStringNotContainsString('All routes excluded', $issue->message);
+            $this->assertNotEquals(Severity::Critical, $issue->severity);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function patternsNotMatchingEveryRequestProvider(): array
+    {
+        return [
+            'three adjacent slashes' => ['*///*'],
+            'two double slashes' => ['*//*//*'],
+            'three slashes spare the root url' => ['*/*/*/*'],
+        ];
+    }
+
+    public function test_bootstrap_reports_every_route_wildcards_once_and_still_grades_broad_patterns(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->validateCsrfTokens(except: ['**', 'reports/*', '*/*']);"
+        );
+
+        $this->assertFailed($result);
+        $messages = array_map(fn ($issue) => $issue->message, $result->getIssues());
+        $this->assertSame([
+            'All routes excluded from CSRF protection in bootstrap/app.php',
+            'Broad CSRF exception pattern in bootstrap/app.php: reports/*',
+        ], $messages);
+        $this->assertSame('**', $result->getIssues()[0]->metadata['exception']);
+    }
+
+    /**
+     * @dataProvider exceptPatternsNotMatchingEveryRouteProvider
+     */
+    #[DataProvider('exceptPatternsNotMatchingEveryRouteProvider')]
+    public function test_keeps_grading_patterns_that_do_not_match_every_route(string $pattern, ?string $message): void
+    {
+        $kernel = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+        $bootstrap = $this->analyzeBootstrapMiddleware("\$middleware->validateCsrfTokens(except: ['{$pattern}']);");
+
+        if ($message === null) {
+            $this->assertPassed($kernel);
+            $this->assertPassed($bootstrap);
+
+            return;
+        }
+
+        $this->assertCount(1, $kernel->getIssues());
+        $this->assertSame(sprintf('Broad CSRF exception pattern: %s', $message), $kernel->getIssues()[0]->message);
+        $this->assertEquals(Severity::High, $kernel->getIssues()[0]->severity);
+        $this->assertCount(1, $bootstrap->getIssues());
+        $this->assertSame(sprintf('Broad CSRF exception pattern in bootstrap/app.php: %s', $message), $bootstrap->getIssues()[0]->message);
+        $this->assertEquals(Severity::High, $bootstrap->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string|null}>
+     */
+    public static function exceptPatternsNotMatchingEveryRouteProvider(): array
+    {
+        return [
+            'single-segment wildcard stays broad' => ['reports/*', 'reports/*'],
+            'api wildcard stays allowed' => ['api/*', null],
+            'specific path passes' => ['service/webhooks/receive', null],
+            'bare slash is not a wildcard' => ['/', null],
+            'full url with a real path keeps its grading' => ['https://example.com/webhooks/*', null],
+            'full url host wildcard is not every route' => ['https://example.com/*', null],
+            'trailing space wildcard stays broad' => ['* ', '* '],
+            'space padded wildcard stays broad' => [' * ', ' * '],
+        ];
     }
 
     private function analyzeCsrfMiddlewareExcept(string $except): ResultInterface
@@ -8484,5 +8871,444 @@ PHP;
     private function issueLines(ResultInterface $result): array
     {
         return array_values(array_map(fn ($issue) => basename((string) $issue->location?->file).':'.$issue->location?->line, $result->getIssues()));
+    }
+
+    // ==================== Middleware Added Through a Route Variable ====================
+
+    /**
+     * @dataProvider routeVariableMiddlewareProvider
+     */
+    #[DataProvider('routeVariableMiddlewareProvider')]
+    public function test_middleware_added_through_the_variable_holding_a_route(string $statements, ?string $message): void
+    {
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+\$route = Route::post('/ledgers', [LedgerController::class, 'store']);
+{$statements}
+PHP);
+
+        if ($message === null) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($message, $result->getIssues()[0]->message);
+        $this->assertSame(5, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, string|null}>
+     */
+    public static function routeVariableMiddlewareProvider(): array
+    {
+        $missing = 'POST route in custom route file missing CSRF protection - no "web" middleware detected';
+        $stripped = 'POST route in custom route file missing CSRF protection - the CSRF middleware is excluded from it';
+
+        return [
+            'web added' => ["\$route->middleware('web');", null],
+            'web added as a list' => ["\$route->middleware(['web']);", null],
+            'web added after another call' => ["\$route->name('ledgers.store')->middleware('web');", null],
+            'web added by a later statement' => ["\$route->name('ledgers.store');\n\$route->middleware('web');", null],
+            'web added beside other middleware' => ["\$route->middleware('auth');\n\$route->middleware('web');", null],
+            'nothing added' => ['', $missing],
+            'other middleware added' => ["\$route->middleware('auth');", $missing],
+            'web added in a branch' => ["if (config('ledgers.enabled')) {\n    \$route->middleware('web');\n}", $missing],
+            'web added then excluded' => ["\$route->middleware('web');\n\$route->withoutMiddleware('web');", $stripped],
+            'web added then its CSRF class excluded' => ["\$route->middleware('web');\n\$route->withoutMiddleware(VerifyCsrfToken::class);", $stripped],
+            'web added and excluded in one chain' => ["\$route->middleware('web')->withoutMiddleware([VerifyCsrfToken::class]);", $stripped],
+            'web added after a Route method outside the registrar attributes' => ["\$route->withTrashed();\n\$route->middleware('web');", null],
+            'web added after a where constraint' => ["\$route->whereNumber('ledger');\n\$route->middleware('web');", null],
+            'web added through a nullsafe call' => ["\$route?->middleware('web');", null],
+            'web added through a nullsafe chain' => ["\$route?->name('ledgers.store')->middleware('web');", null],
+            'web added through a nullsafe call then excluded' => ["\$route?->middleware('web');\n\$route->withoutMiddleware('web');", $stripped],
+        ];
+    }
+
+    public function test_web_added_through_a_route_variable_matches_the_chained_form(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::post('/ledgers', [LedgerController::class, 'store'])->middleware('web');
+PHP));
+    }
+
+    public function test_web_added_through_a_reassigned_route_variable_reaches_only_the_route_it_holds(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$route = Route::post('/ledgers', [LedgerController::class, 'store']);
+$route = Route::put('/ledgers/{ledger}', [LedgerController::class, 'update']);
+$route->middleware('web');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_web_added_through_a_route_variable_before_it_holds_the_route_is_not_credited(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$route = new LedgerRouteOptions();
+$route->middleware('web');
+$route = Route::post('/ledgers', [LedgerController::class, 'store']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(5, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_web_added_through_a_variable_holding_something_else_credits_no_route(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::post('/ledgers', [LedgerController::class, 'store']);
+$route = new LedgerRouteOptions();
+$route->middleware('web');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_web_added_through_a_registrar_variable_route_reaches_each_route_alone(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$ledgers = Route::prefix('ledgers');
+$store = $ledgers->post('/', [LedgerController::class, 'store']);
+$ledgers->put('/{ledger}', [LedgerController::class, 'update']);
+$store->middleware('web');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('PUT route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame(5, $result->getIssues()[0]->location?->line);
+    }
+
+    public function test_routes_on_a_registrar_variable_are_each_reported_at_their_own_line(): void
+    {
+        $result = $this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$invoices = Route::prefix('invoices');
+$invoices->post('/', [InvoiceController::class, 'store']);
+$invoices->put('/{invoice}', [InvoiceController::class, 'update']);
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $issues = $result->getIssues();
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $issues[0]->message);
+        $this->assertSame(4, $issues[0]->location?->line);
+        $this->assertSame('PUT route in custom route file missing CSRF protection - no "web" middleware detected', $issues[1]->message);
+        $this->assertSame(5, $issues[1]->location?->line);
+    }
+
+    /**
+     * @dataProvider sharedRouterCallProvider
+     */
+    #[DataProvider('sharedRouterCallProvider')]
+    public function test_routes_made_on_a_variable_holding_a_router_call_are_each_judged_alone(string $assignment, string $variable): void
+    {
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+{$assignment}
+{$variable}->post('/invoices', [InvoiceController::class, 'store']);
+{$variable}->put('/invoices/{invoice}', [InvoiceController::class, 'update']);
+{$variable}->delete('/invoices/{invoice}', [InvoiceController::class, 'destroy'])->middleware('web');
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $issues = $result->getIssues();
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $issues[0]->message);
+        $this->assertSame(4, $issues[0]->location?->line);
+        $this->assertSame('PUT route in custom route file missing CSRF protection - no "web" middleware detected', $issues[1]->message);
+        $this->assertSame(5, $issues[1]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function sharedRouterCallProvider(): array
+    {
+        return [
+            'facade root in $router' => ['$router = Route::getFacadeRoot();', '$router'],
+            'facade root in another variable' => ['$invoiceRoutes = Route::getFacadeRoot();', '$invoiceRoutes'],
+            'router macro' => ['$tenant = Route::tenant();', '$tenant'],
+        ];
+    }
+
+    public function test_route_action_middleware_is_read_on_a_route_made_on_the_facade_root(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile(<<<'PHP'
+<?php
+
+Route::getFacadeRoot()->post('/invoices', ['middleware' => 'web', 'uses' => 'InvoiceController@store']);
+PHP));
+    }
+
+    /**
+     * @dataProvider loopRouteVariableProvider
+     */
+    #[DataProvider('loopRouteVariableProvider')]
+    public function test_middleware_added_through_a_route_variable_in_a_loop_body(string $body, string $after, bool $covered): void
+    {
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+foreach (['/invoices', '/credit-notes'] as \$path) {
+    \$route = Route::post(\$path, [InvoiceController::class, 'store']);
+{$body}
+}
+{$after}
+PHP);
+
+        if ($covered) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame(4, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, string, bool}>
+     */
+    public static function loopRouteVariableProvider(): array
+    {
+        return [
+            'web added in the same body' => ["    \$route->middleware('web');", '', true],
+            'web added after another call in the same body' => ["    \$route->name('invoices.store');\n    \$route->middleware('web');", '', true],
+            'web added in a branch of the body' => ["    if (config('invoices.enabled')) {\n        \$route->middleware('web');\n    }", '', false],
+            'web added after the loop' => ['', "\$route->middleware('web');", false],
+            'web added after a continue' => ["    if (\$path === '/credit-notes') {\n        continue;\n    }\n    \$route->middleware('web');", '', false],
+            'nothing added' => ['', '', false],
+        ];
+    }
+
+    public function test_web_php_route_excluding_csrf_through_its_variable_is_reported(): void
+    {
+        $result = $this->analyzeRouteFiles(['routes/web.php' => <<<'PHP'
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+Route::post('/ledgers', [LedgerController::class, 'store']);
+
+$notify = Route::post('/ledgers/notify', LedgerNotifyController::class);
+$notify->withoutMiddleware(VerifyCsrfToken::class);
+PHP]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route excludes the CSRF middleware through withoutMiddleware() or excluded_middleware', $result->getIssues()[0]->message);
+        $this->assertSame(7, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @dataProvider earlyExitRouteVariableProvider
+     */
+    #[DataProvider('earlyExitRouteVariableProvider')]
+    public function test_web_added_through_a_route_variable_after_an_early_exit_is_not_credited(string $code, int $line): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\n{$code}\n");
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('POST route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame($line, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function earlyExitRouteVariableProvider(): array
+    {
+        return [
+            'return in a branch' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store']);\nif (! config('payouts.web')) {\n    return;\n}\n\$route->middleware('web');", 3],
+            'throw expression' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store']);\nconfig('payouts.web') or throw new RuntimeException('Payouts are disabled');\n\$route->middleware('web');", 3],
+            'exit in a branch' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store']);\nif (! config('payouts.web')) {\n    exit;\n}\n\$route->middleware('web');", 3],
+            'return in a loop body' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    if (\$path === '/payouts') {\n        return;\n    }\n    \$route->middleware('web');\n}", 4],
+        ];
+    }
+
+    public function test_web_added_through_a_route_variable_after_an_exit_in_a_closure_is_credited(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile(<<<'PHP'
+<?php
+
+$route = Route::post('/payouts', [PayoutController::class, 'store']);
+$guard = function () {
+    return config('payouts.web');
+};
+$route->middleware('web');
+PHP));
+    }
+
+    /**
+     * @dataProvider creditedRouteVariableProvider
+     */
+    #[DataProvider('creditedRouteVariableProvider')]
+    public function test_web_added_through_a_route_variable_is_credited(string $code): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\n{$code}\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function creditedRouteVariableProvider(): array
+    {
+        return [
+            'nullsafe verb on a router variable' => ["\$payouts = app('router');\n\$route = \$payouts?->post('/payouts', [PayoutController::class, 'store']);\n\$route->middleware('web');"],
+            'nullsafe call in the assignment' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store'])?->name('payouts.store');\n\$route->middleware('web');"],
+            'sibling loop bodies reuse the variable' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    \$route->middleware('web');\n}\nforeach (['/refunds'] as \$path) {\n    \$route = Route::put(\$path, [RefundController::class, 'update']);\n    \$route->middleware('web');\n}"],
+            'assigned in the scope and in a loop body' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store']);\n\$route->middleware('web');\nforeach (['/refunds'] as \$path) {\n    \$route = Route::put(\$path, [RefundController::class, 'update']);\n    \$route->middleware('web');\n}"],
+            'break of an inner loop' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    foreach ([1] as \$attempt) {\n        break;\n    }\n    \$route->middleware('web');\n}"],
+            'break of a switch' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    switch (\$path) {\n        case '/payouts':\n            \$kind = 'payout';\n            break;\n    }\n    \$route->middleware('web');\n}"],
+            'resource narrowed to reads' => ["\$photos = Route::resource('photos', PhotoController::class);\n\$photos->only(['index', 'show']);"],
+            'resource narrowed to reads chained' => ["Route::resource('photos', PhotoController::class)->only(['index', 'show']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider uncreditedLoopRouteVariableProvider
+     */
+    #[DataProvider('uncreditedLoopRouteVariableProvider')]
+    public function test_web_added_through_a_loop_route_variable_is_not_credited(string $code, int $issues): void
+    {
+        $result = $this->analyzeRouteFile("<?php\n\n{$code}\n");
+
+        $this->assertFailed($result);
+        $this->assertIssueCount($issues, $result);
+    }
+
+    /**
+     * @return array<string, array{string, int}>
+     */
+    public static function uncreditedLoopRouteVariableProvider(): array
+    {
+        return [
+            'break 2 out of the loop' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    foreach ([1] as \$attempt) {\n        break 2;\n    }\n    \$route->middleware('web');\n}", 1],
+            'continue 2 out of the loop' => ["foreach (['/payouts'] as \$path) {\n    \$route = Route::post(\$path, [PayoutController::class, 'store']);\n    switch (\$path) {\n        case '/payouts':\n            continue 2;\n    }\n    \$route->middleware('web');\n}", 1],
+            'web added in a body before the assignment' => ["\$route = Route::post('/payouts', [PayoutController::class, 'store']);\nforeach (['/refunds'] as \$path) {\n    \$route->middleware('web');\n    \$route = Route::put(\$path, [RefundController::class, 'update']);\n}", 2],
+            'resource narrowed to a write' => ["\$photos = Route::resource('photos', PhotoController::class);\n\$photos->only(['index', 'store']);", 1],
+        ];
+    }
+
+    /**
+     * @dataProvider routeVariableChangedAfterItsLoopProvider
+     */
+    #[DataProvider('routeVariableChangedAfterItsLoopProvider')]
+    public function test_route_variable_changed_after_its_loop_is_not_credited(string $file, string $after, string $message): void
+    {
+        $result = $this->analyzeRouteFiles([$file => <<<PHP
+<?php
+
+use App\Http\Middleware\VerifyCsrfToken;
+
+foreach (['/invoices', '/credit-notes'] as \$path) {
+    \$route = Route::post(\$path, [InvoiceController::class, 'store']);
+    \$route->middleware('web');
+}
+{$after}
+PHP]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($message, $result->getIssues()[0]->message);
+        $this->assertSame(6, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function routeVariableChangedAfterItsLoopProvider(): array
+    {
+        return [
+            'web excluded in a custom file' => ['routes/billing.php', "\$route->withoutMiddleware('web');", 'POST route in custom route file missing CSRF protection - no "web" middleware detected'],
+            'web excluded through a nested statement' => ['routes/billing.php', "if (config('invoices.strip')) {\n    \$route->withoutMiddleware('web');\n}", 'POST route in custom route file missing CSRF protection - no "web" middleware detected'],
+        ];
+    }
+
+    /**
+     * @dataProvider resourceVariableAfterAnEarlyExitProvider
+     */
+    #[DataProvider('resourceVariableAfterAnEarlyExitProvider')]
+    public function test_web_added_through_a_resource_variable_after_an_early_exit_is_not_credited(string $after): void
+    {
+        $result = $this->analyzeRouteFile(<<<PHP
+<?php
+
+\$photos = Route::resource('photos', PhotoController::class);
+if (! config('photos.web')) {
+    return;
+}
+{$after}
+PHP);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('RESOURCE route in custom route file missing CSRF protection - no "web" middleware detected', $result->getIssues()[0]->message);
+        $this->assertSame(3, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function resourceVariableAfterAnEarlyExitProvider(): array
+    {
+        return [
+            'web added' => ["\$photos->middleware('web');"],
+            'narrowed to reads' => ["\$photos->only(['index', 'show']);"],
+        ];
+    }
+
+    /**
+     * @dataProvider moreCreditedRouteVariableProvider
+     */
+    #[DataProvider('moreCreditedRouteVariableProvider')]
+    public function test_web_added_through_more_route_variable_shapes_is_credited(string $code): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("<?php\n\n{$code}\n"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function moreCreditedRouteVariableProvider(): array
+    {
+        return [
+            'singleton' => ["\$profile = Route::singleton('profile', ProfileController::class);\n\$profile->middleware('web');"],
+            'api singleton' => ["\$profile = Route::apiSingleton('profile', ProfileController::class);\n\$profile->middleware('web');"],
+            'after setUri()' => ["\$route = Route::post('/orders', [PurchaseOrderController::class, 'store']);\n\$route->setUri('/purchase-orders');\n\$route->middleware('web');"],
+            'after bind()' => ["\$route = Route::post('/orders', [PurchaseOrderController::class, 'store']);\n\$route->bind(request());\n\$route->middleware('web');"],
+            'after setBindingFields()' => ["\$route = Route::post('/orders', [PurchaseOrderController::class, 'store']);\n\$route->setBindingFields(['order' => 'number']);\n\$route->middleware('web');"],
+            'resource in a loop body' => ["foreach (['media', 'covers'] as \$name) {\n    \$media = Route::resource(\$name, MediaController::class);\n    \$media->only(['index', 'show']);\n}"],
+        ];
     }
 }

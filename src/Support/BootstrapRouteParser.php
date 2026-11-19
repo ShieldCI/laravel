@@ -92,12 +92,32 @@ class BootstrapRouteParser
      * The methods, lowercase, that register routes on a registrar or the router without
      * changing the attributes it holds.
      */
-    private const REGISTRAR_READS = ['group', 'get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource', 'apiresource'];
+    private const REGISTRAR_READS = ['group', 'get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource', 'apiresource', 'singleton', 'apisingleton'];
 
     /**
      * The classes the container resolves the router as, besides its 'router' binding.
      */
     private const ROUTER_CLASSES = ['Illuminate\\Routing\\Router', 'Illuminate\\Contracts\\Routing\\Registrar'];
+
+    /**
+     * The methods, lowercase, of Illuminate\Routing\Route that return the route and leave
+     * its middleware as the calls before set it, besides the registrar attributes and the
+     * where*() constraints, so a statement making them on a variable holding a route, such
+     * as $route->withTrashed(), is read as one that changes the route. A registrar has none
+     * of them and throws on each, so the statements after it never run.
+     */
+    private const ROUTE_MUTATORS = [
+        'bind', 'block', 'defaults', 'fallback', 'setbindingfields', 'setdefaults', 'setfallback', 'seturi', 'setwheres', 'uses', 'withoutblocking', 'withtrashed',
+        // PendingResourceRegistration and PendingSingletonResourceRegistration
+        'creatable', 'destroyable', 'except', 'middlewarefor', 'names', 'only', 'parameter', 'parameters', 'scoped', 'shallow', 'withoutmiddlewarefor',
+    ];
+
+    /**
+     * The route verbs, lowercase, each of which registers one route and returns it, and the
+     * resource registrations, which return a pending registration that registers its routes
+     * when it is destroyed, with the calls made on it until then.
+     */
+    private const ROUTE_REGISTRATIONS = ['get', 'post', 'put', 'patch', 'delete', 'options', 'any', 'match', 'resource', 'apiresource', 'singleton', 'apisingleton'];
 
     /** @var array<string, RouteFileWalk> */
     private array $walks = [];
@@ -110,9 +130,21 @@ class BootstrapRouteParser
     private \WeakMap $standIns;
 
     /**
+     * The method call each nullsafe call stands for (see {@see self::nullsafeStandIn()}).
+     *
+     * @var \WeakMap<Node\Expr\NullsafeMethodCall|MethodCall, MethodCall>
+     */
+    private \WeakMap $nullsafeStandIns;
+
+    /**
      * The judge, $nameThrottles, says whether one middleware name throttles, as
      * {@see MiddlewareThrottleDetector::__construct()} describes. Without one, only the
      * framework's throttle classes and the 'throttle' alias Laravel registers count.
+     *
+     * With $byValueCaptures, a closure importing a variable that holds a registrar by value
+     * sees the registrar the variable holds where the closure is made, when neither the
+     * closure nor the code after it can change it (see {@see self::aliasedVariables()}).
+     * Without it, the closure hands the registrar on, and the variable is read nowhere.
      *
      * @param  (Closure(string): bool)|null  $nameThrottles
      */
@@ -120,9 +152,11 @@ class BootstrapRouteParser
         private readonly string $basePath,
         private readonly ParserInterface $parser,
         ?Closure $nameThrottles = null,
+        private readonly bool $byValueCaptures = false,
     ) {
         $this->throttles = new MiddlewareThrottleDetector($basePath, $parser, $nameThrottles);
         $this->standIns = new \WeakMap;
+        $this->nullsafeStandIns = new \WeakMap;
     }
 
     /**
@@ -316,11 +350,30 @@ class BootstrapRouteParser
     }
 
     /**
+     * What one walk of a file finds (see {@see self::walkFile()}): the route files it loads,
+     * as {@see self::getExternalRouteFileLoads()} reads them, those $this->loadRoutesFrom(...)
+     * requires, each group closure with the group calls enclosing it, and the routes each
+     * group call made on the router loads, by spl_object_id() of the call.
+     *
+     * @return array{loads: list<array{file: string, calls: list<MethodCall|StaticCall>}>, routesFrom: list<array{file: string, calls: list<MethodCall|StaticCall>}>, closures: list<array{closure: Node, calls: non-empty-list<MethodCall|StaticCall>}>, groups: array<int, list<Node\Expr>>}
+     *
+     * @internal An implementation detail of authentication-authorization, outside this package's backward-compatibility promise.
+     */
+    public function routeFileWalk(string $path): array
+    {
+        $walk = $this->walkFile($path);
+
+        return ['loads' => $walk['loads'], 'routesFrom' => $walk['routesFrom'], 'closures' => $walk['closures'], 'groups' => $walk['groups']];
+    }
+
+    /**
      * The PHP files under a directory of the base path, at any depth.
      *
      * @return list<string>
+     *
+     * @internal An implementation detail of authentication-authorization and of this class itself, outside this package's backward-compatibility promise.
      */
-    private function phpFilesUnder(string $relativeDir): array
+    public function phpFilesUnder(string $relativeDir): array
     {
         if (! is_dir($this->basePath.'/'.$relativeDir)) {
             return [];
@@ -915,6 +968,31 @@ class BootstrapRouteParser
     }
 
     /**
+     * The method-call chain a chain with nullsafe calls stands for: each ?-> read as ->, as on
+     * a variable known to hold a route or a registrar it never short-circuits, so
+     * $route?->middleware('web') reads as $route->middleware('web'). A chain with none is
+     * returned as it is. The receiver and the arguments are the chain's own nodes, and the
+     * same stand-in is returned for a call each time.
+     *
+     * @internal An implementation detail of csrf-protection and of this class itself, outside this package's backward-compatibility promise.
+     */
+    public function nullsafeStandIn(MethodCall|Node\Expr\NullsafeMethodCall $call): MethodCall
+    {
+        if (isset($this->nullsafeStandIns[$call])) {
+            return $this->nullsafeStandIns[$call];
+        }
+
+        $var = $call->var instanceof MethodCall || $call->var instanceof Node\Expr\NullsafeMethodCall
+            ? $this->nullsafeStandIn($call->var)
+            : $call->var;
+        $standIn = $call instanceof MethodCall && $var === $call->var
+            ? $call
+            : new MethodCall($var, $call->name, $call->args, $call->getAttributes());
+
+        return $this->nullsafeStandIns[$call] = $standIn;
+    }
+
+    /**
      * The call an ->attribute($key, $value) call stands for, as RouteRegistrar::attribute()
      * sets the attribute the method of that name does: ->$key($value), so
      * ->attribute('middleware', ['auth']) reads as ->middleware(['auth']). The value is the
@@ -1138,7 +1216,9 @@ class BootstrapRouteParser
         // The value is read before the variable is written
         $bound = null;
         if ($node instanceof Node\Stmt\Expression && isset($walk['bindings'][spl_object_id($node)])) {
-            $value = $node->expr instanceof Node\Expr\Assign ? $node->expr->expr : ($this->registrarUpdate($node->expr)[1] ?? $node->expr);
+            $value = $node->expr instanceof Node\Expr\Assign
+                ? $this->routerChainValue($node->expr->expr, $routers) ?? $node->expr->expr
+                : ($this->registrarUpdate($node->expr)[1] ?? $node->expr);
             $bound = [$walk['bindings'][spl_object_id($node)], $this->assignedPaths($value, $paths), $value];
         }
 
@@ -1201,6 +1281,17 @@ class BootstrapRouteParser
                 $paths[$name] = $assigned;
             } else {
                 unset($paths[$name]);
+            }
+        }
+
+        // A variable a loop body binds holds the last iteration's value after the loop, which
+        // pathBindings() does not read
+        if ($node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_ || $node instanceof Node\Stmt\Do_) {
+            foreach ($node->stmts as $statement) {
+                $name = $walk['bindings'][spl_object_id($statement)] ?? null;
+                if ($name !== null) {
+                    unset($values[$name], $paths[$name]);
+                }
             }
         }
     }
@@ -1460,15 +1551,53 @@ class BootstrapRouteParser
         $updates = [];
         $direct = [];
         $holdsRegistrar = [];
-        foreach ($statements as $statement) {
-            if ($statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
-                && $statement->expr->var instanceof Node\Expr\Variable && is_string($statement->expr->var->name)) {
+        // Variables a statement changes as they are read is not read for: one whose loop body
+        // changes it before assigning it, which may change another iteration's route, and one
+        // holding a route that a statement which may leave the scope came between, as the
+        // route is registered before it leaves
+        $conflicted = [];
+        // Per variable, the loop bodies (see loopBodyStatements()) that assigned it so far
+        $assignedIn = [];
+        // Variables holding a route, and those of them a statement that may leave came after
+        $holdsRoute = [];
+        $exited = [];
+        // Per variable a loop body assigned a route, that loop: after it, the variable holds
+        // the last iteration's route, so a statement outside the loop that touches it, other
+        // than one assigning it afresh, leaves it unread
+        $loopBound = [];
+        foreach ($this->loopBodyStatements($statements) as [$statement, $body, $loops]) {
+            foreach ($loopBound as $name => $loop) {
+                if (in_array($loop, $loops, true)) {
+                    continue;
+                }
+                $fresh = $statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
+                    && $statement->expr->var instanceof Node\Expr\Variable && $statement->expr->var->name === $name;
+                if ($fresh ? $this->touchesVariable($statement->expr->expr, $name) : $this->touchesVariable($statement, $name)) {
+                    $conflicted[$name] = true;
+                }
+                if ($fresh || isset($conflicted[$name])) {
+                    unset($loopBound[$name]);
+                }
+            }
+
+            $value = $statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
+                ? $this->routerChainValue($statement->expr->expr, $known)
+                : null;
+            if ($value !== null && $statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
+                && $statement->expr->var instanceof Node\Expr\Variable && is_string($statement->expr->var->name)
+                && ($body === 0 || $this->routeChain($value))) {
                 $name = $statement->expr->var->name;
                 $candidates[spl_object_id($statement)] = $name;
-                $assigned[spl_object_id($statement)] = $statement->expr->expr;
+                $assigned[spl_object_id($statement)] = $value;
                 $direct[spl_object_id($statement->expr)] = true;
-                $holdsRegistrar[$name] = $this->registrarChain($statement->expr->expr, $known);
-                if ($this->chainOnRouter($statement->expr->expr, $known)) {
+                $assignedIn[$name][$body] = true;
+                $holdsRegistrar[$name] = $this->registrarChain($value, $known);
+                $holdsRoute[$name] = $this->routeChain($value);
+                unset($exited[$name]);
+                if ($body !== 0) {
+                    // A route made in a loop body holds no router a later statement makes routes off
+                    $loopBound[$name] = $body;
+                } elseif ($this->chainOnRouter($value, $known)) {
                     $known[$name] = true;
                 } else {
                     unset($known[$name]);
@@ -1477,10 +1606,36 @@ class BootstrapRouteParser
                 && $update[0]->var instanceof Node\Expr\Variable && is_string($update[0]->var->name) && ($holdsRegistrar[$update[0]->var->name] ?? false)) {
                 // $r->middleware(...); changes the registrar $r holds, as if it were
                 // $r = $r->middleware(...);
-                $candidates[spl_object_id($statement)] = $update[0]->var->name;
+                $name = $update[0]->var->name;
+                $candidates[spl_object_id($statement)] = $name;
                 $assigned[spl_object_id($statement)] = $update[1];
                 $updates[spl_object_id($statement)] = true;
                 $direct[spl_object_id($update[0])] = true;
+                if (($body !== 0 && ! isset($assignedIn[$name][$body])) || isset($exited[$name])) {
+                    $conflicted[$name] = true;
+                }
+            } elseif ($statement instanceof Node\Stmt\Expression && $statement->expr instanceof Node\Expr\Assign
+                && $statement->expr->var instanceof Node\Expr\Variable && is_string($statement->expr->var->name)) {
+                // Assigned anything else, such as a value off a chain that is not the router
+                $name = $statement->expr->var->name;
+                $candidates[spl_object_id($statement)] = $name;
+                $assigned[spl_object_id($statement)] = $statement->expr->expr;
+                $direct[spl_object_id($statement->expr)] = true;
+                $holdsRegistrar[$name] = false;
+                $holdsRoute[$name] = false;
+                unset($exited[$name]);
+                if ($body === 0) {
+                    unset($known[$name]);
+                } else {
+                    // Only a route is read in a loop body
+                    $conflicted[$name] = true;
+                }
+            }
+
+            if ($this->mayLeaveScope($statement)) {
+                foreach (array_keys(array_filter($holdsRoute)) as $name) {
+                    $exited[$name] = true;
+                }
             }
         }
 
@@ -1503,12 +1658,159 @@ class BootstrapRouteParser
             if ($untracked === null) {
                 return ['bindings' => [], 'untracked' => [], 'disabled' => true];
             }
+            $untracked += $conflicted;
         } while (array_intersect_key($routers, $untracked) !== []);
         if ($routers !== []) {
-            $untracked += $this->aliasedVariables($statements, $routers, $globals && $fileScope);
+            $untracked += $this->aliasedVariables($statements, $routers, $globals && $fileScope, $candidates);
         }
 
         return ['bindings' => array_diff($candidates, array_keys($untracked)), 'untracked' => $untracked, 'disabled' => false];
+    }
+
+    /**
+     * A scope's own statements, each with 0, in order, and in their place the statements of
+     * each loop body among them, recursively, each with spl_object_id() of its loop: the
+     * statements one iteration runs in order. A body that holds a break or a continue is left
+     * out, as an iteration may stop before a later statement.
+     *
+     * Each statement also carries the loops whose bodies hold it, outermost first.
+     *
+     * @param  array<Node>  $statements
+     * @param  list<int>  $loops
+     * @return list<array{Node, int, list<int>}>
+     */
+    private function loopBodyStatements(array $statements, int $loop = 0, array $loops = []): array
+    {
+        $sequence = [];
+        foreach ($statements as $statement) {
+            $sequence[] = [$statement, $loop, $loops];
+            if ($this->readsLoopBody($statement)) {
+                $id = spl_object_id($statement);
+                array_push($sequence, ...$this->loopBodyStatements($statement->stmts, $id, [...$loops, $id]));
+            }
+        }
+
+        return $sequence;
+    }
+
+    /**
+     * Whether a statement is a loop whose body loopBodyStatements() reads as statements of
+     * its own: one with no break or continue that leaves its iteration (see leavesIteration()).
+     *
+     * @phpstan-assert-if-true Node\Stmt\Foreach_|Node\Stmt\For_|Node\Stmt\While_|Node\Stmt\Do_ $statement
+     */
+    private function readsLoopBody(Node $statement): bool
+    {
+        return ($statement instanceof Node\Stmt\Foreach_ || $statement instanceof Node\Stmt\For_
+            || $statement instanceof Node\Stmt\While_ || $statement instanceof Node\Stmt\Do_) && ! $this->leavesIteration($statement->stmts);
+    }
+
+    /**
+     * Whether a statement reads or writes a variable, outside the body of a loop
+     * loopBodyStatements() reads statement by statement, which it reads there instead.
+     */
+    private function touchesVariable(Node $statement, string $name): bool
+    {
+        $pending = $this->readsLoopBody($statement)
+            ? array_values(array_filter($this->childNodes($statement), fn (Node $child): bool => ! in_array($child, $statement->stmts, true)))
+            : [$statement];
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Expr\Variable && $node->name === $name) {
+                return true;
+            }
+            array_push($pending, ...$this->childNodes($node));
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a loop body holds a break or a continue that leaves the loop's iteration: one
+     * at its own level, or one in a nested loop or switch whose level, 1 unless written, reaches
+     * past them, such as break 2 in a switch. One whose level is not a literal counts too.
+     * A function declared in the body is not read.
+     *
+     * @param  array<Node>  $statements
+     */
+    private function leavesIteration(array $statements): bool
+    {
+        $pending = array_map(fn (Node $node): array => [$node, 0], $statements);
+        while ($pending !== []) {
+            [$node, $depth] = array_pop($pending);
+            if ($node instanceof Node\Stmt\Break_ || $node instanceof Node\Stmt\Continue_) {
+                $level = $node->num === null ? 1 : ($node->num instanceof Node\Scalar\Int_ ? $node->num->value : null);
+                if ($level === null || $level > $depth) {
+                    return true;
+                }
+            }
+            if ($node instanceof Node\FunctionLike) {
+                continue;
+            }
+            $inner = $node instanceof Node\Stmt\Foreach_ || $node instanceof Node\Stmt\For_ || $node instanceof Node\Stmt\While_
+                || $node instanceof Node\Stmt\Do_ || $node instanceof Node\Stmt\Switch_ ? $depth + 1 : $depth;
+            foreach ($this->childNodes($node) as $child) {
+                $pending[] = [$child, $inner];
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The value an assignment gives a variable, as pathBindings() reads it: a chain on the
+     * router with nullsafe calls read as plain ones (see {@see self::nullsafeStandIn()}), so
+     * $route = $r?->post(...) holds the route; null for an assignment of anything else at
+     * the top of the scope and in a loop body alike, which is then read as it is written.
+     *
+     * @param  array<string, mixed>  $routers
+     */
+    private function routerChainValue(Node\Expr $expr, array $routers): ?Node\Expr
+    {
+        $value = $expr instanceof MethodCall || $expr instanceof Node\Expr\NullsafeMethodCall ? $this->nullsafeStandIn($expr) : $expr;
+
+        return $this->chainOnRouter($value, $routers) ? $value : null;
+    }
+
+    /**
+     * Whether a statement may leave the scope it runs in: it holds a return, a throw or an
+     * exit outside any function declared in it.
+     */
+    private function mayLeaveScope(Node $statement): bool
+    {
+        $pending = [$statement];
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Node\Stmt\Return_ || $node instanceof Node\Expr\Throw_ || $node instanceof Node\Expr\Exit_) {
+                return true;
+            }
+            if (! $node instanceof Node\FunctionLike) {
+                array_push($pending, ...$this->childNodes($node));
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Whether a chain on the router (as {@see self::routerChainValue()} returns one) is a
+     * route or a pending resource registration the router hands back: it holds a route verb
+     * or a resource registration (see {@see self::ROUTE_REGISTRATIONS}).
+     */
+    private function routeChain(Node\Expr $expr): bool
+    {
+        $node = $expr;
+        while ($node instanceof MethodCall || $node instanceof StaticCall) {
+            if ($node->name instanceof Identifier && in_array($node->name->toLowerString(), self::ROUTE_REGISTRATIONS, true)) {
+                return true;
+            }
+            if (! $node instanceof MethodCall) {
+                break;
+            }
+            $node = $node->var;
+        }
+
+        return false;
     }
 
     /**
@@ -1547,14 +1849,28 @@ class BootstrapRouteParser
      * read any of them, and so may \$GLOBALS or a global statement anywhere in a file whose
      * own scope this is, when $globals says its variables are globals.
      *
+     * With byValueCaptures, a closure's use ($a) hands $a on only when the closure may
+     * change the registrar (see {@see self::closureOnlyRegistersOn()}), or the scope writes
+     * $a in or after the statement making the closure, by one of $candidates or a
+     * $a->middleware(...); update, as the closure holds the same object and runs later.
+     *
      * @param  array<Node>  $statements
      * @param  array<string, true>  $names
+     * @param  array<int, string>  $candidates  The scope's direct writes, by spl_object_id() of their statement (see {@see self::pathBindings()})
      * @return array<string, true>
      */
-    private function aliasedVariables(array $statements, array $names, bool $globals = false): array
+    private function aliasedVariables(array $statements, array $names, bool $globals = false, array $candidates = []): array
     {
         if ($globals && $this->namesGlobals($statements)) {
             return $names;
+        }
+
+        // The index of the last statement writing each variable directly
+        $lastWrite = [];
+        foreach ($statements as $index => $statement) {
+            if (isset($candidates[spl_object_id($statement)])) {
+                $lastWrite[$candidates[spl_object_id($statement)]] = $index;
+            }
         }
 
         $receivers = [];
@@ -1575,21 +1891,21 @@ class BootstrapRouteParser
                 if ($node instanceof Node\Stmt\Expression) {
                     $dropped[spl_object_id($node->expr)] = true;
                 }
-                if ($node instanceof MethodCall && ! isset($links[spl_object_id($node)])) {
+                if (($node instanceof MethodCall || $node instanceof Node\Expr\NullsafeMethodCall) && ! isset($links[spl_object_id($node)])) {
                     // The outermost call of a chain: any call but group() and those that set an
                     // attribute returns something else than the registrar it is made on
                     $root = $node;
                     $keeps = true;
-                    while ($root instanceof MethodCall) {
+                    while ($root instanceof MethodCall || $root instanceof Node\Expr\NullsafeMethodCall) {
                         $links[spl_object_id($root)] = true;
-                        $keeps = $keeps && ($this->setsAttributeOn($root) || ($root->name instanceof Identifier && $root->name->toLowerString() === 'group'));
+                        $keeps = $keeps && ($this->changesHeldValue($root) || ($root->name instanceof Identifier && $root->name->toLowerString() === 'group'));
                         $root = $root->var;
                     }
                     if ($keeps && ! isset($dropped[spl_object_id($node)]) && $root instanceof Node\Expr\Variable && is_string($root->name) && isset($names[$root->name])) {
                         $escapes[$root->name][$index] = ($escapes[$root->name][$index] ?? 0) + 1;
                     }
                 }
-                if ($node instanceof MethodCall || ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable)) {
+                if ($node instanceof MethodCall || $node instanceof Node\Expr\NullsafeMethodCall || ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable)) {
                     $receivers[spl_object_id($node->var)] = true;
                 }
                 if ($node instanceof Node\Expr\Variable && is_string($node->name) && isset($names[$node->name])) {
@@ -1600,7 +1916,14 @@ class BootstrapRouteParser
                 }
 
                 if ($node instanceof Node\Expr\Closure) {
-                    array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
+                    foreach ($node->uses as $use) {
+                        // Imported by value, the registrar is read where the closure is made
+                        if ($this->byValueCaptures && ! $use->byRef && is_string($use->var->name) && isset($names[$use->var->name])
+                            && ($lastWrite[$use->var->name] ?? -1) < $index && $this->closureOnlyRegistersOn($node, $use->var->name)) {
+                            $receivers[spl_object_id($use->var)] = true;
+                        }
+                        $pending[] = $use->var;
+                    }
                 } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
                     array_push($pending, ...$this->childNodes($node));
                 }
@@ -1620,6 +1943,49 @@ class BootstrapRouteParser
         }
 
         return $aliased;
+    }
+
+    /**
+     * Whether a closure reads the variable $name only to register routes on the registrar
+     * it holds, so it neither changes the registrar nor hands it on: each read, in its own
+     * scope or an arrow function's in it, is the receiver of a route verb, or of a group()
+     * whose value a statement drops, as group() returns the registrar. A nested closure
+     * importing it, or anything that may read or write variables the closure does not name,
+     * such as a require or include, eval(), a variable variable, extract(), compact() or
+     * get_defined_vars(), makes it false.
+     */
+    private function closureOnlyRegistersOn(Node\Expr\Closure $closure, string $name): bool
+    {
+        $registers = [];
+        $pending = $closure->stmts;
+        while ($pending !== []) {
+            $node = array_pop($pending);
+            if ($node instanceof Include_ || $node instanceof Node\Expr\Eval_
+                || ($node instanceof Node\Expr\Variable && ! is_string($node->name))
+                || ($node instanceof FuncCall && $this->isFunction($node, ['extract', 'compact', 'get_defined_vars', 'parse_str']))) {
+                return false;
+            }
+
+            $call = $node instanceof Node\Stmt\Expression ? $node->expr : $node;
+            if ($call instanceof MethodCall && $call->var instanceof Node\Expr\Variable && $call->var->name === $name
+                && $call->name instanceof Identifier && in_array($call->name->toLowerString(), self::REGISTRAR_READS, true)
+                && ($call->name->toLowerString() !== 'group' || $node instanceof Node\Stmt\Expression)) {
+                $registers[spl_object_id($call->var)] = true;
+            }
+            if ($node instanceof Node\Expr\Variable && $node->name === $name && ! isset($registers[spl_object_id($node)])) {
+                return false;
+            }
+
+            if ($node instanceof Node\Expr\Closure) {
+                array_push($pending, ...array_map(fn (Node\ClosureUse $use): Node => $use->var, $node->uses));
+            } elseif (! $node instanceof Node\FunctionLike || $node instanceof Node\Expr\ArrowFunction) {
+                if (! $node instanceof Node\Stmt\ClassLike) {
+                    array_push($pending, ...$this->childNodes($node));
+                }
+            }
+        }
+
+        return true;
     }
 
     /**
@@ -1674,15 +2040,19 @@ class BootstrapRouteParser
      * the registrar. A group() returns the registrar too, so
      * $r->middleware('auth')->group(...) sets the attribute and registers routes with it, and
      * a route verb leaves it, so in $r->middleware('auth')->get(...)->name('x') only the
-     * middleware() call reaches the registrar. Null when no call sets an attribute before the
+     * middleware() call reaches the registrar. A call a route makes and returns itself from
+     * (see {@see self::ROUTE_MUTATORS}), or a where*() constraint, counts as one that sets an
+     * attribute, as on a variable holding a route it changes the route. A nullsafe call reads
+     * as a plain one, and the last call is returned as the chain it stands for (see
+     * {@see self::nullsafeStandIn()}). Null when no call sets an attribute before the
      * chain leaves the registrar, or the chain does not start at a variable.
      *
-     * @return array{MethodCall, MethodCall}|null
+     * @return array{MethodCall|Node\Expr\NullsafeMethodCall, MethodCall}|null
      */
     private function registrarUpdate(Node\Expr $expr): ?array
     {
         $links = [];
-        while ($expr instanceof MethodCall) {
+        while ($expr instanceof MethodCall || $expr instanceof Node\Expr\NullsafeMethodCall) {
             array_unshift($links, $expr);
             $expr = $expr->var;
         }
@@ -1692,14 +2062,14 @@ class BootstrapRouteParser
 
         $end = null;
         foreach ($links as $link) {
-            if ($this->setsAttributeOn($link)) {
+            if ($this->changesHeldValue($link)) {
                 $end = $link;
             } elseif (! $link->name instanceof Identifier || $link->name->toLowerString() !== 'group') {
                 break;
             }
         }
 
-        return $end === null ? null : [$links[0], $end];
+        return $end === null ? null : [$links[0], $this->nullsafeStandIn($end)];
     }
 
     /**
@@ -1707,10 +2077,26 @@ class BootstrapRouteParser
      * {@see self::REGISTRAR_ATTRIBUTES}), or attribute(), which sets one by name, so on a
      * variable holding a registrar it changes the registrar. $this is never a registrar.
      */
-    private function setsAttributeOn(MethodCall $call): bool
+    private function setsAttributeOn(MethodCall|Node\Expr\NullsafeMethodCall $call): bool
     {
         return $call->name instanceof Identifier
             && (in_array($call->name->toLowerString(), self::REGISTRAR_ATTRIBUTES, true) || $call->name->toLowerString() === 'attribute')
+            && ! ($call->var instanceof Node\Expr\Variable && $call->var->name === 'this');
+    }
+
+    /**
+     * Whether a method call changes a registrar or a route it is made on and returns it: one
+     * that sets a registrar attribute (see {@see self::setsAttributeOn()}), a route's own
+     * (see {@see self::ROUTE_MUTATORS}) or a where*() constraint. $this is never either.
+     */
+    private function changesHeldValue(MethodCall|Node\Expr\NullsafeMethodCall $call): bool
+    {
+        if ($this->setsAttributeOn($call)) {
+            return true;
+        }
+        $name = $call->name instanceof Identifier ? $call->name->toLowerString() : null;
+
+        return $name !== null && (in_array($name, self::ROUTE_MUTATORS, true) || str_starts_with($name, 'where'))
             && ! ($call->var instanceof Node\Expr\Variable && $call->var->name === 'this');
     }
 

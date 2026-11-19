@@ -1001,6 +1001,144 @@ PHP;
         $this->assertPassed($result);
     }
 
+    // ==================== Every-Route Wildcard Patterns (#570) ====================
+
+    /**
+     * @dataProvider everyRouteWildcardProvider
+     */
+    #[DataProvider('everyRouteWildcardProvider')]
+    public function test_fails_critical_when_except_pattern_matches_every_route(string $pattern): void
+    {
+        $result = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('All routes excluded from CSRF protection with wildcard', $issue->message);
+        $this->assertEquals(Severity::Critical, $issue->severity);
+        $this->assertSame($pattern, $issue->metadata['exception']);
+    }
+
+    /**
+     * @dataProvider everyRouteWildcardProvider
+     */
+    #[DataProvider('everyRouteWildcardProvider')]
+    public function test_fails_critical_when_bootstrap_except_pattern_matches_every_route(string $pattern): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->validateCsrfTokens(except: ['{$pattern}']);"
+        );
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame('All routes excluded from CSRF protection in bootstrap/app.php', $issue->message);
+        $this->assertEquals(Severity::Critical, $issue->severity);
+        $this->assertSame($pattern, $issue->metadata['exception']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function everyRouteWildcardProvider(): array
+    {
+        return [
+            'single wildcard' => ['*'],
+            'slash wildcard' => ['/*'],
+            'double wildcard' => ['**'],
+            'slash double wildcard' => ['/**'],
+            'wildcard slash wildcard' => ['*/*'],
+            'wildcard slash double wildcard' => ['*/**'],
+            'double slash wildcard' => ['//*'],
+            'wildcard trailing slash' => ['*/'],
+            'wildcard double slash wildcard' => ['*//*'],
+            'two slashes between three wildcards' => ['*/*/*'],
+        ];
+    }
+
+    /**
+     * @dataProvider patternsNotMatchingEveryRequestProvider
+     */
+    #[DataProvider('patternsNotMatchingEveryRequestProvider')]
+    public function test_does_not_grade_every_route_when_pattern_spares_some_requests(string $pattern): void
+    {
+        $kernel = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+        $bootstrap = $this->analyzeBootstrapMiddleware("\$middleware->validateCsrfTokens(except: ['{$pattern}']);");
+
+        foreach ([...$kernel->getIssues(), ...$bootstrap->getIssues()] as $issue) {
+            $this->assertStringNotContainsString('All routes excluded', $issue->message);
+            $this->assertNotEquals(Severity::Critical, $issue->severity);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function patternsNotMatchingEveryRequestProvider(): array
+    {
+        return [
+            'three adjacent slashes' => ['*///*'],
+            'two double slashes' => ['*//*//*'],
+            'three slashes spare the root url' => ['*/*/*/*'],
+        ];
+    }
+
+    public function test_bootstrap_reports_every_route_wildcards_once_and_still_grades_broad_patterns(): void
+    {
+        $result = $this->analyzeBootstrapMiddleware(
+            "\$middleware->validateCsrfTokens(except: ['**', 'reports/*', '*/*']);"
+        );
+
+        $this->assertFailed($result);
+        $messages = array_map(fn ($issue) => $issue->message, $result->getIssues());
+        $this->assertSame([
+            'All routes excluded from CSRF protection in bootstrap/app.php',
+            'Broad CSRF exception pattern in bootstrap/app.php: reports/*',
+        ], $messages);
+        $this->assertSame('**', $result->getIssues()[0]->metadata['exception']);
+    }
+
+    /**
+     * @dataProvider exceptPatternsNotMatchingEveryRouteProvider
+     */
+    #[DataProvider('exceptPatternsNotMatchingEveryRouteProvider')]
+    public function test_keeps_grading_patterns_that_do_not_match_every_route(string $pattern, ?string $message): void
+    {
+        $kernel = $this->analyzeCsrfMiddlewareExcept("['{$pattern}']");
+        $bootstrap = $this->analyzeBootstrapMiddleware("\$middleware->validateCsrfTokens(except: ['{$pattern}']);");
+
+        if ($message === null) {
+            $this->assertPassed($kernel);
+            $this->assertPassed($bootstrap);
+
+            return;
+        }
+
+        $this->assertCount(1, $kernel->getIssues());
+        $this->assertSame(sprintf('Broad CSRF exception pattern: %s', $message), $kernel->getIssues()[0]->message);
+        $this->assertEquals(Severity::High, $kernel->getIssues()[0]->severity);
+        $this->assertCount(1, $bootstrap->getIssues());
+        $this->assertSame(sprintf('Broad CSRF exception pattern in bootstrap/app.php: %s', $message), $bootstrap->getIssues()[0]->message);
+        $this->assertEquals(Severity::High, $bootstrap->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string|null}>
+     */
+    public static function exceptPatternsNotMatchingEveryRouteProvider(): array
+    {
+        return [
+            'single-segment wildcard stays broad' => ['reports/*', 'reports/*'],
+            'api wildcard stays allowed' => ['api/*', null],
+            'specific path passes' => ['service/webhooks/receive', null],
+            'bare slash is not a wildcard' => ['/', null],
+            'full url with a real path keeps its grading' => ['https://example.com/webhooks/*', null],
+            'full url host wildcard is not every route' => ['https://example.com/*', null],
+            'trailing space wildcard stays broad' => ['* ', '* '],
+            'space padded wildcard stays broad' => [' * ', ' * '],
+        ];
+    }
+
     private function analyzeCsrfMiddlewareExcept(string $except): ResultInterface
     {
         $middleware = <<<PHP

@@ -6,14 +6,28 @@ namespace ShieldCI\Tests\Unit\Analyzers\Performance;
 
 use Illuminate\Contracts\Config\Repository as Config;
 use Illuminate\Foundation\Application as LaravelApplication;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Performance\DevDependencyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DevDependencyAnalyzerTest extends AnalyzerTestCase
 {
+    private ?string $originalPath = null;
+
+    protected function tearDown(): void
+    {
+        if ($this->originalPath !== null) {
+            putenv('PATH='.$this->originalPath);
+            $this->originalPath = null;
+        }
+
+        parent::tearDown();
+    }
+
     protected function createAnalyzer(): AnalyzerInterface
     {
         return new DevDependencyAnalyzer;
@@ -1005,5 +1019,310 @@ JSON;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('Found 2 dev dependencies', $result);
+    }
+
+    public function test_falls_back_to_filesystem_when_composer_dry_run_lists_no_removals(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"},
+        {"name": "fakerphp/faker"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => $composerLock,
+            'vendor/autoload.php' => '<?php',
+            'vendor/phpunit/phpunit/composer.json' => '{}',
+            'vendor/fakerphp/faker/composer.json' => '{}',
+        ]);
+
+        // No vendor/composer/installed.json: composer has nothing to compare the lock against.
+        $this->assertFileDoesNotExist($tempDir.'/vendor/composer/installed.json');
+        $this->installComposerStub($tempDir, "#!/bin/sh\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Found 2 dev dependencies installed', $result);
+        $issues = $result->getIssues();
+        $this->assertSame('file_system', $issues[0]->metadata['detection_method'] ?? null);
+    }
+
+    public function test_reports_removals_listed_by_composer_dry_run(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => $composerLock,
+            'vendor/autoload.php' => '<?php',
+            'vendor/phpunit/phpunit/composer.json' => '{}',
+        ]);
+
+        $this->installComposerStub($tempDir, "#!/bin/sh\necho '  - Removing phpunit/phpunit (11.0.0)'\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Dev dependencies are installed in production environment', $result);
+        $issues = $result->getIssues();
+        $this->assertSame('composer_dry_run', $issues[0]->metadata['detection_method'] ?? null);
+        $this->assertSame(['phpunit/phpunit'], $issues[0]->metadata['packages_to_remove'] ?? null);
+    }
+
+    public function test_passes_when_composer_dry_run_lists_no_removals_and_no_dev_packages_installed(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [{"name": "symfony/console"}],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => $composerLock,
+            'vendor/autoload.php' => '<?php',
+            'vendor/symfony/console/composer.json' => '{}',
+        ]);
+
+        $this->installComposerStub($tempDir, "#!/bin/sh\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @dataProvider vendorDirProvider
+     */
+    #[DataProvider('vendorDirProvider')]
+    public function test_detects_dev_packages_in_configured_vendor_dir(string $vendorDir): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.lock' => $composerLock,
+            'lib/vendor/autoload.php' => '<?php',
+            'lib/vendor/phpunit/phpunit/composer.json' => '{}',
+        ]);
+
+        $composerJson = [
+            'require-dev' => ['phpunit/phpunit' => '^11.0'],
+            'config' => ['vendor-dir' => str_replace('{base}', $tempDir, $vendorDir)],
+        ];
+        file_put_contents($tempDir.'/composer.json', json_encode($composerJson, JSON_UNESCAPED_SLASHES));
+
+        $result = $this->analyzeInProduction($this->filesystemOnlyAnalyzer(), $tempDir);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Found 1 dev dependencies installed', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function vendorDirProvider(): array
+    {
+        return [
+            'relative' => ['lib/vendor'],
+            'relative with trailing slash' => ['lib/vendor/'],
+            'absolute' => ['{base}/lib/vendor'],
+        ];
+    }
+
+    public function test_passes_when_configured_vendor_dir_has_no_dev_packages(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [{"name": "symfony/console"}],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"},"config":{"vendor-dir":"lib/vendor"}}',
+            'composer.lock' => $composerLock,
+            'lib/vendor/autoload.php' => '<?php',
+            'lib/vendor/symfony/console/composer.json' => '{}',
+        ]);
+
+        $result = $this->analyzeInProduction($this->filesystemOnlyAnalyzer(), $tempDir);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_uses_default_vendor_dir_when_config_has_no_vendor_dir(): void
+    {
+        $composerLock = <<<'JSON'
+{
+    "packages": [],
+    "packages-dev": [
+        {"name": "phpunit/phpunit"}
+    ]
+}
+JSON;
+
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"},"config":{"sort-packages":true}}',
+            'composer.lock' => $composerLock,
+            'vendor/autoload.php' => '<?php',
+            'vendor/phpunit/phpunit/composer.json' => '{}',
+        ]);
+
+        $result = $this->analyzeInProduction($this->filesystemOnlyAnalyzer(), $tempDir);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Found 1 dev dependencies installed', $result);
+    }
+
+    public function test_passes_when_installed_json_says_no_dev_but_a_stale_dev_dir_remains(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => '{"packages":[],"packages-dev":[{"name":"phpunit/phpunit"}]}',
+            'vendor/composer/installed.json' => '{"packages":[],"dev":false,"dev-package-names":[]}',
+        ]);
+        @mkdir($tempDir.'/vendor/phpunit/phpunit', 0755, true);
+
+        $this->installComposerStub($tempDir, "#!/bin/sh\necho 'Nothing to install, update or remove'\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reads_installed_json_from_configured_vendor_dir(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"},"config":{"vendor-dir":"lib/vendor"}}',
+            'composer.lock' => '{"packages":[],"packages-dev":[{"name":"phpunit/phpunit"}]}',
+            'lib/vendor/composer/installed.json' => '{"packages":[],"dev":false,"dev-package-names":[]}',
+            'lib/vendor/phpunit/phpunit/composer.json' => '{}',
+        ]);
+
+        $this->installComposerStub($tempDir, "#!/bin/sh\necho 'Nothing to install, update or remove'\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_when_composer_dry_run_removes_only_production_packages(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => '{"packages":[],"packages-dev":[{"name":"phpunit/phpunit"}]}',
+            'vendor/composer/installed.json' => '{"packages":[],"dev":false,"dev-package-names":[]}',
+            'vendor/acme/prod/composer.json' => '{}',
+        ]);
+
+        $this->installComposerStub($tempDir, "#!/bin/sh\necho '  - Removing acme/prod (1.0.0)'\nexit 0\n");
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_reports_only_dev_packages_among_composer_dry_run_removals(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            '.env' => 'APP_ENV=production',
+            'composer.json' => '{"require-dev":{"phpunit/phpunit":"^11.0"}}',
+            'composer.lock' => '{"packages":[],"packages-dev":[{"name":"phpunit/phpunit"}]}',
+            'vendor/composer/installed.json' => '{"packages":[],"dev":true,"dev-package-names":["phpunit/phpunit"]}',
+            'vendor/acme/prod/composer.json' => '{}',
+            'vendor/phpunit/phpunit/composer.json' => '{}',
+        ]);
+
+        $this->installComposerStub(
+            $tempDir,
+            "#!/bin/sh\necho '  - Removing acme/prod (1.0.0)'\necho '  - Removing phpunit/phpunit (11.0.0)'\nexit 0\n"
+        );
+
+        $result = $this->analyzeInProduction(new DevDependencyAnalyzer, $tempDir);
+
+        $this->assertFailed($result);
+        $issues = $result->getIssues();
+        $this->assertSame('composer_dry_run', $issues[0]->metadata['detection_method'] ?? null);
+        $this->assertSame(['phpunit/phpunit'], $issues[0]->metadata['packages_to_remove'] ?? null);
+        $this->assertSame(1, $issues[0]->metadata['total_packages'] ?? null);
+    }
+
+    private function filesystemOnlyAnalyzer(): DevDependencyAnalyzer
+    {
+        return new class extends DevDependencyAnalyzer
+        {
+            protected function isComposerAvailable(): bool
+            {
+                return false;
+            }
+        };
+    }
+
+    private function analyzeInProduction(DevDependencyAnalyzer $analyzer, string $tempDir): ResultInterface
+    {
+        /** @var Config $config */
+        $config = $this->app?->make('config') ?? app('config');
+        $config->set('app.env', 'production');
+        /** @var LaravelApplication $application */
+        $application = app();
+        $originalBasePath = $application->basePath();
+        $application->setBasePath($tempDir);
+
+        try {
+            return $analyzer->analyze();
+        } finally {
+            $application->setBasePath($originalBasePath);
+        }
+    }
+
+    /**
+     * Puts a stub composer first on PATH so the analyzer takes its dry-run branch.
+     */
+    private function installComposerStub(string $tempDir, string $script): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('The composer stub is a POSIX shell script.');
+        }
+
+        @mkdir($tempDir.'/bin', 0755, true);
+        file_put_contents($tempDir.'/bin/composer', $script);
+        chmod($tempDir.'/bin/composer', 0755);
+
+        $this->originalPath = (string) getenv('PATH');
+        putenv('PATH='.$tempDir.'/bin'.PATH_SEPARATOR.$this->originalPath);
     }
 }

@@ -17,7 +17,8 @@ use ShieldCI\AnalyzersCore\ValueObjects\Issue;
  *
  * Uses two detection methods:
  * 1. Composer dry-run (authoritative, zero maintenance)
- * 2. File system check (fallback when Composer unavailable)
+ * 2. File system check (fallback when Composer is unavailable or fails, or lists no removals
+ *    for a vendor directory without composer/installed.json)
  *
  * Also checks for missing composer.lock file.
  *
@@ -187,10 +188,17 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
         // Matches: "- Removing", "- would remove", "Removing package/name"
         // Pattern matches standard Composer output format: "package/vendor" format
         // Updated to support dots in package names (e.g., symfony/polyfill-php8.0)
-        if (preg_match('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output)) {
-            // Extract package names for better reporting
-            preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output, $allMatches);
-            $packageNames = $allMatches[2];
+        preg_match_all('/-\s+(Removing|would\s+remove)\s+([a-z0-9\-_.]+\/[a-z0-9\-_.]+)/i', $output, $allMatches);
+
+        // A removal is only a dev dependency when the package is one: a production package
+        // dropped from the lock but still on disk is listed too.
+        $devPackages = array_map('strtolower', $this->getDevPackagesFromLock() ?? $this->getDevPackagesFromComposerJson($composerJsonPath));
+        $packageNames = array_values(array_filter(
+            $allMatches[2],
+            fn (string $name): bool => in_array(strtolower($name), $devPackages, true)
+        ));
+
+        if ($packageNames !== []) {
             $removedPackages = array_slice($packageNames, 0, 10);
 
             return $this->createIssue(
@@ -208,7 +216,17 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
             );
         }
 
-        return null;
+        // Composer compares the lock against installed.json, so with that file present a dry-run
+        // listing no dev removals is authoritative: a stale directory it does not track is not
+        // installed. Without it (a vendor/ copied without its metadata) composer reports installs
+        // instead of removals, so let the file system scan decide.
+        $installedJsonPath = $this->getVendorPath($composerJsonPath).DIRECTORY_SEPARATOR.'composer'.DIRECTORY_SEPARATOR.'installed.json';
+
+        if (file_exists($installedJsonPath)) {
+            return null;
+        }
+
+        return $this->checkViaFileSystem($composerJsonPath);
     }
 
     /**
@@ -258,12 +276,12 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
 
     /**
      * Check for dev dependencies via file system (fallback method).
-     * Parses composer.json and checks if require-dev packages exist in vendor/.
+     * Parses composer.json and checks if require-dev packages exist in the vendor directory.
      */
     private function checkViaFileSystem(string $composerJsonPath): ?Issue
     {
         // Check if vendor directory exists first
-        $vendorPath = $this->buildPath('vendor');
+        $vendorPath = $this->getVendorPath($composerJsonPath);
         if (! file_exists($vendorPath) || ! is_dir($vendorPath)) {
             // No vendor directory means no packages installed at all
             return null;
@@ -350,21 +368,62 @@ class DevDependencyAnalyzer extends AbstractAnalyzer
     }
 
     /**
+     * Resolve the vendor directory from composer.json's config.vendor-dir, defaulting to vendor/.
+     */
+    private function getVendorPath(string $composerJsonPath): string
+    {
+        $config = $this->readComposerJson($composerJsonPath)['config'] ?? null;
+        $vendorDir = is_array($config) ? ($config['vendor-dir'] ?? null) : null;
+
+        if (! is_string($vendorDir)) {
+            return $this->buildPath('vendor');
+        }
+
+        $vendorDir = rtrim(trim($vendorDir), '/\\');
+
+        if ($vendorDir === '') {
+            return $this->buildPath('vendor');
+        }
+
+        if (str_starts_with($vendorDir, '/') || str_starts_with($vendorDir, '\\') || preg_match('#^[A-Za-z]:[/\\\\]#', $vendorDir) === 1) {
+            return $vendorDir;
+        }
+
+        return $this->buildPath($vendorDir);
+    }
+
+    /**
+     * Decode composer.json, or null when it is unreadable or not a JSON object.
+     *
+     * @return array<mixed>|null
+     */
+    private function readComposerJson(string $composerJsonPath): ?array
+    {
+        $contents = FileParser::readFile($composerJsonPath);
+
+        if ($contents === null) {
+            return null;
+        }
+
+        $composerJson = json_decode($contents, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($composerJson)) {
+            return null;
+        }
+
+        return $composerJson;
+    }
+
+    /**
      * Get dev packages from composer.json.
      *
      * @return array<int, string>
      */
     private function getDevPackagesFromComposerJson(string $composerJsonPath): array
     {
-        $contents = FileParser::readFile($composerJsonPath);
+        $composerJson = $this->readComposerJson($composerJsonPath);
 
-        if ($contents === null) {
-            return [];
-        }
-
-        $composerJson = json_decode($contents, true);
-
-        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($composerJson)) {
+        if ($composerJson === null) {
             return [];
         }
 

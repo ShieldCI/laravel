@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Analyzers\BestPractices;
 
+use Illuminate\Support\Str;
 use PhpParser\Node;
 use PhpParser\Node\Expr;
 use PhpParser\Node\Stmt;
@@ -24,6 +25,7 @@ use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\BladeCompilerFactory;
 use ShieldCI\Support\ClassHierarchyIndex;
+use ShieldCI\Support\EloquentModelHelper;
 use ShieldCI\Support\ModelVariableScanner;
 use ShieldCI\Support\ViewBindingRegistry;
 use ShieldCI\Support\ViewRenderScanner;
@@ -326,6 +328,9 @@ class RelationshipRegistry
     /** @var array<string, array<string>> */
     private array $members = [];
 
+    /** @var array<string, array<string>> */
+    private array $plainMethods = [];
+
     public function add(string $model, string $relation): void
     {
         $this->map[ClassHierarchyIndex::key($model)][] = $relation;
@@ -385,10 +390,27 @@ class RelationshipRegistry
     {
         return in_array($method, $this->members[ClassHierarchyIndex::key($model)] ?? [], true);
     }
+
+    /**
+     * Record a method declared to return a built-in type, which no relationship can be.
+     */
+    public function addPlainMethod(string $model, string $method): void
+    {
+        $this->plainMethods[ClassHierarchyIndex::key($model)][] = strtolower($method);
+    }
+
+    /**
+     * PHP resolves a method name without regard to case, and so does Model::isRelation.
+     */
+    public function declaresPlainMethod(string $model, string $name): bool
+    {
+        return in_array(strtolower($name), $this->plainMethods[ClassHierarchyIndex::key($model)] ?? [], true);
+    }
 }
 
 /**
- * Tracks model attributes (from $fillable, $casts, $appends) per model class.
+ * Tracks model attributes (from $fillable, $casts, $appends, $attributes, casts() and the
+ * #[Fillable] and #[Appends] attributes) per model class.
  *
  * Used to distinguish regular column access from relationship access.
  *
@@ -416,8 +438,9 @@ class ModelAttributesRegistry
 /**
  * Tracks Eloquent accessor names per model class.
  *
- * Derived from getXxxAttribute() method definitions. Accessors expose computed
- * properties and should never be mistaken for relationships.
+ * Derived from getXxxAttribute() methods and from methods declared to return Eloquent's
+ * Attribute. Accessors expose computed properties and should never be mistaken for
+ * relationships.
  *
  * The model is keyed folded, for the reason RelationshipRegistry gives.
  *
@@ -429,14 +452,41 @@ class AccessorRegistry
     /** @var array<string, array<string>> */
     private array $map = [];
 
-    public function add(string $model, string $accessor): void
+    /** @var array<string, array<string>> */
+    private array $attributeMethods = [];
+
+    /**
+     * Record an accessor by the name its method carries: firstName for firstName() or for
+     * getFirstNameAttribute(). $attributeTyped marks the first kind, a method declared to
+     * return Eloquent's Attribute.
+     */
+    public function add(string $model, string $accessor, bool $attributeTyped = false): void
     {
-        $this->map[ClassHierarchyIndex::key($model)][] = $accessor;
+        $this->map[ClassHierarchyIndex::key($model)][] = strtolower($accessor);
+
+        if ($attributeTyped) {
+            $this->attributeMethods[ClassHierarchyIndex::key($model)][] = strtolower($accessor);
+        }
     }
 
+    /**
+     * Whether calling $method returns an Attribute. An accessor only answers a property
+     * read, so a call answers to it only when the called method is the accessor itself.
+     */
+    public function hasAttributeMethod(string $model, string $method): bool
+    {
+        return in_array(strtolower($method), $this->attributeMethods[ClassHierarchyIndex::key($model)] ?? [], true);
+    }
+
+    /**
+     * Match a property read the way Model does. It studly-cases the name it is asked for,
+     * camel-casing it for an Attribute accessor and wrapping it in get...Attribute for the
+     * older kind, and looks the method up with method_exists, which ignores case. So
+     * first_name, firstName and firstname all reach firstName().
+     */
     public function has(string $model, string $accessor): bool
     {
-        return in_array($accessor, $this->map[ClassHierarchyIndex::key($model)] ?? [], true);
+        return in_array(strtolower(Str::studly($accessor)), $this->map[ClassHierarchyIndex::key($model)] ?? [], true);
     }
 }
 
@@ -522,6 +572,17 @@ class EloquentModelRelationshipScanner
     ];
 
     /**
+     * Built-in return types that rule a relation out. mixed, object, self and static are left
+     * out because each can stand for a relation.
+     *
+     * @var array<string>
+     */
+    private const BUILTIN_RETURN_TYPES = [
+        'string', 'int', 'float', 'bool', 'array', 'void', 'null', 'never',
+        'iterable', 'callable', 'false', 'true',
+    ];
+
+    /**
      * Classes and traits the scan never reaches, mapped to the relationship methods each
      * declares. An empty list means the entry declares none.
      *
@@ -562,10 +623,11 @@ class EloquentModelRelationshipScanner
         'Illuminate\Notifications\Notifiable' => ['notifications', 'readNotifications', 'unreadNotifications'],
         'Illuminate\Notifications\HasDatabaseNotifications' => ['notifications', 'readNotifications', 'unreadNotifications'],
         'Laravel\Sanctum\HasApiTokens' => ['tokens'],
+        'Spatie\Activitylog\Traits\LogsActivity' => ['activities'],
     ];
 
-    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool} */
-    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => [], 'members' => [], 'fully' => false];
+    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool} */
+    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => [], 'plain' => [], 'members' => [], 'fully' => false];
 
     /** @var array<string> Magic methods that answer for members no declaration lists. */
     private const OPAQUE_MAGIC_METHODS = ['__get', '__call', '__callstatic'];
@@ -585,6 +647,7 @@ class EloquentModelRelationshipScanner
      *     relations: array<string>,
      *     attributes: array<string>,
      *     accessors: array<string>,
+     *     plain: array<string>,
      *     members: array<string>,
      *     opaque: bool,
      *     selfDeclared: bool,
@@ -595,7 +658,7 @@ class EloquentModelRelationshipScanner
     /**
      * Memoized flattening of $declarations, under the same folded keys.
      *
-     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool}>
+     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool}>
      */
     private array $resolved = [];
 
@@ -739,6 +802,7 @@ class EloquentModelRelationshipScanner
             'relations' => $members['relations'],
             'attributes' => $members['attributes'],
             'accessors' => $members['accessors'],
+            'plain' => $members['plain'],
             'members' => $members['members'],
             'opaque' => $members['opaque'] || $used['opaque'],
             'selfDeclared' => $members['relations'] !== [],
@@ -782,18 +846,32 @@ class EloquentModelRelationshipScanner
      * The relationships, mass-assignable attributes and accessors a declaration states in
      * its own body, before anything it inherits is folded in.
      *
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, opaque: bool}
+     * #[Hidden] and #[Visible] are not read. They list relationships as well as columns, and
+     * #[Visible] has to list every relationship the model serializes, so a name either one
+     * lists may be a relationship from a trait or parent the scan never read.
+     *
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, opaque: bool}
      */
     private function collectMembers(Stmt\ClassLike $decl, string $fqcn): array
     {
         $relations = [];
-        $attributes = [];
         $accessors = [];
+        $plain = [];
         $members = [];
         $opaque = false;
 
+        // Laravel 11-13 also declare $fillable and $appends as class attributes. Model takes the
+        // first declaration it finds, on the class, then its traits, then up the parent chain,
+        // rather than merging them, but a name any of them lists is still a column of the
+        // model, so they flatten as the properties do.
+        $resolve = $this->resolvedClassFqn(...);
+        $attributes = [
+            ...EloquentModelHelper::extractEloquentAttributeFields($decl, 'Fillable', $resolve),
+            ...EloquentModelHelper::extractEloquentAttributeFields($decl, 'Appends', $resolve),
+        ];
+
         foreach ($decl->stmts as $stmt) {
-            // Scan class properties: $fillable, $casts, $appends
+            // Scan class properties: $fillable, $casts, $appends, $attributes
             if ($stmt instanceof Stmt\Property) {
                 foreach ($this->attributeNames($stmt) as $attribute) {
                     $attributes[] = $attribute;
@@ -817,9 +895,23 @@ class EloquentModelRelationshipScanner
 
             $body = $this->collectBody($stmt, $fqcn);
 
-            // Detect accessor methods: getXxxAttribute()
-            if ($this->isAccessorMethod($methodName)) {
-                $accessors[] = $this->accessorMethodToPropertyName($methodName);
+            if (strtolower($methodName) === 'casts') {
+                $attributes = [...$attributes, ...$this->castKeys($body)];
+            }
+
+            // Accessors are kept by method name, so that flattening can let a method of the
+            // same name declared nearer the class shadow them: getXxxAttribute(), and the
+            // Laravel 9+ kind, a method declared to return Eloquent's Attribute.
+            if ($this->isAccessorMethod($methodName) || $this->declaresAttributeReturnType($stmt)) {
+                $accessors[] = $methodName;
+
+                continue;
+            }
+
+            // A method declared to return a built-in type cannot hand back a relation, so it
+            // is known not to be one, whatever its body or name suggests.
+            if ($this->declaresBuiltinReturnType($stmt)) {
+                $plain[] = $methodName;
 
                 continue;
             }
@@ -834,9 +926,72 @@ class EloquentModelRelationshipScanner
             'relations' => $relations,
             'attributes' => $attributes,
             'accessors' => $accessors,
+            'plain' => $plain,
             'members' => $members,
             'opaque' => $opaque,
         ];
+    }
+
+    /**
+     * Attribute names a casts() method states, read off a returned array literal, off the
+     * array literals passed to a returned array_merge(), as in
+     * `array_merge(parent::casts(), [...])`, or off the array literal operands of a returned
+     * union, as in `[...] + parent::casts()`. Anything else the method returns, or merges in,
+     * is something the scan cannot read, so it contributes nothing and those columns stay
+     * unknown.
+     *
+     * @param  array<Stmt\Return_>  $returns
+     * @return array<string>
+     */
+    private function castKeys(array $returns): array
+    {
+        $names = [];
+
+        foreach ($returns as $return) {
+            if ($return->expr === null) {
+                continue;
+            }
+
+            foreach ($this->castArrays($return->expr) as $array) {
+                foreach ($array->items as $item) {
+                    if ($item !== null && $item->key instanceof Node\Scalar\String_) {
+                        $names[] = $item->key->value;
+                    }
+                }
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * The array literals a returned casts() expression is built from.
+     *
+     * @return list<Expr\Array_>
+     */
+    private function castArrays(Expr $expr): array
+    {
+        if ($expr instanceof Expr\Array_) {
+            return [$expr];
+        }
+
+        if ($expr instanceof Expr\BinaryOp\Plus) {
+            return [...$this->castArrays($expr->left), ...$this->castArrays($expr->right)];
+        }
+
+        $arrays = [];
+
+        if ($expr instanceof Expr\FuncCall &&
+            $expr->name instanceof Node\Name &&
+            $expr->name->toLowerString() === 'array_merge') {
+            foreach ($expr->args as $arg) {
+                if ($arg instanceof Node\Arg && ! $arg->unpack && $arg->value instanceof Expr\Array_) {
+                    $arrays[] = $arg->value;
+                }
+            }
+        }
+
+        return $arrays;
     }
 
     /**
@@ -918,6 +1073,55 @@ class EloquentModelRelationshipScanner
         return false;
     }
 
+    /**
+     * Model recognises an Attribute accessor by its declared return type alone, so one of the
+     * same short name from another namespace makes an ordinary method. PHP reports
+     * `Attribute|null` as `?Attribute`, so that union counts too.
+     */
+    private function declaresAttributeReturnType(Stmt\ClassMethod $method): bool
+    {
+        $type = $method->returnType;
+
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if ($type instanceof Node\UnionType) {
+            $nonNull = array_values(array_filter(
+                $type->types,
+                fn (Node $member): bool => ! ($member instanceof Node\Identifier && $member->toLowerString() === 'null'),
+            ));
+            $type = count($nonNull) === 1 && count($type->types) === 2 ? $nonNull[0] : null;
+        }
+
+        return $type instanceof Node\Name &&
+            $this->resolvedClassFqn($type) === 'Illuminate\Database\Eloquent\Casts\Attribute';
+    }
+
+    /**
+     * True when the declared return type, or every member of a nullable or union return type,
+     * is a built-in type no relation can be.
+     */
+    private function declaresBuiltinReturnType(Stmt\ClassMethod $method): bool
+    {
+        $type = $method->returnType;
+
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        $members = $type instanceof Node\UnionType ? $type->types : [$type];
+
+        foreach ($members as $member) {
+            if (! ($member instanceof Node\Identifier) ||
+                ! in_array($member->toLowerString(), self::BUILTIN_RETURN_TYPES, true)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private function declaresRelationReturnType(Stmt\ClassMethod $method): bool
     {
         $type = $method->returnType;
@@ -943,7 +1147,7 @@ class EloquentModelRelationshipScanner
      * what separates "this name is not a relationship" from "this name is not one of the
      * relationships I could see", and it only survives if every ancestor kept it.
      *
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, members: array<string>, fully: bool}
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool}
      */
     private function resolveMembers(string $fqcn): array
     {
@@ -970,6 +1174,7 @@ class EloquentModelRelationshipScanner
                     'relations' => $known,
                     'attributes' => [],
                     'accessors' => [],
+                    'plain' => [],
                     'members' => array_map(strtolower(...), $known),
                     'fully' => true,
                 ];
@@ -979,14 +1184,41 @@ class EloquentModelRelationshipScanner
         $relations = $own['relations'];
         $attributes = $own['attributes'];
         $accessors = $own['accessors'];
+        $plain = $own['plain'];
         $members = $own['members'];
         $fully = ! $own['opaque'];
 
+        $parent = $this->hierarchy->parentOf($key);
+
+        // A method shadows one of the same name it would otherwise take from a trait or a
+        // parent, and ancestorsOf() lists them in PHP's precedence order. So an accessor or a
+        // built-in-typed method arriving from further out is dropped when a nearer declaration
+        // already has a method of its name: a writer() relationship on the class keeps a
+        // trait's writer() accessor from answering for it.
+        //
+        // That only holds when every nearer declaration was read. One the scan never reached
+        // may declare the same method and win, so an inherited record is kept only when the
+        // class and, for a parent's record, every trait the class uses were read in full.
+        // Traits come before the parent in ancestorsOf(), so $fully holds exactly that by the
+        // time the parent is reached.
         foreach ($this->hierarchy->ancestorsOf($key) as $ancestor) {
             $inherited = $this->resolveMembers($ancestor);
             $relations = [...$relations, ...$inherited['relations']];
             $attributes = [...$attributes, ...$inherited['attributes']];
-            $accessors = [...$accessors, ...$inherited['accessors']];
+
+            $isParent = $parent !== null && ClassHierarchyIndex::key($ancestor) === ClassHierarchyIndex::key($parent);
+            $nearerRead = $isParent ? $fully : ! $own['opaque'];
+
+            foreach ($nearerRead ? $inherited['accessors'] : [] as $accessor) {
+                if (! in_array(strtolower($accessor), $members, true)) {
+                    $accessors[] = $accessor;
+                }
+            }
+            foreach ($nearerRead ? $inherited['plain'] : [] as $method) {
+                if (! in_array(strtolower($method), $members, true)) {
+                    $plain[] = $method;
+                }
+            }
             $members = [...$members, ...$inherited['members']];
             $fully = $fully && $inherited['fully'];
         }
@@ -995,6 +1227,7 @@ class EloquentModelRelationshipScanner
             'relations' => array_values(array_unique($relations)),
             'attributes' => array_values(array_unique($attributes)),
             'accessors' => array_values(array_unique($accessors)),
+            'plain' => array_values(array_unique($plain)),
             'members' => array_values(array_unique($members)),
             'fully' => $fully,
         ];
@@ -1056,11 +1289,19 @@ class EloquentModelRelationshipScanner
             }
 
             foreach ($members['accessors'] as $accessor) {
-                $accessors->add($short, $accessor);
+                $accessors->add(
+                    $short,
+                    $this->isAccessorMethod($accessor) ? substr($accessor, 3, -9) : $accessor,
+                    ! $this->isAccessorMethod($accessor),
+                );
             }
 
             foreach ($members['members'] as $member) {
                 $relationships->addMember($short, $member);
+            }
+
+            foreach ($members['plain'] as $method) {
+                $relationships->addPlainMethod($short, $method);
             }
 
             if ($declaration['selfDeclared']) {
@@ -1078,7 +1319,8 @@ class EloquentModelRelationshipScanner
     }
 
     /**
-     * Attribute names stated by a $fillable, $casts or $appends property.
+     * Attribute names stated by a $fillable, $casts, $appends or $attributes property. The
+     * last holds column defaults, keyed by column like $casts.
      *
      * @return array<string>
      */
@@ -1088,7 +1330,7 @@ class EloquentModelRelationshipScanner
 
         foreach ($property->props as $prop) {
             $propName = $prop->name->toString();
-            if (! in_array($propName, ['fillable', 'casts', 'appends'], true)) {
+            if (! in_array($propName, ['fillable', 'casts', 'appends', 'attributes'], true)) {
                 continue;
             }
             if (! ($prop->default instanceof Expr\Array_)) {
@@ -1099,12 +1341,13 @@ class EloquentModelRelationshipScanner
                 if ($item === null) {
                     continue;
                 }
+                $keyed = in_array($propName, ['casts', 'attributes'], true);
                 // $fillable / $appends: values are strings (['name', 'email'])
-                if ($propName !== 'casts' && $item->value instanceof Node\Scalar\String_) {
+                if (! $keyed && $item->value instanceof Node\Scalar\String_) {
                     $names[] = $item->value->value;
                 }
-                // $casts: keys are attribute names (['name' => 'string'])
-                if ($propName === 'casts' && $item->key instanceof Node\Scalar\String_) {
+                // $casts / $attributes: keys are attribute names (['name' => 'string'])
+                if ($keyed && $item->key instanceof Node\Scalar\String_) {
                     $names[] = $item->key->value;
                 }
             }
@@ -1121,18 +1364,6 @@ class EloquentModelRelationshipScanner
         return str_starts_with($methodName, 'get') &&
                str_ends_with($methodName, 'Attribute') &&
                strlen($methodName) > 12; // longer than "getAttribute"
-    }
-
-    /**
-     * Convert getFirstNameAttribute to first_name.
-     */
-    private function accessorMethodToPropertyName(string $methodName): string
-    {
-        $inner = substr($methodName, 3, -9); // strip 'get' and 'Attribute'
-        // CamelCase to snake_case
-        $snake = strtolower((string) preg_replace('/[A-Z]/', '_$0', lcfirst($inner)));
-
-        return ltrim($snake, '_');
     }
 
     /**
@@ -1724,18 +1955,33 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return false;
         }
 
-        // An accessor or declared attribute is never a relationship. Check this
-        // regardless of whether the model defines any relationships at all.
-        if ($this->modelAttributesRegistry->has($model, $name)) {
+        // A declared attribute read as a property is never a relationship: Model reads a
+        // column before it looks for one. Check this regardless of whether the model defines
+        // any relationships at all. A column never answers a method call, though, so a call
+        // to a relationship the scan proved is still one; any other method named like a
+        // column is taken to be a helper, not judged by its name.
+        if ($this->modelAttributesRegistry->has($model, $name) &&
+            (! $isMethodCall || ! $this->relationshipRegistry->has($model, $name))) {
             return false;
         }
 
-        if ($this->accessorRegistry->has($model, $name)) {
+        // An accessor answers a property read, so it shadows a relationship of the same name
+        // there. A call reaches the method itself, so it answers to an accessor only when the
+        // called method is an Attribute accessor, which returns the Attribute.
+        if ($isMethodCall
+            ? $this->accessorRegistry->hasAttributeMethod($model, $name)
+            : $this->accessorRegistry->has($model, $name)) {
             return false;
         }
 
         if ($this->relationshipRegistry->has($model, $name)) {
             return true;
+        }
+
+        // A method declared to return a built-in type cannot be a relationship, whatever
+        // its name suggests.
+        if ($this->relationshipRegistry->declaresPlainMethod($model, $name)) {
+            return false;
         }
 
         if ($this->relationshipRegistry->declaresOwn($model)) {

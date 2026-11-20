@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Support;
 
 use PhpParser\Node;
+use PhpParser\NodeFinder;
+use PhpParser\NodeTraverser;
+use PhpParser\NodeVisitor\NameResolver;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Support\EloquentModelHelper;
@@ -175,5 +178,41 @@ PHP);
         $class = $this->classFrom('<?php #[Guarded(["id"])] #[Fillable(["name"])] class User {}');
 
         $this->assertSame(['name'], EloquentModelHelper::extractFillableFieldsFromAttribute($class));
+    }
+
+    public function test_extract_eloquent_attribute_fields_matches_the_resolved_name(): void
+    {
+        // Names are resolved first, so the aliased Fillable is read in both argument shapes and
+        // the Appends on the trait is read too, while a Fillable from another namespace is not.
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $ast = $traverser->traverse($this->parser->parseCode(<<<'PHP'
+<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Appends;
+use Illuminate\Database\Eloquent\Attributes\Fillable as F;
+
+#[F(['subject', 'html'])]
+#[F('teaser')]
+#[\App\Attributes\Fillable(['ignored'])]
+class Newsletter {}
+
+#[Appends(['excerpt'])]
+trait HasExcerpt {}
+PHP));
+
+        $declarations = (new NodeFinder)->findInstanceOf($ast, Node\Stmt\ClassLike::class);
+        $this->assertCount(2, $declarations);
+        $resolve = fn (Node\Name $name): string => $name->toString();
+
+        $this->assertSame(
+            ['subject', 'html', 'teaser'],
+            EloquentModelHelper::extractEloquentAttributeFields($declarations[0], 'Fillable', $resolve),
+        );
+        $this->assertSame(
+            ['excerpt'],
+            EloquentModelHelper::extractEloquentAttributeFields($declarations[1], 'Appends', $resolve),
+        );
     }
 }

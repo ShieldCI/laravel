@@ -90,6 +90,11 @@ class AnalyzeCommand extends Command
             return self::FAILURE;
         }
 
+        // The configured timeout bounds this run, not whatever invoked it. Called in-process
+        // (Artisan::call() from a queue worker), a limit left in place would end the caller
+        // once it had used those seconds, so the caller's own limit is put back.
+        $previousTimeLimit = ini_get('max_execution_time');
+
         try {
             return $this->executeAnalysis($manager, $reporter, $client, $triggeredBy);
         } catch (\Throwable $e) {
@@ -97,6 +102,10 @@ class AnalyzeCommand extends Command
             $this->notifyFailure($client, AnalysisFailureReason::UncaughtException, $e->getMessage(), $triggeredBy);
 
             return self::FAILURE;
+        } finally {
+            if ($previousTimeLimit !== false && ini_get('max_execution_time') !== $previousTimeLimit) {
+                set_time_limit((int) $previousTimeLimit);
+            }
         }
     }
 

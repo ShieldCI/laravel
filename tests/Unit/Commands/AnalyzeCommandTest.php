@@ -30,6 +30,7 @@ use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
+use stdClass;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\ConsoleOutputInterface;
 use Symfony\Component\Console\Output\ConsoleSectionOutput;
@@ -1400,6 +1401,44 @@ class AnalyzeCommandTest extends TestCase
 
         $this->artisan('shield:analyze', ['--format' => 'json'])
             ->assertSuccessful();
+    }
+
+    /**
+     * The limit is for the analysis, not for whatever runs the command. Called in-process
+     * (Artisan::call() from a queue worker, or a test suite), a limit left behind would end
+     * the caller once it had used the configured seconds.
+     *
+     * @test
+     */
+    #[Test]
+    public function it_restores_the_previous_time_limit_after_the_run(): void
+    {
+        // Pinned, so an earlier test that left a limit behind cannot make this one vacuous.
+        set_time_limit(0);
+        config(['shieldci.timeout' => 300]);
+        $limitDuringRun = $this->registerManagerRecordingTimeLimit();
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertSuccessful();
+
+        $this->assertSame('300', $limitDuringRun->value);
+        $this->assertSame('0', ini_get('max_execution_time'));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_restores_the_previous_time_limit_when_the_run_throws(): void
+    {
+        // Pinned, so an earlier test that left a limit behind cannot make this one vacuous.
+        set_time_limit(0);
+        config(['shieldci.timeout' => 300]);
+        $limitDuringRun = $this->registerManagerRecordingTimeLimit(throw: true);
+
+        $this->artisan('shield:analyze', ['--format' => 'json'])
+            ->assertFailed();
+
+        $this->assertSame('300', $limitDuringRun->value);
+        $this->assertSame('0', ini_get('max_execution_time'));
     }
 
     /** @test */
@@ -4411,6 +4450,61 @@ PHP);
 
             return $manager;
         });
+    }
+
+    /**
+     * Bind a manager whose single analyzer records the time limit in force while it runs.
+     */
+    private function registerManagerRecordingTimeLimit(bool $throw = false): stdClass
+    {
+        $recorded = new stdClass;
+        $recorded->value = null;
+
+        $result = $this->createMockAnalyzer(
+            'test-security-analyzer',
+            'Test Security Analyzer',
+            Category::Security,
+            Severity::High,
+            Status::Passed,
+            'No security issues'
+        )->analyze();
+
+        /** @var AnalyzerInterface&MockInterface $analyzer */
+        $analyzer = Mockery::mock(AnalyzerInterface::class);
+        $analyzer->shouldReceive('getId')->andReturn('test-security-analyzer');
+        $analyzer->shouldReceive('getMetadata')->andReturn(new AnalyzerMetadata(
+            id: 'test-security-analyzer',
+            name: 'Test Security Analyzer',
+            description: 'Test analyzer: Test Security Analyzer',
+            category: Category::Security,
+            severity: Severity::High,
+        ));
+        $analyzer->shouldReceive('shouldRun')->andReturn(true);
+        $analyzer->shouldReceive('getSkipReason')->andReturn('');
+        $analyzer->shouldReceive('analyze')->andReturnUsing(function () use ($recorded, $result, $throw) {
+            $recorded->value = ini_get('max_execution_time');
+
+            if ($throw) {
+                throw new RuntimeException('Analyzer crashed');
+            }
+
+            return $result;
+        });
+
+        /** @phpstan-ignore-next-line */
+        $this->app->singleton(AnalyzerManager::class, function ($app) use ($analyzer) {
+            /** @var MockInterface&AnalyzerManager $manager */
+            $manager = Mockery::mock(AnalyzerManager::class);
+
+            $manager->shouldReceive('getAnalyzers')->andReturn(collect([$analyzer]));
+            $manager->shouldReceive('getSkippedAnalyzers')->andReturn(collect());
+            $manager->shouldReceive('clearParserCache')->andReturn(null);
+            $manager->shouldReceive('resetParseFailures')->andReturn(null);
+
+            return $manager;
+        });
+
+        return $recorded;
     }
 
     /**

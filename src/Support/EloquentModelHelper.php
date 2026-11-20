@@ -19,6 +19,11 @@ use PhpParser\Node;
 final class EloquentModelHelper
 {
     /**
+     * The namespace Eloquent's own class attributes are declared in.
+     */
+    private const ATTRIBUTE_NAMESPACE = 'Illuminate\Database\Eloquent\Attributes';
+
+    /**
      * True if the class declares fillable OR guarded configuration in either form.
      */
     public static function hasFillableConfig(Node\Stmt\Class_ $class): bool
@@ -109,17 +114,41 @@ final class EloquentModelHelper
     }
 
     /**
+     * Field names declared by one of Eloquent's own attributes, such as `#[Fillable]` or
+     * `#[Appends]`, on a class or trait.
+     *
+     * Unlike the short-name readers above, the attribute is matched on the fully qualified name
+     * $resolve gives it, so an aliased import (`use ...\Fillable as F;`) is read and an attribute
+     * of the same short name from another namespace is not. Model reads these attributes off a
+     * trait as well as the class, which is why a trait is accepted.
+     *
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
+     * @return list<string>
+     */
+    public static function extractEloquentAttributeFields(Node\Stmt\ClassLike $class, string $attributeShortName, \Closure $resolve): array
+    {
+        return self::extractFieldsFromAttribute($class, $attributeShortName, $resolve);
+    }
+
+    /**
      * String field names from a class-level attribute, handling both the array
      * (`#[Attr(['a', 'b'])]`) and variadic (`#[Attr('a', 'b')]`) constructor shapes.
      *
+     * Without $resolve the attribute is matched on its short name as written.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
      * @return list<string>
      */
-    private static function extractFieldsFromAttribute(Node\Stmt\Class_ $class, string $attributeShortName): array
+    private static function extractFieldsFromAttribute(Node\Stmt\ClassLike $class, string $attributeShortName, ?\Closure $resolve = null): array
     {
         $fields = [];
 
         foreach (self::attributes($class) as $attr) {
-            if (self::shortName($attr->name->toString()) !== $attributeShortName) {
+            $matches = $resolve === null
+                ? self::shortName($attr->name->toString()) === $attributeShortName
+                : $resolve($attr->name) === self::ATTRIBUTE_NAMESPACE.'\\'.$attributeShortName;
+
+            if (! $matches) {
                 continue;
             }
 
@@ -206,11 +235,11 @@ final class EloquentModelHelper
     }
 
     /**
-     * All class-level attributes on the class.
+     * All class-level attributes on the class or trait.
      *
      * @return list<Node\Attribute>
      */
-    private static function attributes(Node\Stmt\Class_ $class): array
+    private static function attributes(Node\Stmt\ClassLike $class): array
     {
         $attributes = [];
 

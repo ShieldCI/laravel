@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\EloquentNPlusOneAnalyzer;
 use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -683,5 +684,365 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
             '/resources/views/cities/index.blade.php (compiled)',
             (string) $failures[0]->path
         );
+    }
+
+    /**
+     * The Blade half of the attribute-declared column cases: a column a model declares through
+     * a class attribute or a casts() method is never a relationship, on a model that uses a
+     * trait outside the scanned paths and so is not read in full. The separate Post model's
+     * author() relationship is the control that has to keep firing.
+     *
+     * @dataProvider attributeDeclaredColumnProvider
+     */
+    #[DataProvider('attributeDeclaredColumnProvider')]
+    public function test_silent_on_a_column_declared_by_an_attribute_or_casts_method(string $imports, string $attributes, string $body, string $column): void
+    {
+        $result = $this->analyzeAttributeDeclaredColumn($imports, $attributes, $body, $column);
+
+        $this->assertSame([], $this->issueMessagesNaming($column, $result));
+        $this->assertCount(1, $this->issueMessagesNaming('author', $result));
+    }
+
+    /**
+     * @return array<string, array{string, string, string, string}>
+     */
+    public static function attributeDeclaredColumnProvider(): array
+    {
+        return [
+            'Fillable with an array' => [
+                'use Illuminate\Database\Eloquent\Attributes\Fillable;',
+                "#[Fillable(['subject', 'html'])]",
+                '',
+                'subject',
+            ],
+            'Fillable with variadic strings' => [
+                'use Illuminate\Database\Eloquent\Attributes\Fillable;',
+                "#[Fillable('subject', 'html')]",
+                '',
+                'subject',
+            ],
+            'Fillable imported under an alias' => [
+                'use Illuminate\Database\Eloquent\Attributes\Fillable as F;',
+                "#[F(['subject', 'html'])]",
+                '',
+                'subject',
+            ],
+            'Appends' => [
+                'use Illuminate\Database\Eloquent\Attributes\Appends;',
+                "#[Appends(['teaser'])]",
+                '',
+                'teaser',
+            ],
+            'casts() returning an array literal' => [
+                '',
+                '',
+                "protected function casts(): array { return ['headline' => 'string']; }",
+                'headline',
+            ],
+            'Attribute accessor read by its method name' => [
+                'use Illuminate\Database\Eloquent\Casts\Attribute;',
+                '',
+                'protected function shortTitle(): Attribute { return Attribute::make(get: fn ($value) => strtoupper($value)); }',
+                'shortTitle',
+            ],
+            'Attribute accessor imported under an alias' => [
+                'use Illuminate\Database\Eloquent\Casts\Attribute as Accessor;',
+                '',
+                'protected function headline(): Accessor { return Accessor::make(get: fn ($value) => strtoupper($value)); }',
+                'headline',
+            ],
+            'Attribute accessor with a nullable union return type' => [
+                'use Illuminate\Database\Eloquent\Casts\Attribute;',
+                '',
+                'protected function headline(): Attribute|null { return Attribute::make(get: fn ($value) => strtoupper($value)); }',
+                'headline',
+            ],
+            'Attribute accessor read in another case' => [
+                'use Illuminate\Database\Eloquent\Casts\Attribute;',
+                '',
+                'protected function SKU(): Attribute { return Attribute::make(get: fn ($value) => strtoupper($value)); }',
+                'sku',
+            ],
+            'Multi-word Attribute accessor read in lower case' => [
+                'use Illuminate\Database\Eloquent\Casts\Attribute;',
+                '',
+                'protected function fullHeadline(): Attribute { return Attribute::make(get: fn ($value) => strtoupper($value)); }',
+                'fullheadline',
+            ],
+            'get...Attribute accessor read in another case' => [
+                '',
+                '',
+                'public function getSKUAttribute($value) { return strtoupper($value); }',
+                'sku',
+            ],
+            'default in the attributes property' => [
+                '',
+                '',
+                "protected \$attributes = ['headline' => 'draft'];",
+                'headline',
+            ],
+            'casts() merging an array literal into the parent casts' => [
+                '',
+                '',
+                "protected function casts(): array { return array_merge(parent::casts(), ['headline' => 'string']); }",
+                'headline',
+            ],
+            'casts() adding the parent casts with +' => [
+                '',
+                '',
+                "protected function casts(): array { return ['headline' => 'string'] + parent::casts(); }",
+                'headline',
+            ],
+        ];
+    }
+
+    /**
+     * A casts() method that returns a variable names no column the scan can read, so the
+     * column stays unknown and the name heuristic still answers it.
+     */
+    public function test_a_casts_method_returning_a_variable_leaves_the_column_unknown(): void
+    {
+        $result = $this->analyzeAttributeDeclaredColumn(
+            '',
+            '',
+            "protected function casts(): array { \$casts = ['headline' => 'string']; return \$casts; }",
+            'headline',
+        );
+
+        $this->assertCount(1, $this->issueMessagesNaming('headline', $result));
+        $this->assertCount(1, $this->issueMessagesNaming('author', $result));
+    }
+
+    /**
+     * An Attribute of the same short name from another namespace makes the method an ordinary
+     * one, so the name stays unknown and the name heuristic still answers it.
+     */
+    public function test_an_attribute_accessor_from_another_namespace_is_not_read(): void
+    {
+        $result = $this->analyzeAttributeDeclaredColumn(
+            'use App\Casts\Attribute;',
+            '',
+            'protected function headline(): Attribute { return Attribute::make(get: fn ($value) => strtoupper($value)); }',
+            'headline',
+        );
+
+        $this->assertCount(1, $this->issueMessagesNaming('headline', $result));
+        $this->assertCount(1, $this->issueMessagesNaming('author', $result));
+    }
+
+    /**
+     * #[Hidden] and #[Visible] list relationships as well as columns, so a relationship from a
+     * trait the scan never read is still flagged when either lists it.
+     *
+     * @dataProvider serializationAttributeProvider
+     */
+    #[DataProvider('serializationAttributeProvider')]
+    public function test_flags_a_relationship_listed_by_a_serialization_attribute(string $attribute): void
+    {
+        $result = $this->analyze([
+            'app/Models/Widget.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Attributes\\{$attribute};\nuse Illuminate\\Database\\Eloquent\\Model;\n#[{$attribute}(['id', 'gadgets'])]\nclass Widget extends Model { use \\Vendor\\Pkg\\HasGadgets; }",
+            'app/Http/Controllers/WidgetController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Widget;\nclass WidgetController { public function index(){ \$widgets = Widget::all(); return view('widgets.index', compact('widgets')); } }",
+            'resources/views/widgets/index.blade.php' => "@foreach(\$widgets as \$widget)\n  {{ \$widget->gadgets->count() }}\n@endforeach",
+        ]);
+
+        $this->assertCount(1, $this->issueMessagesNaming('gadgets', $result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function serializationAttributeProvider(): array
+    {
+        return [
+            'Hidden' => ['Hidden'],
+            'Visible' => ['Visible'],
+        ];
+    }
+
+    /**
+     * A writer() relationship the model declares shadows a trait's writer() Attribute accessor,
+     * so it is still flagged.
+     */
+    public function test_flags_a_relationship_shadowing_a_trait_attribute_accessor(): void
+    {
+        $result = $this->analyze([
+            'app/Models/HasWriterLabel.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Casts\\Attribute;\ntrait HasWriterLabel { protected function writer(): Attribute { return Attribute::make(get: fn (\$value) => strtoupper(\$value)); } }",
+            'app/Models/Article.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;\nclass Article extends Model { use HasWriterLabel; use \\Vendor\\Pkg\\HasThings; public function writer(): BelongsTo { return \$this->belongsTo(User::class); } }",
+            'app/Http/Controllers/ArticleController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Article;\nclass ArticleController { public function index(){ \$articles = Article::all(); return view('articles.index', compact('articles')); } }",
+            'resources/views/articles/index.blade.php' => "@foreach(\$articles as \$article)\n  {{ \$article->writer->name }}\n@endforeach",
+        ]);
+
+        $this->assertCount(1, $this->issueMessagesNaming('writer', $result));
+    }
+
+    /**
+     * A get...Attribute() accessor only answers a property read, so calling the relationship
+     * method of the same name in a view is still flagged.
+     */
+    public function test_flags_a_relationship_called_as_a_method_beside_an_accessor(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Member.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Illuminate\\Database\\Eloquent\\Relations\\HasOne;\nclass Member extends Model { public function primaryAddress(): HasOne { return \$this->hasOne(Address::class); } public function getPrimaryAddressAttribute() { return 'x'; } }",
+            'app/Http/Controllers/MemberController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Member;\nclass MemberController { public function index(){ \$members = Member::all(); return view('members.index', compact('members')); } }",
+            'resources/views/members/index.blade.php' => "@foreach(\$members as \$member)\n  {{ \$member->primaryAddress()->count() }}\n@endforeach",
+        ]);
+
+        $this->assertCount(1, $this->issueMessagesNaming('primaryAddress', $result));
+        $this->assertCount(1, $this->issueMessagesNaming('$member->primaryAddress()->count()', $result));
+    }
+
+    /**
+     * A $fillable name is a column Model reads before any relationship, so a relationship of the
+     * same name read as a property is not flagged.
+     */
+    public function test_silent_on_a_fillable_column_beside_a_same_named_relationship(): void
+    {
+        $result = $this->analyzeItemView(
+            "protected \$fillable = ['author']; public function author(): BelongsTo { return \$this->belongsTo(User::class); }",
+            '{{ $item->author }}',
+        );
+
+        $this->assertSame([], $this->issueMessagesNaming('author', $result));
+    }
+
+    /**
+     * A column never answers a method call, so a relationship called as a method in a view is
+     * flagged even when casts(), $attributes or $fillable also names it.
+     *
+     * @dataProvider columnBesideCalledRelationshipProvider
+     */
+    #[DataProvider('columnBesideCalledRelationshipProvider')]
+    public function test_flags_a_relationship_called_as_a_method_beside_a_column_of_its_name(string $declaration): void
+    {
+        $result = $this->analyzeItemView(
+            "{$declaration} public function labels(): BelongsToMany { return \$this->belongsToMany(Label::class); }",
+            '{{ $item->labels()->count() }}',
+        );
+
+        $this->assertCount(1, $this->issueMessagesNaming('labels', $result));
+        $this->assertCount(1, $this->issueMessagesNaming('$item->labels()->count()', $result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function columnBesideCalledRelationshipProvider(): array
+    {
+        return [
+            'casts()' => ["protected function casts(): array { return ['labels' => 'array']; }"],
+            'attributes property' => ["protected \$attributes = ['labels' => '[]'];"],
+            'fillable property' => ["protected \$fillable = ['labels'];"],
+        ];
+    }
+
+    /**
+     * A method declared to return a built-in type cannot be a relationship, so calling it in a
+     * view is not flagged on a model not read in full.
+     */
+    public function test_silent_on_calling_a_method_declared_to_return_a_builtin_type(): void
+    {
+        $result = $this->analyzeItemView(
+            "public function permalink(): string { return '/x'; } public function getPermalinkAttribute() { return '/x'; }",
+            '{{ $item->permalink() }}',
+        );
+
+        $this->assertSame([], $this->issueMessagesNaming('permalink', $result));
+    }
+
+    /**
+     * A column name settles a method call in a view too, unless a relationship of that name is
+     * proven, so an untyped helper named like a column is not flagged.
+     *
+     * @dataProvider columnNamedHelperProvider
+     */
+    #[DataProvider('columnNamedHelperProvider')]
+    public function test_silent_on_calling_a_helper_named_like_a_column(string $declaration): void
+    {
+        $result = $this->analyzeItemView(
+            "{$declaration} public function headline() { return strtoupper(\$this->attributes['headline'] ?? ''); }",
+            '{{ $item->headline() }}',
+        );
+
+        $this->assertSame([], $this->issueMessagesNaming('headline', $result));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function columnNamedHelperProvider(): array
+    {
+        return [
+            'fillable property' => ["protected \$fillable = ['headline'];"],
+            'casts()' => ["protected function casts(): array { return ['headline' => 'string']; }"],
+        ];
+    }
+
+    /**
+     * A trait outside the scanned paths overrides the parent's built-in author(), so the read
+     * in a view is still flagged.
+     */
+    public function test_flags_a_parent_method_behind_an_unscanned_trait(): void
+    {
+        $result = $this->analyze([
+            'app/Models/BaseBook.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nabstract class BaseBook extends Model { public function author(): string { return 'x'; } }",
+            'app/Models/Book.php' => "<?php\nnamespace App\\Models;\nclass Book extends BaseBook { use \\Acme\\HasWriter; }",
+            'app/Http/Controllers/BookController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Book;\nclass BookController { public function index(){ \$books = Book::all(); return view('books.index', compact('books')); } }",
+            'resources/views/books/index.blade.php' => "@foreach(\$books as \$book)\n  {{ \$book->author }}\n@endforeach",
+        ]);
+
+        $this->assertCount(1, $this->issueMessagesNaming('author', $result));
+    }
+
+    /**
+     * An Item model with $body, using a trait outside the scanned paths, rendered into a view
+     * that runs $expression for each item.
+     */
+    private function analyzeItemView(string $body, string $expression): ResultInterface
+    {
+        return $this->analyze([
+            'app/Models/Item.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;\nuse Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany;\nclass Item extends Model { use \\Vendor\\Pkg\\HasThings; {$body} }",
+            'app/Http/Controllers/ItemController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Item;\nclass ItemController { public function index(){ \$items = Item::all(); return view('items.index', compact('items')); } }",
+            'resources/views/items/index.blade.php' => "@foreach(\$items as \$item)\n  {$expression}\n@endforeach",
+        ]);
+    }
+
+    /**
+     * spatie/laravel-activitylog's LogsActivity declares only activities(), so a model using it
+     * is read in full and a column it does not declare as a method is not a relationship.
+     */
+    public function test_silent_on_a_column_of_a_model_using_logs_activity(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Newsletter.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Spatie\\Activitylog\\Traits\\LogsActivity;\nclass Newsletter extends Model { use LogsActivity; }",
+            'app/Http/Controllers/NewsletterController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Newsletter;\nclass NewsletterController { public function index(){ \$newsletters = Newsletter::all(); return view('newsletters.index', compact('newsletters')); } }",
+            'resources/views/newsletters/index.blade.php' => "@foreach(\$newsletters as \$newsletter)\n  {{ \$newsletter->subject }}\n  {{ \$newsletter->activities->count() }}\n@endforeach",
+        ]);
+
+        $this->assertSame([], $this->issueMessagesNaming('subject', $result));
+        $this->assertCount(1, $this->issueMessagesNaming('activities', $result));
+    }
+
+    /** @return list<string> */
+    private function issueMessagesNaming(string $name, ResultInterface $result): array
+    {
+        return array_values(array_filter(
+            array_map(fn (Issue $i): string => $i->message, $result->getIssues()),
+            fn (string $message): bool => str_contains($message, "'{$name}'"),
+        ));
+    }
+
+    /**
+     * A Newsletter model declaring $column through $attributes or $body, using a trait outside
+     * the scanned paths, and a Post model with an author() relationship, each rendered into a
+     * view that reads them in a loop.
+     */
+    private function analyzeAttributeDeclaredColumn(string $imports, string $attributes, string $body, string $column): ResultInterface
+    {
+        return $this->analyze([
+            'app/Models/Newsletter.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Vendor\\Pkg\\HasThings;\n{$imports}\n{$attributes}\nclass Newsletter extends Model { use HasThings; {$body} }",
+            'app/Models/Post.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;\nclass Post extends Model { public function author(): BelongsTo { return \$this->belongsTo(User::class); } }",
+            'app/Http/Controllers/NewsletterController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Newsletter;\nuse App\\Models\\Post;\nclass NewsletterController { public function index(){ \$newsletters = Newsletter::all(); \$posts = Post::all(); return view('newsletters.index', compact('newsletters', 'posts')); } }",
+            'resources/views/newsletters/index.blade.php' => "@foreach(\$newsletters as \$newsletter)\n  {{ \$newsletter->{$column} }}\n@endforeach\n@foreach(\$posts as \$post)\n  {{ \$post->author->name }}\n@endforeach",
+        ]);
     }
 }

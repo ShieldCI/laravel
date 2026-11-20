@@ -265,12 +265,18 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
             // origin to find the binding that actually carries a `source`.
             $origin = $visitor->originOf($issue['variable']) ?? $issue['variable'];
             $source = $bindings[$origin]['source'] ?? 'the controller';
+            // A loop over a relation of the bound variable (`@foreach ($shelf->books as $book)`)
+            // is eager-loaded where the binding was made by its full path, `books.publisher`.
+            // Read when the access was recorded: a later loop rebinding the same name over
+            // another relation would otherwise rewrite this finding's advice.
+            $relationPath = $issue['relation_path'];
+            $eagerLoadPath = $relationPath !== null ? $relationPath.'.'.$issue['relationship'] : $issue['relationship'];
             $issues[] = $this->createIssueWithSnippet(
                 message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
                 filePath: $file,
                 lineNumber: $bladeLine,
                 severity: $this->metadata()->severity,
-                recommendation: "\${$issue['variable']} reaches this view from {$source}. Eager-load the '{$issue['relationship']}' relation there (with()) so the view iterates data already in memory.",
+                recommendation: "\${$issue['variable']} reaches this view from {$source}. Eager-load the '{$eagerLoadPath}' relation there (with()) so the view iterates data already in memory.",
                 metadata: [
                     'relationship' => $issue['relationship'],
                     'source' => $source,
@@ -331,9 +337,29 @@ class RelationshipRegistry
     /** @var array<string, array<string>> */
     private array $plainMethods = [];
 
+    /** @var array<string, array<string, string>> */
+    private array $toMany = [];
+
     public function add(string $model, string $relation): void
     {
         $this->map[ClassHierarchyIndex::key($model)][] = $relation;
+    }
+
+    /**
+     * Record that $relation on $model is a to-many relationship whose related model the
+     * declaration names, so a loop over it can type its variable as $related.
+     */
+    public function addToMany(string $model, string $relation, string $related): void
+    {
+        $this->toMany[ClassHierarchyIndex::key($model)][$relation] = $related;
+    }
+
+    /**
+     * The related model of a to-many relationship recorded by addToMany(), or null.
+     */
+    public function toManyRelated(string $model, string $relation): ?string
+    {
+        return $this->toMany[ClassHierarchyIndex::key($model)][$relation] ?? null;
     }
 
     public function has(string $model, string $relation): bool
@@ -548,6 +574,16 @@ class EloquentModelRelationshipScanner
     ];
 
     /**
+     * The relation factories whose result holds many related models. hasOneThrough and
+     * morphTo are absent: one returns a single model and the other names no related class.
+     *
+     * @var array<string>
+     */
+    private const TO_MANY_RELATION_METHODS = [
+        'hasMany', 'hasManyThrough', 'belongsToMany', 'morphMany', 'morphToMany', 'morphedByMany',
+    ];
+
+    /**
      * Return types that declare a method to be a relationship on their own.
      *
      * A model may hand the body off to a helper the shape matching below cannot follow,
@@ -626,8 +662,8 @@ class EloquentModelRelationshipScanner
         'Spatie\Activitylog\Traits\LogsActivity' => ['activities'],
     ];
 
-    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool} */
-    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => [], 'plain' => [], 'members' => [], 'fully' => false];
+    /** @var array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, toMany: array<string, string>, fully: bool} */
+    private const NO_MEMBERS = ['relations' => [], 'attributes' => [], 'accessors' => [], 'plain' => [], 'members' => [], 'toMany' => [], 'fully' => false];
 
     /** @var array<string> Magic methods that answer for members no declaration lists. */
     private const OPAQUE_MAGIC_METHODS = ['__get', '__call', '__callstatic'];
@@ -649,6 +685,7 @@ class EloquentModelRelationshipScanner
      *     accessors: array<string>,
      *     plain: array<string>,
      *     members: array<string>,
+     *     toMany: array<string, string>,
      *     opaque: bool,
      *     selfDeclared: bool,
      * }>
@@ -658,7 +695,7 @@ class EloquentModelRelationshipScanner
     /**
      * Memoized flattening of $declarations, under the same folded keys.
      *
-     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool}>
+     * @var array<string, array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, toMany: array<string, string>, fully: bool}>
      */
     private array $resolved = [];
 
@@ -804,6 +841,7 @@ class EloquentModelRelationshipScanner
             'accessors' => $members['accessors'],
             'plain' => $members['plain'],
             'members' => $members['members'],
+            'toMany' => $members['toMany'],
             'opaque' => $members['opaque'] || $used['opaque'],
             'selfDeclared' => $members['relations'] !== [],
         ];
@@ -850,7 +888,7 @@ class EloquentModelRelationshipScanner
      * #[Visible] has to list every relationship the model serializes, so a name either one
      * lists may be a relationship from a trait or parent the scan never read.
      *
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, opaque: bool}
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, toMany: array<string, string>, opaque: bool}
      */
     private function collectMembers(Stmt\ClassLike $decl, string $fqcn): array
     {
@@ -858,6 +896,7 @@ class EloquentModelRelationshipScanner
         $accessors = [];
         $plain = [];
         $members = [];
+        $toMany = [];
         $opaque = false;
 
         // Laravel 11-13 also declare $fillable and $appends as class attributes. Model takes the
@@ -919,6 +958,11 @@ class EloquentModelRelationshipScanner
             if ($this->declaresRelationReturnType($stmt) ||
                 $this->returnsRelationBuilder($body)) {
                 $relations[] = $methodName;
+
+                $related = $this->toManyRelatedModel($body, $decl);
+                if ($related !== null) {
+                    $toMany[$methodName] = $related;
+                }
             }
         }
 
@@ -928,6 +972,7 @@ class EloquentModelRelationshipScanner
             'accessors' => $accessors,
             'plain' => $plain,
             'members' => $members,
+            'toMany' => $toMany,
             'opaque' => $opaque,
         ];
     }
@@ -1122,6 +1167,73 @@ class EloquentModelRelationshipScanner
         return true;
     }
 
+    /**
+     * The fully qualified name of the model a to-many relationship holds, when every return
+     * builds the relationship with a to-many factory naming the same class:
+     * `$this->hasMany(Book::class)`.
+     *
+     * Anything less is not proof. A to-one factory, a class passed as a variable, or two
+     * returns naming different classes leave the related model unknown, and a loop over the
+     * relationship then stays untyped as it always was.
+     *
+     * So does chaperone() or inverse() on the chain. Each sets a relation on every element to
+     * the parent already in memory, and which relation that is Laravel guesses at runtime from
+     * key names, the morph type and the parent's class (getPossibleInverseRelations()), checked
+     * against the related model with isRelation(). Reproducing that guess here would mean
+     * modelling key-name conventions the scan cannot see; leaving the element untyped costs only
+     * the findings on it, which is how such a loop read before elements were typed at all.
+     *
+     * @param  array<Stmt\Return_>  $returns
+     */
+    private function toManyRelatedModel(array $returns, Stmt\ClassLike $decl): ?string
+    {
+        $related = null;
+
+        foreach ($returns as $return) {
+            if ($return->expr === null) {
+                return null;
+            }
+
+            for ($call = $return->expr; $call instanceof Expr\MethodCall; $call = $call->var) {
+                if ($call->name instanceof Node\Identifier &&
+                    in_array(strtolower($call->name->toString()), ['chaperone', 'inverse'], true)) {
+                    return null;
+                }
+            }
+
+            $rootCall = $this->findDeepestMethodCall($return->expr);
+            if ($rootCall === null ||
+                ! ($rootCall->var instanceof Expr\Variable && $rootCall->var->name === 'this') ||
+                ! ($rootCall->name instanceof Node\Identifier) ||
+                ! in_array($rootCall->name->toString(), self::TO_MANY_RELATION_METHODS, true)) {
+                return null;
+            }
+
+            $argument = $rootCall->args[0] ?? null;
+            if (! ($argument instanceof Node\Arg) ||
+                ! ($argument->value instanceof Expr\ClassConstFetch) ||
+                ! ($argument->value->class instanceof Node\Name) ||
+                ! ($argument->value->name instanceof Node\Identifier) ||
+                strtolower($argument->value->name->toString()) !== 'class') {
+                return null;
+            }
+
+            // Through the import table, so `use App\Models\Book as Volume` names Book.
+            $class = $argument->value->class;
+            $fqcn = in_array(strtolower($class->toString()), ['self', 'static'], true)
+                ? $this->declarationFqn($decl)
+                : $this->resolvedClassFqn($class);
+
+            if ($fqcn === null || ($related !== null && $related !== $fqcn)) {
+                return null;
+            }
+
+            $related = $fqcn;
+        }
+
+        return $related;
+    }
+
     private function declaresRelationReturnType(Stmt\ClassMethod $method): bool
     {
         $type = $method->returnType;
@@ -1147,7 +1259,7 @@ class EloquentModelRelationshipScanner
      * what separates "this name is not a relationship" from "this name is not one of the
      * relationships I could see", and it only survives if every ancestor kept it.
      *
-     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, fully: bool}
+     * @return array{relations: array<string>, attributes: array<string>, accessors: array<string>, plain: array<string>, members: array<string>, toMany: array<string, string>, fully: bool}
      */
     private function resolveMembers(string $fqcn): array
     {
@@ -1176,6 +1288,7 @@ class EloquentModelRelationshipScanner
                     'accessors' => [],
                     'plain' => [],
                     'members' => array_map(strtolower(...), $known),
+                    'toMany' => [],
                     'fully' => true,
                 ];
         }
@@ -1186,6 +1299,7 @@ class EloquentModelRelationshipScanner
         $accessors = $own['accessors'];
         $plain = $own['plain'];
         $members = $own['members'];
+        $toMany = $own['toMany'];
         $fully = ! $own['opaque'];
 
         $parent = $this->hierarchy->parentOf($key);
@@ -1221,6 +1335,14 @@ class EloquentModelRelationshipScanner
             }
             $members = [...$members, ...$inherited['members']];
             $fully = $fully && $inherited['fully'];
+
+            // A method the declaration states itself overrides the inherited one, whatever
+            // kind of relationship that one was.
+            foreach ($inherited['toMany'] as $relation => $related) {
+                if (! isset($toMany[$relation]) && ! in_array(strtolower($relation), $own['members'], true)) {
+                    $toMany[$relation] = $related;
+                }
+            }
         }
 
         return $this->resolved[$key] = [
@@ -1229,6 +1351,7 @@ class EloquentModelRelationshipScanner
             'accessors' => array_values(array_unique($accessors)),
             'plain' => array_values(array_unique($plain)),
             'members' => array_values(array_unique($members)),
+            'toMany' => $toMany,
             'fully' => $fully,
         ];
     }
@@ -1308,6 +1431,21 @@ class EloquentModelRelationshipScanner
                 $relationships->markSelfDeclared($short);
             }
 
+            // A related model types a loop variable outright, so it is recorded only for a
+            // short name one class owns, two Shelf classes could hold different models, and
+            // only for a related model the scan read in full. One it read in part, such as a
+            // model extending a package's or using a package trait, has members the scan
+            // cannot see, so its columns, `pivot` and a pivot accessor named by as() would fall
+            // to the naming heuristic and be reported off every element.
+            if (($shortNameCounts[ClassHierarchyIndex::key($short)] ?? 0) === 1) {
+                foreach ($members['toMany'] as $relation => $related) {
+                    $relatedShort = $this->fullyReadClassShortName($related, $shortNameCounts);
+                    if ($relatedShort !== null) {
+                        $relationships->addToMany($short, $relation, $relatedShort);
+                    }
+                }
+            }
+
             if ($members['fully'] &&
                 ! $this->unattributedRegisteredRelation &&
                 ($shortNameCounts[ClassHierarchyIndex::key($short)] ?? 0) === 1) {
@@ -1316,6 +1454,27 @@ class EloquentModelRelationshipScanner
         }
 
         return new ModelScanResult($relationships, $attributes, $accessors);
+    }
+
+    /**
+     * The short name of a scanned class that no other scanned class shares, and which the
+     * scan read in full by the test markFullyResolved() applies, or null.
+     *
+     * @param  array<string, int>  $shortNameCounts  Scanned classes per folded short name.
+     */
+    private function fullyReadClassShortName(string $fqcn, array $shortNameCounts): ?string
+    {
+        $declaration = $this->declarations[ClassHierarchyIndex::key($fqcn)] ?? null;
+        if ($declaration === null ||
+            $declaration['kind'] !== 'class' ||
+            $this->unattributedRegisteredRelation ||
+            ! $this->resolveMembers($fqcn)['fully']) {
+            return null;
+        }
+
+        return ($shortNameCounts[ClassHierarchyIndex::key($declaration['short'])] ?? 0) === 1
+            ? $declaration['short']
+            : null;
     }
 
     /**
@@ -1586,7 +1745,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private const LOCK_METHODS = ['lockforupdate', 'sharedlock'];
 
     /**
-     * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
+     * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string}>
      */
     private array $issues = [];
 
@@ -1601,6 +1760,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      * @var array<int, array{variables: array<string>, type: string}>
      */
     private array $loopStack = [];
+
+    /**
+     * Loop contexts of foreach statements entered but not yet pushed, keyed by the
+     * spl_object_id() of the subject expression they wait on. See enterNode().
+     *
+     * @var array<int, array{variables: array<string>, type: string}>
+     */
+    private array $pendingForeachLoops = [];
 
     /**
      * spl_object_id() of exists()/doesntExist() query nodes that form a uniqueness-probe
@@ -1637,7 +1804,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $this->relationshipRegistry = $scanResult->relationships;
         $this->modelAttributesRegistry = $scanResult->attributes;
         $this->accessorRegistry = $scanResult->accessors;
-        $this->modelVars = new ModelVariableScanner;
+        $this->modelVars = new ModelVariableScanner(fn (Node\Name $class): string => $this->resolvedClassFqn($class));
 
         foreach ($seedBindings as $var => $binding) {
             $this->modelVars->seed($var, $binding['type'], $binding['eagerLoads']);
@@ -1654,6 +1821,16 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // types (e.g. $posts is a Collection<Post>) and eager-loaded relationships.
         $this->modelVars->enterNode($node);
 
+        // Compiled Blade iterates a nested `@foreach ($shelf->books as $book)` through the
+        // synthetic `$__currentLoopData = $shelf->books;`, so the relation's model has to
+        // reach that variable for the loop below to copy it onto `$book`.
+        if ($node instanceof Expr\Assign &&
+            $node->var instanceof Expr\Variable &&
+            $node->var->name === '__currentLoopData' &&
+            $node->expr instanceof Expr\PropertyFetch) {
+            $this->deriveFromToManyRelation($node->expr, '__currentLoopData', asCollection: true);
+        }
+
         // Track loop entry
         if ($node instanceof Stmt\Foreach_) {
             // Infer loop variable type and copy eager loaded relationships
@@ -1664,7 +1841,10 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 $loopVariable = $node->valueVar->name;
             }
 
-            $this->loopStack[] = [
+            // The subject is evaluated once, before the first iteration, so it belongs to
+            // the enclosing loop: `$shelf->books` in a foreach nested in a loop over
+            // `$shelves` is read per shelf. The loop is pushed once the subject is left.
+            $this->pendingForeachLoops[spl_object_id($node->expr)] = [
                 'variables' => $loopVariable !== null ? [$loopVariable] : [],
                 'type' => self::LOOP_TYPE_FOREACH,
             ];
@@ -1704,11 +1884,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             return null;
         }
 
-        // Detect relationship access inside loops (only foreach loops track relationship access)
-        $currentLoop = $this->getCurrentLoop();
-        if ($currentLoop !== null && ! empty($currentLoop['variables']) && $currentLoop['type'] === self::LOOP_TYPE_FOREACH) {
-            $loopVariable = $currentLoop['variables'][0];
-            $loopType = $currentLoop['type'];
+        // Detect relationship access inside loops (only foreach loops track relationship access).
+        // Every enclosing foreach counts, not only the innermost: `$shelf->curator` read inside
+        // a loop over `$shelf->books` still runs once per shelf.
+        foreach ($this->enclosingForeachVariables() as $loopVariable) {
+            $loopType = self::LOOP_TYPE_FOREACH;
 
             // Track relationLoaded() calls as defensive patterns
             if ($node instanceof Expr\MethodCall &&
@@ -1725,7 +1905,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             }
 
             // Look for property access like $post->user, $post->comments, or $post->user->team
-            if ($node instanceof Expr\PropertyFetch) {
+            if ($node instanceof Expr\PropertyFetch && ! $this->isPropertyWriteTarget($node)) {
                 // Build full relationship chain (e.g., ['user', 'team'] for $post->user->team)
                 $chain = $this->buildRelationshipChain($node, $loopVariable);
 
@@ -1753,6 +1933,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'line' => $node->getStartLine(),
                                 'loop_type' => $loopType,
                                 'variable' => $loopVariable,
+                                'relation_path' => $this->modelVars->relationPathOf($loopVariable),
                             ];
                         }
                     }
@@ -1778,6 +1959,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'line' => $node->getStartLine(),
                                 'loop_type' => $loopType,
                                 'variable' => $loopVariable,
+                                'relation_path' => $this->modelVars->relationPathOf($loopVariable),
                             ];
                         }
                     }
@@ -1830,8 +2012,8 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     if ($this->isQueryExecutionMethod($methodName)) {
                         // Only flag if query depends on loop variable (true N+1 pattern)
                         // and the loop can actually iterate again after the query runs.
-                        if ($this->queryDependsOnLoop($node, $currentLoop)
-                            && ! $this->loopExitsAfterQuery($node)) {
+                        if ($this->queryDependsOnAnyLoop($node)
+                            && $this->loopsExitedAfterQuery($node) < count($this->loopStack)) {
                             $this->queryIssues[] = [
                                 'query' => "{$className}::{$methodName}()",
                                 'line' => $node->getStartLine(),
@@ -1854,10 +2036,10 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                         // not a uniqueness-probe loop condition (generate-until-unique idiom),
                         // does not acquire a pessimistic lock (inherently per-row), and the
                         // loop can actually iterate again after the query runs.
-                        if ($this->queryDependsOnLoop($node, $currentLoop)
+                        if ($this->queryDependsOnAnyLoop($node)
                             && ! isset($this->uniquenessProbeNodes[spl_object_id($node)])
                             && ! $this->chainAcquiresLock($node)
-                            && ! $this->loopExitsAfterQuery($node)) {
+                            && $this->loopsExitedAfterQuery($node) < count($this->loopStack)) {
                             $this->queryIssues[] = [
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
@@ -1874,6 +2056,12 @@ class NPlusOneVisitor extends NodeVisitorAbstract
 
     public function leaveNode(Node $node)
     {
+        $pendingLoop = $this->pendingForeachLoops[spl_object_id($node)] ?? null;
+        if ($pendingLoop !== null) {
+            unset($this->pendingForeachLoops[spl_object_id($node)]);
+            $this->loopStack[] = $pendingLoop;
+        }
+
         // Track loop exit - pop from stack and clear relationLoaded checks
         if ($node instanceof Stmt\Foreach_ || $node instanceof Stmt\For_ ||
             $node instanceof Stmt\While_ || $node instanceof Stmt\Do_) {
@@ -1915,12 +2103,50 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         }
         $loopVar = $node->valueVar->name;
 
-        if (! ($node->expr instanceof Expr\Variable) || ! is_string($node->expr->name)) {
+        if ($node->expr instanceof Expr\Variable && is_string($node->expr->name)) {
+            $this->modelVars->copyContext($node->expr->name, $loopVar);
+
             return;
         }
-        $sourceVar = $node->expr->name;
 
-        $this->modelVars->copyContext($sourceVar, $loopVar);
+        // The loop rebinds the variable, so whatever an earlier loop or assignment gave the
+        // same name no longer describes it. Left in place, it would type a loop over an
+        // unrelated subject.
+        if (! ($node->expr instanceof Expr\PropertyFetch) ||
+            ! $this->deriveFromToManyRelation($node->expr, $loopVar, asCollection: false)) {
+            $this->modelVars->forget($loopVar);
+        }
+    }
+
+    /**
+     * Type $target from `$model->relation` when the relation is a to-many relationship whose
+     * related model the scan proved: as that model's collection, or as one of its elements
+     * for a loop variable iterating it directly. Anything else leaves $target as it was, and
+     * returns false.
+     */
+    private function deriveFromToManyRelation(Expr\PropertyFetch $fetch, string $target, bool $asCollection): bool
+    {
+        if (! ($fetch->var instanceof Expr\Variable) ||
+            ! is_string($fetch->var->name) ||
+            ! ($fetch->name instanceof Node\Identifier)) {
+            return false;
+        }
+
+        $owner = $fetch->var->name;
+        $relation = $fetch->name->toString();
+        $model = $this->modelVars->typeOf($owner);
+        if ($model === null || str_starts_with($model, 'Collection<')) {
+            return false;
+        }
+
+        $related = $this->relationshipRegistry->toManyRelated($model, $relation);
+        if ($related === null) {
+            return false;
+        }
+
+        $this->modelVars->deriveFromRelation($owner, $relation, $target, $asCollection ? "Collection<{$related}>" : $related);
+
+        return true;
     }
 
     /**
@@ -2143,31 +2369,56 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a query chain depends on loop iteration.
+     * Check if a query chain depends on loop iteration: on the variables of any enclosing
+     * loop, since a query in an inner loop that reads the outer loop's variable still runs
+     * once per inner iteration.
      *
-     * @param  array{variables: array<string>, type: string}|null  $loop
+     * A loop with no tracked variables cannot show a dependency, so it never flags one.
      */
-    private function queryDependsOnLoop(Node $node, ?array $loop): bool
+    private function queryDependsOnAnyLoop(Node $node): bool
     {
-        if ($loop === null) {
-            return false;
-        }
-
-        $loopVariables = $loop['variables'];
-
-        // If no loop variables tracked, can't determine dependency - don't flag
-        if (empty($loopVariables)) {
-            return false;
-        }
-
-        // Check if query references any loop variable
-        foreach ($loopVariables as $varName) {
-            if ($this->chainReferencesVariable($node, $varName)) {
-                return true;
+        foreach ($this->loopStack as $loop) {
+            foreach ($loop['variables'] as $varName) {
+                if ($this->chainReferencesVariable($node, $varName)) {
+                    return true;
+                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * True when the fetch is the target of a plain assignment or an unset(), which set or
+     * drop the relation on the model in memory without loading it.
+     *
+     * A compound assignment is not one: it reads the property before writing it, and `??=`
+     * reads it through isset(), which loads a relation as any read does.
+     */
+    private function isPropertyWriteTarget(Expr\PropertyFetch $node): bool
+    {
+        $parent = $node->getAttribute('parent');
+
+        return (($parent instanceof Expr\Assign || $parent instanceof Expr\AssignRef) && $parent->var === $node)
+            || $parent instanceof Stmt\Unset_;
+    }
+
+    /**
+     * The variable of every foreach loop on the stack, innermost first, each once: a nested
+     * loop reusing an outer loop's name rebinds it, so one check against it is the only one.
+     *
+     * @return list<string>
+     */
+    private function enclosingForeachVariables(): array
+    {
+        $variables = [];
+        foreach (array_reverse($this->loopStack) as $loop) {
+            if ($loop['type'] === self::LOOP_TYPE_FOREACH && isset($loop['variables'][0])) {
+                $variables[] = $loop['variables'][0];
+            }
+        }
+
+        return array_values(array_unique($variables));
     }
 
     /**
@@ -2406,38 +2657,43 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * True if control unconditionally leaves every enclosing loop once the query
-     * statement finishes, so the query executes at most once per method call.
+     * How many of the innermost enclosing loops control unconditionally leaves once the
+     * query statement finishes: PHP_INT_MAX for a return or throw, N for `break N`, and 0
+     * when the loop can iterate again. The query runs at most once when that covers every
+     * loop on the stack.
      *
      * Walks parent links (set by ParentConnectingVisitor) from the query up to the
      * innermost loop: the statements following the query (climbing out of
-     * if/elseif/else blocks) must exit via return, throw, or a break when only a
-     * single loop encloses the query. Anything else (conditional exits, try/catch,
-     * switch, closures) is treated as repeatable.
+     * if/elseif/else blocks) must exit via return, throw, or break. Anything else
+     * (conditional exits, try/catch, switch, closures) is treated as repeatable.
      */
-    private function loopExitsAfterQuery(Node $queryNode): bool
+    private function loopsExitedAfterQuery(Node $queryNode): int
     {
         // Climb from the query expression to its enclosing statement.
         $current = $queryNode->getAttribute('parent');
 
         while ($current instanceof Node && ! $current instanceof Stmt) {
             if ($current instanceof Expr\Closure || $current instanceof Expr\ArrowFunction) {
-                return false; // deferred execution: control flow is unknowable
+                return 0; // deferred execution: control flow is unknowable
             }
             $current = $current->getAttribute('parent');
         }
 
-        if ($this->isLoopNode($current)) {
-            // The query sits in a loop header (while/for condition, foreach
-            // iterable) and re-runs as that loop iterates.
-            return false;
+        if ($this->isLoopNode($current) && ! $current instanceof Stmt\Foreach_) {
+            // The query sits in a loop header (while/for condition) and re-runs as that
+            // loop iterates.
+            return 0;
         }
+
+        // A foreach iterable is evaluated once each time the statement is reached, so it
+        // re-runs only as the enclosing loop iterates, and the foreach statement is the
+        // position whose followers decide whether that loop goes round again.
 
         while ($current instanceof Stmt) {
             $parent = $current->getAttribute('parent');
 
             if (! $parent instanceof Node) {
-                return false;
+                return 0;
             }
 
             $siblings = $this->stmtListContaining($parent, $current);
@@ -2445,25 +2701,25 @@ class NPlusOneVisitor extends NodeVisitorAbstract
             if ($siblings === null) {
                 // Unsupported construct (try/catch, switch, ...): a throw may be
                 // caught and the loop resumed, so treat the query as repeatable.
-                return false;
+                return 0;
             }
 
             $index = array_search($current, $siblings, true);
 
             if (! is_int($index)) {
-                return false;
+                return 0;
             }
 
             $suffix = array_slice($siblings, $index + 1);
 
             if ($suffix !== []) {
-                return $this->stmtsExitEveryLoop($suffix);
+                return $this->loopsExitedBy($suffix, $parent);
             }
 
             if ($this->isLoopNode($parent)) {
                 // End of the loop body without an unconditional exit: the next
                 // iteration begins.
-                return false;
+                return 0;
             }
 
             // Nothing follows at this level: control flows out of the enclosing
@@ -2473,7 +2729,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                 : $parent;
         }
 
-        return false;
+        return 0;
     }
 
     /**
@@ -2509,36 +2765,61 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * True if this statement run unconditionally exits every enclosing loop before
-     * any construct that could let the loop iterate again.
+     * How many loops are among the $levels innermost levels a break in $container's statement
+     * list leaves, counting $container itself. A switch is a level for break as a loop is, so
+     * `break 2` from a loop inside a switch case leaves the loop and the switch, and the loop
+     * around the switch goes round again.
+     */
+    private function loopsAmongLevels(Node $container, int $levels): int
+    {
+        $loops = 0;
+
+        for ($node = $container; $levels > 0 && $node instanceof Node && ! $node instanceof Node\FunctionLike; $node = $node->getAttribute('parent')) {
+            if ($this->isLoopNode($node)) {
+                $loops++;
+                $levels--;
+            } elseif ($node instanceof Stmt\Switch_) {
+                $levels--;
+            }
+        }
+
+        return $loops;
+    }
+
+    /**
+     * How many enclosing loops this statement run unconditionally exits before any
+     * construct that could let a loop iterate again (see loopsExitedAfterQuery()).
      *
      * @param  array<int, Stmt>  $stmts
+     * @param  Node  $container  The node whose statement list holds $stmts. The walk has not
+     *                           reached the statements yet, so they carry no parent link.
      */
-    private function stmtsExitEveryLoop(array $stmts): bool
+    private function loopsExitedBy(array $stmts, Node $container): int
     {
         foreach ($stmts as $stmt) {
             if ($stmt instanceof Stmt\Return_) {
-                return true;
+                return PHP_INT_MAX;
             }
 
             if ($stmt instanceof Stmt\Break_) {
-                // break exits only the innermost loop, so it proves at-most-once
-                // execution only when a single loop encloses the query.
-                return $stmt->num === null && count($this->loopStack) === 1;
+                // `break` and `break 1` leave one level, `break N` the N innermost.
+                $levels = $stmt->num === null ? 1 : ($stmt->num instanceof Node\Scalar\Int_ ? $stmt->num->value : 0);
+
+                return $this->loopsAmongLevels($container, $levels);
             }
 
             if ($stmt instanceof Stmt\Expression) {
                 if ($stmt->expr instanceof Expr\Throw_) {
-                    return true;
+                    return PHP_INT_MAX;
                 }
 
                 continue; // plain expressions cannot re-enter the loop
             }
 
-            return false;
+            return 0;
         }
 
-        return false;
+        return 0;
     }
 
     /**
@@ -2682,7 +2963,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Get collected issues.
      *
-     * @return array<int, array{relationship: string, line: int, loop_type: string, variable: string}>
+     * @return array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string}>
      */
     public function getIssues(): array
     {

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PhpParser\Node\Name;
 use PhpParser\NodeTraverser;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
@@ -14,7 +15,8 @@ class ModelVariableScannerTest extends TestCase
     private function scan(string $code): ModelVariableScanner
     {
         $ast = (new AstParser)->parseCode("<?php\n".$code);
-        $scanner = new ModelVariableScanner;
+        // No imports in these snippets, so a name resolves to itself.
+        $scanner = new ModelVariableScanner(static fn (Name $class): string => $class->toString());
         $traverser = new NodeTraverser;
         $traverser->addVisitor($scanner);
         $traverser->traverse($ast);
@@ -130,5 +132,32 @@ class ModelVariableScannerTest extends TestCase
     {
         $s = $this->scan("\$posts = Post::with(['author' => fn (\$q) => \$q->select('id'), 'comments'])->get();");
         $this->assertEqualsCanonicalizing(['author', 'comments'], $s->eagerLoadsOf('posts'));
+    }
+
+    public function test_closure_keyed_eager_load_with_a_variable_constraint_loads_the_key_alone(): void
+    {
+        $s = $this->scan("\$posts = Post::with(['author' => \$constraint])->get();");
+        $this->assertSame(['author'], $s->eagerLoadsOf('posts'));
+    }
+
+    public function test_with_where_has_on_a_relation_named_by_a_variable_loads_nothing(): void
+    {
+        $s = $this->scan('$posts = Post::withWhereHas($relation)->get();');
+        $this->assertSame('Collection<Post>', $s->typeOf('posts'));
+        $this->assertSame([], $s->eagerLoadsOf('posts'));
+    }
+
+    public function test_blade_loop_source_alias_keeps_the_relation_path(): void
+    {
+        $scanner = new ModelVariableScanner(static fn (Name $class): string => $class->toString());
+        $scanner->seed('shelf', 'Shelf', []);
+        $scanner->deriveFromRelation('shelf', 'books', 'books', 'Collection<Book>');
+
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor($scanner);
+        $traverser->traverse((new AstParser)->parseCode("<?php\n\$__currentLoopData = \$books;"));
+
+        $this->assertSame('Collection<Book>', $scanner->typeOf('__currentLoopData'));
+        $this->assertSame('books', $scanner->relationPathOf('__currentLoopData'));
     }
 }

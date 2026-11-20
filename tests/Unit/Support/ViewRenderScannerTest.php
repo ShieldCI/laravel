@@ -68,8 +68,8 @@ class ViewRenderScannerTest extends TestCase
 
     public function test_with_chain_binding_to_a_non_variable_has_no_type(): void
     {
-        // A literal or expression cannot be traced back to a typed variable, so the binding
-        // records no type — which makes the merge policy drop it rather than guess.
+        // A literal is neither a typed variable nor a model query, so the binding records
+        // no type — which makes the merge policy drop it rather than guess.
         $dir = $this->uniqueTempPath('vrs_');
         $controller = $this->write($dir, 'C.php', <<<'PHP'
         <?php
@@ -194,9 +194,10 @@ class ViewRenderScannerTest extends TestCase
 
         $this->assertNotNull($resolved);
         $this->assertSame('Collection<City>', $resolved['cities']['type']);
-        // 'count' has a non-variable value (an int literal): a binding is recorded with a null
-        // type, which the registry then drops as unanalyzable (ViewBindingRegistry::resolve()
-        // only surfaces variables every render site agrees have a known type).
+        // 'count' has a value that is not a model query (an int literal): a binding is
+        // recorded with a null type, which the registry then drops as unanalyzable
+        // (ViewBindingRegistry::resolve() only surfaces variables every render site agrees
+        // have a known type).
         $this->assertArrayNotHasKey('count', $resolved);
         // $k is a dynamic (non-string) array key: skipped entirely, never becomes a binding.
         $this->assertArrayNotHasKey('dynamic', $resolved);
@@ -256,5 +257,95 @@ class ViewRenderScannerTest extends TestCase
         $registry = (new ViewRenderScanner(new AstParser))->scan([$file], $dir.'/resources/views');
 
         $this->assertNull($registry->resolve($dir.'/resources/views/v.blade.php'));
+    }
+
+    public function test_view_call_inside_a_top_level_route_closure_is_recorded(): void
+    {
+        $dir = $this->uniqueTempPath('vrs_');
+        $file = $this->write($dir, 'web.php', <<<'PHP'
+        <?php
+        Route::get('/shelves', function () {
+            $shelves = Shelf::with('books')->get();
+            return view('shelves.index', compact('shelves'));
+        });
+        PHP);
+
+        $resolved = (new ViewRenderScanner(new AstParser))
+            ->scan([$file], $dir.'/resources/views')
+            ->resolve($dir.'/resources/views/shelves/index.blade.php');
+
+        $this->assertNotNull($resolved);
+        $this->assertSame('Collection<Shelf>', $resolved['shelves']['type']);
+        $this->assertSame(['books'], $resolved['shelves']['eagerLoads']);
+        $this->assertSame('web.php', $resolved['shelves']['source']);
+    }
+
+    public function test_view_call_inside_an_arrow_function_is_recorded(): void
+    {
+        $dir = $this->uniqueTempPath('vrs_');
+        $file = $this->write($dir, 'web.php', <<<'PHP'
+        <?php
+        Route::get('/shelf', fn () => view('shelves.show')->with('shelf', Shelf::findOrFail(1)));
+        PHP);
+
+        $resolved = (new ViewRenderScanner(new AstParser))
+            ->scan([$file], $dir.'/resources/views')
+            ->resolve($dir.'/resources/views/shelves/show.blade.php');
+
+        $this->assertNotNull($resolved);
+        $this->assertSame('Shelf', $resolved['shelf']['type']);
+    }
+
+    /**
+     * A closure nested in a group callback is read as its own scope, and only there: the
+     * group callback does not record the nested render site a second time with whatever
+     * its sibling closures assigned to the same name.
+     */
+    public function test_closures_nested_in_a_group_callback_are_separate_scopes(): void
+    {
+        $dir = $this->uniqueTempPath('vrs_');
+        $file = $this->write($dir, 'web.php', <<<'PHP'
+        <?php
+        Route::group([], function () {
+            Route::get('/a', function () {
+                $items = Shelf::all();
+                return view('shelves.index', compact('items'));
+            });
+            Route::get('/b', function () {
+                $items = Book::all();
+                return view('books.index', compact('items'));
+            });
+        });
+        PHP);
+
+        $registry = (new ViewRenderScanner(new AstParser))->scan([$file], $dir.'/resources/views');
+
+        $shelves = $registry->resolve($dir.'/resources/views/shelves/index.blade.php');
+        $books = $registry->resolve($dir.'/resources/views/books/index.blade.php');
+        $this->assertNotNull($shelves);
+        $this->assertNotNull($books);
+        $this->assertSame('Collection<Shelf>', $shelves['items']['type']);
+        $this->assertSame('Collection<Book>', $books['items']['type']);
+    }
+
+    public function test_inline_model_query_binding_is_typed_with_its_eager_loads(): void
+    {
+        $dir = $this->uniqueTempPath('vrs_');
+        $file = $this->write($dir, 'C.php', <<<'PHP'
+        <?php
+        class C {
+            public function index() {
+                return view('shelves.index', ['shelves' => Shelf::with(['books.publisher'])->latest()->paginate()]);
+            }
+        }
+        PHP);
+
+        $resolved = (new ViewRenderScanner(new AstParser))
+            ->scan([$file], $dir.'/resources/views')
+            ->resolve($dir.'/resources/views/shelves/index.blade.php');
+
+        $this->assertNotNull($resolved);
+        $this->assertSame('Collection<Shelf>', $resolved['shelves']['type']);
+        $this->assertEqualsCanonicalizing(['books', 'books.publisher'], $resolved['shelves']['eagerLoads']);
     }
 }

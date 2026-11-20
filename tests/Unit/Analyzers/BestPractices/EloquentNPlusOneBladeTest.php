@@ -24,6 +24,14 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
 
     private const CITY_CONTROLLER = "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\City;\nclass CityController { public function index(){ \$cities = City::all(); return view('cities.index', compact('cities')); } }";
 
+    private const SHELF_MODEL = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(Book::class); } public function curator(){ return \$this->belongsTo(Curator::class); } }";
+
+    private const BOOK_MODEL = "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Book extends Model { public function publisher(){ return \$this->belongsTo(Publisher::class); } }";
+
+    private const SHELF_VIEW = "@foreach(\$shelves as \$shelf)\n  {{ \$shelf->curator->name }}\n@endforeach";
+
+    private const NESTED_SHELF_VIEW = "@foreach(\$shelves as \$shelf)\n  @foreach(\$shelf->books as \$book)\n    {{ \$book->publisher->name }}\n  @endforeach\n@endforeach";
+
     /**
      * A template that compiles cleanly but whose compiled PHP will not parse: Blade copies a
      * block body through verbatim, so an incomplete assignment inside one survives compilation
@@ -40,13 +48,16 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         return new EloquentNPlusOneAnalyzer($this->parser);
     }
 
-    /** @param array<string,string> $files */
-    private function analyze(array $files): ResultInterface
+    /**
+     * @param  array<string,string>  $files
+     * @param  list<string>  $paths
+     */
+    private function analyze(array $files, array $paths = ['app', 'resources/views']): ResultInterface
     {
         $dir = $this->createTempDirectory($files);
         $analyzer = new EloquentNPlusOneAnalyzer(new AstParser);
         $analyzer->setBasePath($dir);
-        $analyzer->setPaths(['app', 'resources/views']);
+        $analyzer->setPaths($paths);
 
         return $analyzer->analyze();
     }
@@ -67,6 +78,24 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
     private function queryExecutionIssues(ResultInterface $result): array
     {
         return array_values(array_filter($result->getIssues(), fn (Issue $i): bool => array_key_exists('query', $i->metadata)));
+    }
+
+    /**
+     * Each finding's relationship and Blade line, in report order.
+     *
+     * @return list<array{string, int|null}>
+     */
+    private function relationFindings(ResultInterface $result): array
+    {
+        $findings = [];
+        foreach ($result->getIssues() as $issue) {
+            $relationship = $issue->metadata['relationship'] ?? null;
+            if (is_string($relationship)) {
+                $findings[] = [$relationship, $issue->location?->line];
+            }
+        }
+
+        return $findings;
     }
 
     public function test_flags_lazy_relation_when_controller_does_not_eager_load(): void
@@ -334,10 +363,9 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
      * Part B (nested @foreach): Blade compiles nested loops by reassigning the SAME
      * `$__currentLoopData` synthetic variable at each nesting level. The unresolved N+1
      * access here is `$city->airports` — the data source of the inner loop, accessed while
-     * still inside the OUTER loop body — and it is caught before the inner loop's (buggy)
-     * type inference ever comes into play. See the task report for the mistyping this
-     * nested compilation causes on `$airport` itself, and why it doesn't produce a false
-     * positive for this fixture.
+     * still inside the OUTER loop body — and it is caught before the inner loop's type
+     * inference ever comes into play. `$airport` is typed as an Airport, from
+     * `hasMany(Airport::class)`, and `name` is not a relation on it.
      */
     public function test_nested_foreach_not_eager_loaded_flags_outer_relationship_access(): void
     {
@@ -399,8 +427,9 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
      * (`['comments', 'comments.author']`). `Post` happens to declare its own `author()`
      * relation, so the mistaken type made `$comment->author` look like an un-eager-loaded
      * relationship on `Post`, even though `comments.author` IS eager-loaded — on `Comment`,
-     * the correct (but never-inferred, post-fix) model. This is the canonical nested-Blade
-     * shape and exactly the false-positive class this analyzer exists to prevent.
+     * the correct model, which the inner loop now infers from `comments()`. This is the
+     * canonical nested-Blade shape and exactly the false-positive class this analyzer exists
+     * to prevent.
      */
     public function test_nested_foreach_relation_eager_loaded_via_dot_notation_is_silent(): void
     {
@@ -1044,5 +1073,331 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
             'app/Http/Controllers/NewsletterController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Newsletter;\nuse App\\Models\\Post;\nclass NewsletterController { public function index(){ \$newsletters = Newsletter::all(); \$posts = Post::all(); return view('newsletters.index', compact('newsletters', 'posts')); } }",
             'resources/views/newsletters/index.blade.php' => "@foreach(\$newsletters as \$newsletter)\n  {{ \$newsletter->{$column} }}\n@endforeach\n@foreach(\$posts as \$post)\n  {{ \$post->author->name }}\n@endforeach",
         ]);
+    }
+
+    /**
+     * A route file renders views from closures, not controller methods, and the render-site
+     * scan used to read only class methods and named functions, so a view rendered this way
+     * was never analyzed at all. The recommendation names the route file, which is the only
+     * name a closure has.
+     */
+    public function test_flags_lazy_relation_in_a_view_rendered_from_a_route_closure(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'routes/web.php' => <<<'PHP'
+                <?php
+                use App\Models\Shelf;
+                use Illuminate\Support\Facades\Route;
+
+                Route::get('/shelves', function () {
+                    $shelves = Shelf::all();
+
+                    return view('shelves.index', compact('shelves'));
+                });
+                PHP,
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([['curator', 2]], $this->relationFindings($result));
+        $this->assertStringContainsString('web.php', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_silent_when_a_route_closure_eager_loads(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'routes/web.php' => <<<'PHP'
+                <?php
+                use App\Models\Shelf;
+                use Illuminate\Support\Facades\Route;
+
+                Route::get('/shelves', function () {
+                    $shelves = Shelf::with('curator')->get();
+
+                    return view('shelves.index', compact('shelves'));
+                });
+                PHP,
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * Reading a closure changes where a type can come from, not the policy on a variable
+     * whose type is never inferred: it is dropped, as it is from a controller.
+     */
+    public function test_silent_when_a_route_closure_binds_a_variable_of_unknown_type(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'routes/web.php' => <<<'PHP'
+                <?php
+                use Illuminate\Support\Facades\Route;
+
+                Route::get('/shelves', function () {
+                    $shelves = session('recent_shelves');
+
+                    return view('shelves.index', compact('shelves'));
+                });
+                PHP,
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * Closures nested in a group callback are each their own scope. The sibling route binds
+     * the same name to a different model, and if the group callback were read as one scope
+     * that assignment would reach the first route's render site, the two sites would
+     * disagree on the type, and the merge policy would drop the variable.
+     */
+    public function test_flags_lazy_relation_in_a_view_rendered_from_a_closure_nested_in_a_route_group(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'routes/web.php' => <<<'PHP'
+                <?php
+                use App\Models\Book;
+                use App\Models\Shelf;
+                use Illuminate\Support\Facades\Route;
+
+                Route::prefix('library')->group(function () {
+                    Route::get('/shelves', function () {
+                        $shelves = Shelf::all();
+
+                        return view('shelves.index', compact('shelves'));
+                    });
+
+                    Route::get('/books', function () {
+                        $shelves = Book::all();
+
+                        return view('books.index', compact('shelves'));
+                    });
+                });
+                PHP,
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([['curator', 2]], $this->relationFindings($result));
+    }
+
+    public function test_flags_lazy_relation_in_a_view_rendered_from_an_arrow_function_route(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'routes/web.php' => <<<'PHP'
+                <?php
+                use App\Models\Shelf;
+                use Illuminate\Support\Facades\Route;
+
+                Route::get('/shelves', fn () => view('shelves.index', ['shelves' => Shelf::all()]));
+                PHP,
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([['curator', 2]], $this->relationFindings($result));
+    }
+
+    /**
+     * A query passed straight into the render array is typed the way the same query
+     * assigned to a variable first would be.
+     */
+    public function test_flags_lazy_relation_bound_inline_in_the_render_array(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ return view('shelves.index', ['shelves' => Shelf::all()]); } }",
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ]);
+
+        $this->assertSame([['curator', 2]], $this->relationFindings($result));
+        $this->assertStringContainsString('ShelfController::index', $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_flags_lazy_relation_bound_inline_through_with(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ return view('shelves.index')->with('shelves', Shelf::where('open', true)->get()); } }",
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ]);
+
+        $this->assertSame([['curator', 2]], $this->relationFindings($result));
+    }
+
+    public function test_silent_when_an_inline_binding_eager_loads(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ return view('shelves.index', ['shelves' => Shelf::with('curator')->get()]); } }",
+            'resources/views/shelves/index.blade.php' => self::SHELF_VIEW,
+        ]);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * The inner loop iterates a relation the model declares as hasMany(Book::class), so its
+     * variable is a Book, and eager-loading only `books` leaves `publisher` lazy on every
+     * book. The recommendation names the path to eager-load from the controller, since
+     * `with('publisher')` on the shelves query would raise RelationNotFoundException.
+     */
+    public function test_flags_lazy_relation_on_the_element_of_a_nested_foreach(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$shelves = Shelf::with('books')->get(); return view('shelves.nested', compact('shelves')); } }",
+            'resources/views/shelves/nested.blade.php' => self::NESTED_SHELF_VIEW,
+        ]);
+
+        $this->assertSame([['publisher', 3]], $this->relationFindings($result));
+        $recommendation = $result->getIssues()[0]->recommendation;
+        $this->assertStringContainsString('ShelfController::index', $recommendation);
+        $this->assertStringContainsString("'books.publisher'", $recommendation);
+    }
+
+    public function test_nested_foreach_without_eager_loading_flags_both_levels(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$shelves = Shelf::all(); return view('shelves.nested', compact('shelves')); } }",
+            'resources/views/shelves/nested.blade.php' => self::NESTED_SHELF_VIEW,
+        ]);
+
+        $this->assertSame([['books', 2], ['publisher', 3]], $this->relationFindings($result));
+    }
+
+    /**
+     * Only a relation whose related model the declaration names types the inner loop. Here
+     * the class comes from a helper the scan cannot follow, so the element stays untyped
+     * and silent rather than guessed at.
+     */
+    public function test_nested_foreach_over_a_relation_with_an_unnamed_related_model_is_silent(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(\$this->bookModel()); } }",
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$shelves = Shelf::with('books')->get(); return view('shelves.nested', compact('shelves')); } }",
+            'resources/views/shelves/nested.blade.php' => self::NESTED_SHELF_VIEW,
+        ]);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * Rows from the query builder are plain objects, so a binding built from DB::table() is
+     * not a model collection and reading a column off a row is not a relationship access.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function nonModelBindings(): array
+    {
+        return [
+            'inline query builder rows' => ["use Illuminate\\Support\\Facades\\DB;\nclass RowController { public function index(){ return view('rows.index', ['rows' => DB::table('rows')->get()]); } }"],
+            'cache value through with' => ["use Illuminate\\Support\\Facades\\Cache;\nclass RowController { public function index(){ return view('rows.index')->with('rows', Cache::get('rows')); } }"],
+            'query builder rows through a variable' => ["use Illuminate\\Support\\Facades\\DB;\nclass RowController { public function index(){ \$rows = DB::table('rows')->get(); return view('rows.index', compact('rows')); } }"],
+        ];
+    }
+
+    /**
+     * @dataProvider nonModelBindings
+     */
+    #[DataProvider('nonModelBindings')]
+    public function test_silent_when_the_binding_is_not_a_model_query(string $controller): void
+    {
+        $result = $this->analyze([
+            'app/Http/Controllers/RowController.php' => "<?php\nnamespace App\\Http\\Controllers;\n".$controller,
+            'resources/views/rows/index.blade.php' => "@foreach(\$rows as \$row)\n  {{ \$row->firstname }}\n@endforeach",
+        ]);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * A model whose short name is also a facade's is still a model once its import is
+     * read, so the binding keeps its type.
+     */
+    public function test_flags_lazy_relation_on_a_model_sharing_a_facade_name(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Event.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Event extends Model { public function venue(){ return \$this->belongsTo(Venue::class); } }",
+            'app/Http/Controllers/EventController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Event;\nclass EventController { public function index(){ return view('events.index', ['events' => Event::all()]); } }",
+            'resources/views/events/index.blade.php' => "@foreach(\$events as \$event)\n  {{ \$event->venue->name }}\n@endforeach",
+        ]);
+
+        $this->assertSame([['venue', 2]], $this->relationFindings($result));
+    }
+
+    public function test_nested_eager_load_inside_a_closure_keyed_with_is_honoured(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ return view('shelves.nested', ['shelves' => Shelf::with(['books' => fn (\$q) => \$q->with('publisher')])->get()]); } }",
+            'resources/views/shelves/nested.blade.php' => self::NESTED_SHELF_VIEW,
+        ]);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * The inner loop runs once per shelf, so a lazy relation of the shelf read inside it is
+     * one query per shelf, and is reported once.
+     */
+    public function test_flags_relation_of_the_outer_loop_variable_read_in_the_inner_loop(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$shelves = Shelf::with('books.publisher')->get(); return view('shelves.nested', compact('shelves')); } }",
+            'resources/views/shelves/nested.blade.php' => "@foreach(\$shelves as \$shelf)\n  @foreach(\$shelf->books as \$book)\n    {{ \$shelf->curator->name }}\n  @endforeach\n@endforeach",
+        ]);
+
+        $this->assertSame([['curator', 3]], $this->relationFindings($result));
+    }
+
+    public function test_eager_load_on_the_relation_collection_in_the_template_is_honoured(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$shelves = Shelf::with('books')->get(); return view('shelves.nested', compact('shelves')); } }",
+            'resources/views/shelves/nested.blade.php' => "@foreach(\$shelves as \$shelf)\n  @php \$shelf->books->load('publisher'); @endphp\n  @foreach(\$shelf->books as \$book)\n    {{ \$book->publisher->name }}\n  @endforeach\n@endforeach",
+        ]);
+
+        $this->assertSame([], $this->relationFindings($result));
+    }
+
+    /**
+     * Each finding's recommendation names the relation path as it stood when the access was
+     * read: a later loop rebinding the same name over a relation does not rewrite it.
+     */
+    public function test_recommendation_keeps_the_path_of_the_loop_that_read_it(): void
+    {
+        $result = $this->analyze([
+            'app/Models/Shelf.php' => self::SHELF_MODEL,
+            'app/Models/Book.php' => self::BOOK_MODEL,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Book;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(){ \$books = Book::all(); \$shelves = Shelf::with('books')->get(); return view('shelves.mixed', compact('books', 'shelves')); } }",
+            'resources/views/shelves/mixed.blade.php' => "@foreach(\$books as \$book)\n  {{ \$book->publisher->name }}\n@endforeach\n@foreach(\$shelves as \$shelf)\n  @foreach(\$shelf->books as \$book)\n    {{ \$book->isbn }}\n  @endforeach\n@endforeach",
+        ]);
+
+        $this->assertSame([['publisher', 2]], $this->relationFindings($result));
+        $this->assertStringContainsString("Eager-load the 'publisher' relation", $result->getIssues()[0]->recommendation);
+    }
+
+    public function test_silent_when_a_route_binds_a_relation_query_rooted_at_the_auth_facade(): void
+    {
+        $result = $this->analyze([
+            'routes/web.php' => "<?php\nuse Illuminate\\Support\\Facades\\Auth;\nuse Illuminate\\Support\\Facades\\Route;\nRoute::get('/', fn () => view('shelves.index', ['shelves' => Auth::user()->shelves()->get()]));",
+            'resources/views/shelves/index.blade.php' => "@foreach(\$shelves as \$shelf)\n  {{ \$shelf->subtitle }}\n@endforeach",
+        ], ['app', 'routes', 'resources/views']);
+
+        $this->assertSame([], $this->relationFindings($result));
     }
 }

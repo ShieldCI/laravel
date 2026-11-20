@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Support;
 
+use PhpParser\Node\Name;
 use PhpParser\NodeTraverser;
 use PHPUnit\Framework\TestCase;
 use ShieldCI\AnalyzersCore\Support\AstParser;
@@ -14,7 +15,8 @@ class ModelVariableScannerTest extends TestCase
     private function scan(string $code): ModelVariableScanner
     {
         $ast = (new AstParser)->parseCode("<?php\n".$code);
-        $scanner = new ModelVariableScanner;
+        // No imports in these snippets, so a name resolves to itself.
+        $scanner = new ModelVariableScanner(static fn (Name $class): string => $class->toString());
         $traverser = new NodeTraverser;
         $traverser->addVisitor($scanner);
         $traverser->traverse($ast);

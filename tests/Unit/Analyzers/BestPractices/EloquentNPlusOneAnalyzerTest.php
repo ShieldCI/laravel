@@ -7821,4 +7821,607 @@ PHP,
 
         return $analyzer->analyze();
     }
+
+    // -------------------------------------------------------------------------
+    // Nested foreach over a relation
+    // -------------------------------------------------------------------------
+
+    /**
+     * Shelf and Book models for the nested-loop tests: Shelf::books() is a hasMany naming
+     * Book, and Book::publisher() is a belongsTo.
+     *
+     * @return array<string, string>
+     */
+    private function shelfAndBookModels(): array
+    {
+        return [
+            'app/Models/Shelf.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Shelf extends Model
+{
+    public function books(): HasMany
+    {
+        return $this->hasMany(Book::class);
+    }
+}
+PHP,
+            'app/Models/Book.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Book extends Model
+{
+    public function publisher(): BelongsTo
+    {
+        return $this->belongsTo(Publisher::class);
+    }
+}
+PHP,
+        ];
+    }
+
+    /**
+     * Relationship and line of each relationship finding, in report order.
+     *
+     * @return list<array{string, int|null}>
+     */
+    private function nestedShelfFindings(string $query): array
+    {
+        $controller = <<<PHP
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Shelf;
+
+class ShelfController
+{
+    public function index()
+    {
+        \$shelves = {$query};
+
+        foreach (\$shelves as \$shelf) {
+            foreach (\$shelf->books as \$book) {
+                echo \$book->publisher->name;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            ...$this->shelfAndBookModels(),
+            'app/Http/Controllers/ShelfController.php' => $controller,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $findings = [];
+        foreach ($analyzer->analyze()->getIssues() as $issue) {
+            $relationship = $issue->metadata['relationship'] ?? null;
+            if (is_string($relationship)) {
+                $findings[] = [$relationship, $issue->location?->line];
+            }
+        }
+
+        return $findings;
+    }
+
+    /**
+     * The inner foreach's subject is read once per outer iteration, so it belongs to the
+     * outer loop. It used to be judged against the inner loop's variable, which it never
+     * mentions, so neither level was reported.
+     */
+    public function test_nested_foreach_over_a_relation_flags_both_levels(): void
+    {
+        $this->assertSame([['books', 14], ['publisher', 15]], $this->nestedShelfFindings('Shelf::all()'));
+    }
+
+    public function test_nested_foreach_flags_the_inner_relation_when_only_the_outer_is_eager_loaded(): void
+    {
+        $this->assertSame([['publisher', 15]], $this->nestedShelfFindings("Shelf::with('books')->get()"));
+    }
+
+    public function test_nested_foreach_silent_when_the_dotted_path_is_eager_loaded(): void
+    {
+        $this->assertSame([], $this->nestedShelfFindings("Shelf::with('books.publisher')->get()"));
+    }
+
+    /**
+     * A query in the inner foreach's subject runs once per outer iteration, and depends on
+     * the outer loop's variable, not the inner one's.
+     */
+    public function test_query_in_a_nested_foreach_subject_is_checked_against_the_enclosing_loop(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Book;
+use App\Models\Shelf;
+
+class ShelfController
+{
+    public function index()
+    {
+        foreach (Shelf::all() as $shelf) {
+            foreach (Book::where('shelf_id', $shelf->id)->get() as $book) {
+                echo $book->title;
+            }
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            ...$this->shelfAndBookModels(),
+            'app/Http/Controllers/ShelfController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('Book::where', $result);
+    }
+
+    /**
+     * The other side of judging the subject in the enclosing loop: when that loop always
+     * exits after the inner foreach, the subject's query runs once.
+     */
+    public function test_query_in_a_nested_foreach_subject_is_silent_when_the_enclosing_loop_exits_after_it(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Book;
+use App\Models\Shelf;
+
+class ShelfController
+{
+    public function index()
+    {
+        foreach (Shelf::all() as $shelf) {
+            foreach (Book::where('shelf_id', $shelf->id)->get() as $book) {
+                echo $book->title;
+            }
+
+            break;
+        }
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            ...$this->shelfAndBookModels(),
+            'app/Http/Controllers/ShelfController.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Every finding as `relationship:line`, or `query:line` for a query executed in a loop.
+     *
+     * @param  array<string, string>  $files
+     * @return list<string>
+     */
+    private function findingLines(array $files): array
+    {
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $findings = [];
+        foreach ($analyzer->analyze()->getIssues() as $issue) {
+            $relationship = $issue->metadata['relationship'] ?? null;
+            $findings[] = (is_string($relationship) ? $relationship : 'query').':'.$issue->location?->line;
+        }
+
+        return $findings;
+    }
+
+    /**
+     * A shelf query, a loop over its shelves and a loop over each shelf's books, with $inner
+     * as the inner loop's body on line 8 (one line later when $query spans two). Shelf declares books() and curator(); Book declares
+     * publisher() and shelf(). $models replaces or adds model files.
+     *
+     * @param  array<string, string>  $models
+     * @return list<string>
+     */
+    private function shelfLoopFindings(string $query, string $inner, array $models = []): array
+    {
+        return $this->findingLines([
+            'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(Book::class); } public function curator(){ return \$this->belongsTo(Curator::class); } }",
+            'app/Models/Book.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Book extends Model { public function publisher(){ return \$this->belongsTo(Publisher::class); } public function shelf(){ return \$this->belongsTo(Shelf::class); } }",
+            ...$models,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(\$config) {\n\$shelves = {$query};\nforeach (\$shelves as \$shelf) {\n foreach (\$shelf->books as \$book) {\n {$inner};\n }\n}\n} }",
+        ]);
+    }
+
+    /**
+     * A closure-keyed eager load constrains the nested query, and a with() inside it loads
+     * the next level, so `books.publisher` is loaded as surely as the dotted spelling.
+     */
+    public function test_nested_eager_load_inside_a_closure_keyed_with_is_honoured(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::with(['books' => fn (\$q) => \$q->with('publisher')])->get()",
+            'echo $book->publisher->name',
+        ));
+    }
+
+    public function test_nested_eager_load_inside_a_closure_keyed_load_is_honoured(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::all();\n\$shelves->load(['books' => function (\$query) { \$query->where('open', true)->with(['publisher']); }])",
+            'echo $book->publisher->name',
+        ));
+    }
+
+    /**
+     * A with() nested two closures deep loads its relation under the path of both keys,
+     * not under the outer key alone.
+     */
+    public function test_doubly_nested_closure_eager_load_is_read_under_its_full_path(): void
+    {
+        $this->assertSame(['publisher:8'], $this->shelfLoopFindings(
+            "Shelf::with(['books' => fn (\$q) => \$q->with(['shelf' => fn (\$s) => \$s->with('publisher')])])->get()",
+            'echo $book->publisher->name',
+        ));
+    }
+
+    /**
+     * chaperone() inside the eager-load closure hydrates each book's inverse relation from
+     * the shelf already in memory, so reading it runs no query.
+     */
+    public function test_chaperone_inside_a_closure_keyed_with_leaves_the_inverse_silent(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::with(['books' => fn (\$q) => \$q->chaperone()])->get()",
+            'echo $book->shelf->label',
+        ));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function inverseRelationDeclarations(): array
+    {
+        return [
+            'chaperone' => ['$this->hasMany(Book::class)->chaperone()'],
+            'inverse with a name' => ["\$this->hasMany(Book::class)->inverse('shelf')"],
+        ];
+    }
+
+    /**
+     * A relation declared with chaperone() or inverse() hydrates the inverse on every
+     * element, and which relation that is Laravel guesses from key names at runtime.
+     *
+     * @dataProvider inverseRelationDeclarations
+     */
+    #[DataProvider('inverseRelationDeclarations')]
+    public function test_relation_declared_with_an_inverse_leaves_the_element_silent(string $declaration): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::with('books')->get()",
+            'echo $book->shelf->label',
+            ['app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return {$declaration}; } }"],
+        ));
+    }
+
+    /**
+     * The related model ships in a package the scan never reads, so its columns cannot be
+     * told from its relations and the element stays untyped.
+     */
+    public function test_element_of_a_relation_to_an_unscanned_model_is_silent(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::with('books')->get()",
+            'echo $book->disk',
+            ['app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse Vendor\\Library\\Models\\Volume;\nclass Shelf extends Model { public function books(){ return \$this->morphMany(Volume::class, 'holder'); } }"],
+        ));
+    }
+
+    public function test_element_of_a_relation_to_an_aliased_model_is_typed_by_the_model(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings(
+            "Shelf::with('books')->get()",
+            'echo $book->isbn',
+            ['app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nuse App\\Models\\Book as Volume;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(Volume::class); } }"],
+        ));
+    }
+
+    /**
+     * The inner loop runs once per shelf, so a lazy relation of the shelf read inside it is
+     * still one query per shelf.
+     */
+    public function test_relation_of_the_outer_loop_variable_read_in_the_inner_loop_is_flagged(): void
+    {
+        $this->assertSame(['curator:8'], $this->shelfLoopFindings("Shelf::with('books')->get()", 'echo $shelf->curator->name'));
+    }
+
+    public function test_relation_of_the_outer_loop_variable_read_in_the_inner_loop_honours_its_eager_loads(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings("Shelf::with(['books', 'curator'])->get()", 'echo $shelf->curator->name'));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function earlierLoopsReusingTheName(): array
+    {
+        return [
+            'relation subject' => ['$shelf = Shelf::with(\'books\')->find(1); foreach ($shelf->books as $item) { echo $item->isbn; }'],
+            'variable subject' => ['$books = Book::with(\'shelf\')->get(); foreach ($books as $item) { echo $item->isbn; }'],
+        ];
+    }
+
+    /**
+     * A foreach rebinds its variable, so a type an earlier loop gave the same name says
+     * nothing about what a later loop over an untyped subject holds.
+     *
+     * @dataProvider earlierLoopsReusingTheName
+     */
+    #[DataProvider('earlierLoopsReusingTheName')]
+    public function test_loop_variable_type_does_not_leak_into_a_later_loop_reusing_the_name(string $earlierLoop): void
+    {
+        $this->assertSame([], $this->findingLines([
+            'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(Book::class); } }",
+            'app/Models/Book.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Book extends Model { public function publisher(){ return \$this->belongsTo(Publisher::class); } public function shelf(){ return \$this->belongsTo(Shelf::class); } }",
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Book;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(\$config) {\n{$earlierLoop}\nforeach (\$config->entries as \$item) {\n echo \$item->publisher;\n}\n} }",
+        ]));
+    }
+
+    /**
+     * Shelf and Book models plus a ShelfController whose index() body is $body, starting on
+     * line 6. $models replaces or adds model files.
+     *
+     * @param  array<string, string>  $models
+     * @return list<string>
+     */
+    private function shelfControllerFindings(string $body, array $models = []): array
+    {
+        return $this->findingLines([
+            'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function books(){ return \$this->hasMany(Book::class); } }",
+            'app/Models/Book.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Book extends Model { public function publisher(){ return \$this->belongsTo(Publisher::class); } }",
+            ...$models,
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Book;\nuse App\\Models\\Shelf;\nclass ShelfController { public function index(\$config) {\n{$body}\n} }",
+        ]);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function collectionLoads(): array
+    {
+        return [
+            'load' => ['load'],
+            'loadMissing' => ['loadMissing'],
+        ];
+    }
+
+    /**
+     * Loading onto the relation's collection loads onto every element of it.
+     *
+     * @dataProvider collectionLoads
+     */
+    #[DataProvider('collectionLoads')]
+    public function test_eager_load_on_the_relation_collection_is_honoured(string $method): void
+    {
+        $this->assertSame([], $this->shelfControllerFindings(
+            "\$shelf = Shelf::with('books')->findOrFail(1);\n\$shelf->books->{$method}('publisher');\nforeach (\$shelf->books as \$book) { echo \$book->publisher->name; }",
+        ));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function withWhereHasQueries(): array
+    {
+        return [
+            'dotted path' => ["Shelf::withWhereHas('books.publisher')->get()"],
+            'constraint closure' => ["Shelf::withWhereHas('books', fn (\$q) => \$q->with('publisher'))->get()"],
+        ];
+    }
+
+    /**
+     * withWhereHas() filters on the relation and eager-loads it through with().
+     *
+     * @dataProvider withWhereHasQueries
+     */
+    #[DataProvider('withWhereHasQueries')]
+    public function test_with_where_has_is_read_as_an_eager_load(string $query): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings($query, 'echo $book->publisher->name'));
+    }
+
+    /**
+     * Laravel flattens `['books' => ['publisher']]` into `books` and `books.publisher`.
+     */
+    public function test_nested_array_eager_load_is_read_under_its_key(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings("Shelf::with(['books' => ['publisher']])->get()", 'echo $book->publisher->name'));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function partiallyReadRelatedModels(): array
+    {
+        return [
+            'extends a package model' => [
+                "<?php\nnamespace App\\Models;\nclass Tag extends \\Vendor\\Tags\\Tag {}",
+                'echo $tag->pivot->note',
+            ],
+            'uses a package trait' => [
+                "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Tag extends Model { use \\Vendor\\Pkg\\HasStuff; }",
+                'echo $tag->colour',
+            ],
+        ];
+    }
+
+    /**
+     * An element whose model the scan read only in part cannot have its columns told from
+     * its relations, so it stays untyped rather than falling to the naming heuristic.
+     *
+     * @dataProvider partiallyReadRelatedModels
+     */
+    #[DataProvider('partiallyReadRelatedModels')]
+    public function test_element_of_a_relation_to_a_partially_read_model_is_silent(string $tagModel, string $inner): void
+    {
+        $this->assertSame([], $this->shelfControllerFindings(
+            "\$shelf = Shelf::with('tags')->findOrFail(1);\nforeach (\$shelf->tags as \$tag) { {$inner}; }",
+            [
+                'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model { public function tags(){ return \$this->belongsToMany(Tag::class)->withPivot('note'); } }",
+                'app/Models/Tag.php' => $tagModel,
+            ],
+        ));
+    }
+
+    /**
+     * setRelation() puts a collection the scan knows nothing about in the relation's place,
+     * so the relation is loaded and its elements cannot be judged.
+     */
+    public function test_set_relation_leaves_the_relation_loaded_and_its_elements_untyped(): void
+    {
+        $this->assertSame([], $this->shelfControllerFindings(
+            "\$shelf = Shelf::findOrFail(1);\n\$shelf->setRelation('books', \$config->books);\nforeach (\$shelf->books as \$book) { echo \$book->publisher->name; }",
+        ));
+    }
+
+    /**
+     * A query in the inner loop that depends on the outer loop's variable still runs once
+     * per inner iteration.
+     */
+    public function test_query_depending_on_the_outer_loop_variable_inside_the_inner_loop_is_flagged(): void
+    {
+        $this->assertSame(['query:8'], $this->shelfLoopFindings("Shelf::with('books')->get()", "echo Book::where('shelf_id', \$shelf->id)->count()"));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function queriesFollowedByAnExitFromEveryLoop(): array
+    {
+        return [
+            'break 2 after a search in the inner loop' => ["foreach (Shelf::all() as \$shelf) {\nforeach (\$config->items as \$item) {\nif (\$item === \$config->wanted) {\n\$found = Book::where('shelf_id', \$shelf->id)->first();\nbreak 2;\n}\n}\n}"],
+            'break 2 after a query in the inner foreach subject' => ["foreach (Shelf::all() as \$shelf) {\nforeach (\$config->groups as \$group) {\nforeach (Book::where('shelf_id', \$shelf->id)->get() as \$book) { echo \$book->title; }\nbreak 2;\n}\n}"],
+            'break 1 in a single loop' => ["foreach (Shelf::all() as \$shelf) {\n\$book = Book::where('shelf_id', \$shelf->id)->first();\nbreak 1;\n}"],
+        ];
+    }
+
+    /**
+     * `break N` leaves the N innermost loops, so a query followed by a break out of every
+     * enclosing loop runs at most once.
+     *
+     * @dataProvider queriesFollowedByAnExitFromEveryLoop
+     */
+    #[DataProvider('queriesFollowedByAnExitFromEveryLoop')]
+    public function test_query_followed_by_a_break_out_of_every_loop_is_silent(string $body): void
+    {
+        $this->assertSame([], $this->shelfControllerFindings($body));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function relationWrites(): array
+    {
+        return [
+            'assignment in a single loop' => ['$shelves = Shelf::all();', '$shelf->books = $config->books;'],
+            'unset in a single loop' => ['$shelves = Shelf::all();', 'unset($shelf->books);'],
+        ];
+    }
+
+    /**
+     * Writing a relation property sets or drops it on the model in memory; only reading it
+     * runs the lazy load.
+     *
+     * @dataProvider relationWrites
+     */
+    #[DataProvider('relationWrites')]
+    public function test_writing_a_relation_property_in_a_loop_is_silent(string $query, string $write): void
+    {
+        $this->assertSame([], $this->shelfControllerFindings("{$query}\nforeach (\$shelves as \$shelf) { {$write} }"));
+    }
+
+    /**
+     * A compound assignment reads the property before writing it, and `??=` reads it through
+     * isset(), which loads a relation like any other read.
+     */
+    public function test_compound_assignment_to_a_relation_property_is_still_a_read(): void
+    {
+        $this->assertSame(['books:7'], $this->shelfControllerFindings("\$shelves = Shelf::all();\nforeach (\$shelves as \$shelf) { \$shelf->books ??= \$config->books; }"));
+    }
+
+    public function test_assigning_a_relation_property_of_the_inner_loop_element_is_silent(): void
+    {
+        $this->assertSame([], $this->shelfLoopFindings("Shelf::with('books')->get()", '$book->publisher = $config->publisher'));
+    }
+
+    /**
+     * Auth::user() returns a model, but the chain is rooted at the facade, whose name says
+     * nothing about the model a relation on the user returns.
+     */
+    public function test_relation_query_rooted_at_the_auth_facade_is_not_typed(): void
+    {
+        $this->assertSame([], $this->findingLines([
+            'app/Models/Shelf.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Shelf extends Model {}",
+            'app/Http/Controllers/ShelfController.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse Illuminate\\Support\\Facades\\Auth;\nclass ShelfController { public function index() {\n\$shelves = Auth::user()->shelves()->get();\nforeach (\$shelves as \$shelf) { echo \$shelf->subtitle; }\n} }",
+        ]));
+    }
+
+    /**
+     * @return array<string, array{string, list<string>}>
+     */
+    public static function breaksThroughASwitch(): array
+    {
+        $nested = static fn (string $key, string $break): string => "foreach (Shelf::all() as \$shelf) {\nswitch (\$config->mode) {\ncase 1:\nforeach (\$config->items as \$item) {\n\$b = Book::where('id', {$key})->first();\n{$break};\n}\n}\n}";
+
+        return [
+            'break 2 leaves the inner loop and the switch' => [$nested('$item->id', 'break 2'), ['query:10']],
+            'break 2 with a query on the outer variable' => [$nested('$shelf->id', 'break 2'), ['query:10']],
+            'break 3 leaves the outer loop too' => [$nested('$item->id', 'break 3'), []],
+            'break inside a case leaves only the switch' => ["foreach (Shelf::all() as \$shelf) {\nswitch (\$config->mode) {\ncase 1:\n\$b = Book::where('shelf_id', \$shelf->id)->first();\nbreak;\n}\n}", ['query:9']],
+        ];
+    }
+
+    /**
+     * A switch is a level for `break N` as a loop is, so a break counts the loops among the
+     * levels it leaves, not the levels themselves.
+     *
+     * @dataProvider breaksThroughASwitch
+     *
+     * @param  list<string>  $expected
+     */
+    #[DataProvider('breaksThroughASwitch')]
+    public function test_break_counts_a_switch_as_a_level(string $body, array $expected): void
+    {
+        $this->assertSame($expected, $this->shelfControllerFindings($body));
+    }
 }

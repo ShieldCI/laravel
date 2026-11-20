@@ -14,6 +14,7 @@ use ShieldCI\Analyzers\BestPractices\NPlusOneVisitor;
 use ShieldCI\Analyzers\BestPractices\RelationshipRegistry;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -233,7 +234,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('N+1', $result);
     }
 
@@ -571,7 +572,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should detect at least the outer loop N+1
         $this->assertHasIssueContaining('user', $result);
     }
@@ -648,7 +649,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should only report 'user' once (deduplicated)
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);
@@ -786,7 +787,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should detect both (fixed deduplication bug)
         $issues = $result->getIssues();
         $this->assertGreaterThanOrEqual(2, count($issues));
@@ -857,7 +858,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('user.team', $result);
     }
 
@@ -925,7 +926,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('user.profile', $result);
     }
 
@@ -960,7 +961,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         // Should detect the deepest nested relationship that looks like a relationship
         $this->assertHasIssueContaining('user.team.department.company', $result);
     }
@@ -1064,7 +1065,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $issues = $result->getIssues();
         // Should detect multiple nested relationship issues
         $this->assertGreaterThanOrEqual(2, count($issues));
@@ -1213,7 +1214,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - comments relationship is not protected
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('comments', $result);
     }
 
@@ -1293,7 +1294,7 @@ PHP;
         $result = $analyzer->analyze();
 
         // Should fail - the second loop's author access is not protected
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('author', $result);
     }
 
@@ -3573,7 +3574,7 @@ PHP;
     {
         // Regression test: Config defines zero relationships, so it never enters the
         // relationshipRegistry (which is keyed only by models that define at least one
-        // relationship). That used to make isActualOrProbableRelationship() fall through
+        // relationship). That used to make relationshipEvidence() fall through
         // to the heuristic path, which has no accessor/attribute awareness and flagged
         // 'value_preview' as a probable relationship. Accessors must be suppressed
         // regardless of whether their model defines any relationships.
@@ -4250,7 +4251,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('causer', $result);
     }
 
@@ -4291,7 +4292,7 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('subjectType', $result);
     }
 
@@ -5012,7 +5013,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('widgets', $result);
     }
 
@@ -5396,7 +5397,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -5649,7 +5650,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -5694,7 +5695,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -5752,7 +5753,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('owner', $result);
     }
 
@@ -5820,7 +5821,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -5873,7 +5874,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -6065,7 +6066,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -6122,7 +6123,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -6188,7 +6189,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('throughParts', $result);
     }
 
@@ -6352,7 +6353,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('owner', $result);
     }
 
@@ -6768,7 +6769,7 @@ PHP,
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('sku', $result);
     }
 
@@ -8423,5 +8424,700 @@ PHP;
     public function test_break_counts_a_switch_as_a_level(string $body, array $expected): void
     {
         $this->assertSame($expected, $this->shelfControllerFindings($body));
+    }
+
+    public function test_batch_command_n_plus_one_is_downgraded(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\User;
+use Illuminate\Console\Command;
+
+class SyncCommand extends Command
+{
+    protected $signature = 'sync';
+
+    public function handle(): int
+    {
+        User::query()->chunkById(500, function ($users) {
+            foreach ($users as $user) {
+                $profile = \App\Models\Profile::where('user_id', $user->id)->first();
+                $this->info((string) $profile?->id);
+            }
+        });
+
+        return 0;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Console/Commands/SyncCommand.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * The downgrade belongs to the file, so a relationship the registry proves is graded the
+     * same as a query in a command that eager-loads, rather than at the High a proven
+     * relationship gets on the request path.
+     */
+    public function test_batch_command_relationship_access_is_downgraded(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => self::POST_WITH_AUTHOR_MODEL,
+            'app/Console/Commands/DigestCommand.php' => <<<'PHP'
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Post;
+use Illuminate\Console\Command;
+
+class DigestCommand extends Command
+{
+    public function handle(): int
+    {
+        $posts = Post::with('comments')->get();
+
+        foreach ($posts as $post) {
+            $this->info($post->author->name);
+        }
+
+        return 0;
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("Potential N+1 query: accessing 'author' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * Any one of the bounded-iteration or eager-loading calls is enough, whether it is
+     * written on an instance or statically on the model.
+     *
+     * @dataProvider boundedCommandCallProvider
+     */
+    #[DataProvider('boundedCommandCallProvider')]
+    public function test_command_using_bounded_iteration_or_eager_loading_is_downgraded(string $call): void
+    {
+        $result = $this->analyzeLoopQueryIn('app/Console/Commands/SyncCommand.php', 'extends Command', $call);
+
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function boundedCommandCallProvider(): array
+    {
+        $cases = [];
+        foreach (['chunk', 'chunkById', 'chunkByIdDesc', 'each', 'eachById', 'cursor', 'lazy', 'lazyById', 'lazyByIdDesc', 'with', 'load', 'loadMissing'] as $method) {
+            $cases[$method] = ["\$builder->{$method}();"];
+        }
+        $cases['static with()'] = ["User::with('profile')->get();"];
+        $cases['nullsafe load()'] = ['$user?->load(\'profile\');'];
+        $cases['lowercase chunkbyid()'] = ['$builder->chunkbyid(100, fn () => null);'];
+
+        return $cases;
+    }
+
+    /**
+     * The downgrade needs both halves. A command that does no bounded iteration or eager
+     * loading, or only names one in a string or a comment, and a class that uses chunkById()
+     * but is not a command, all keep the request-path grade.
+     *
+     * @dataProvider notDowngradedProvider
+     */
+    #[DataProvider('notDowngradedProvider')]
+    public function test_query_in_loop_stays_high_unless_a_command_bounds_its_iteration(string $path, string $extends, string $preamble): void
+    {
+        $result = $this->analyzeLoopQueryIn($path, $extends, $preamble);
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("N+1 query: executing 'Profile::where()->...first()' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function notDowngradedProvider(): array
+    {
+        return [
+            'command with no bounded call' => ['app/Console/Commands/SyncCommand.php', 'extends Command', "\$this->info('Syncing');"],
+            'command naming chunk only in a string and a comment' => [
+                'app/Console/Commands/SyncCommand.php',
+                'extends Command',
+                "// Switch to chunk() or ->chunkById() once this is slow.\n        \$this->info('with chunk() and cursor()');",
+            ],
+            'non-command class under app/Console' => ['app/Console/Support/UserSync.php', '', '$builder->chunkById(100, fn () => null);'],
+            'request-path controller' => ['app/Http/Controllers/SyncController.php', '', '$builder->chunkById(100, fn () => null);'],
+        ];
+    }
+
+    /**
+     * The model's parent is outside the scanned paths, so nothing proves what sku is and only
+     * the name decides it. A guess is reported, but not at the grade of a proven relationship.
+     */
+    public function test_relationship_access_decided_by_the_name_heuristic_is_downgraded(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Product.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Product extends \Acme\Catalog\RecordBase {}
+PHP,
+            'app/Http/Controllers/ProductController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Product;
+
+class ProductController
+{
+    public function index()
+    {
+        $products = Product::get();
+
+        foreach ($products as $product) {
+            echo $product->sku;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("Potential N+1 query: accessing 'sku' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_proven_relationship_access_on_the_request_path_stays_high(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => self::POST_WITH_AUTHOR_MODEL,
+            'app/Http/Controllers/PostController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->author->name;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("Potential N+1 query: accessing 'author' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * A chain is only as proven as its least proven link. The trait proves author, but the
+     * model's parent is outside the scanned paths, so team is decided by its name alone.
+     */
+    public function test_relationship_chain_with_a_heuristic_link_is_downgraded(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasAuthor.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+trait HasAuthor
+{
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Models/Post.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasAuthor;
+
+class Post extends \Acme\Catalog\RecordBase
+{
+    use HasAuthor;
+}
+PHP,
+            'app/Http/Controllers/PostController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->author->team;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $severities = [];
+        foreach ($analyzer->analyze()->getIssues() as $issue) {
+            $severities[$issue->message] = $issue->severity;
+        }
+
+        $this->assertSame([
+            "Potential N+1 query: accessing 'author.team' inside loop" => Severity::Medium,
+            "Potential N+1 query: accessing 'author' inside loop" => Severity::High,
+        ], $severities);
+    }
+
+    /**
+     * A chain's tail is read on the head relation's related model, not on the loop
+     * variable's. Post declares a team() relation, but team here is read on the User that
+     * author() returns, where it is a column. The analyzer does not record which model a
+     * relation returns, so it cannot prove the tail and grades the chain as a guess. The
+     * head's own finding is proven and stays High.
+     */
+    public function test_chain_tail_named_like_a_relation_on_the_loop_model_is_not_proven(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Post extends Model
+{
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
+    public function team(): BelongsTo
+    {
+        return $this->belongsTo(Team::class);
+    }
+}
+PHP,
+            'app/Models/User.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class User extends Model
+{
+    protected $fillable = ['team'];
+}
+PHP,
+            'app/Http/Controllers/PostController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->author->team;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $severities = [];
+        foreach ($analyzer->analyze()->getIssues() as $issue) {
+            $severities[$issue->message] = $issue->severity;
+        }
+
+        $this->assertSame([
+            "Potential N+1 query: accessing 'author.team' inside loop" => Severity::Medium,
+            "Potential N+1 query: accessing 'author' inside loop" => Severity::High,
+        ], $severities);
+    }
+
+    /**
+     * The registries know a model by the name its declaration gives it, so a model imported
+     * under an alias has to be looked up by what the alias resolves to. Otherwise a relation
+     * the model declares is missed and reported as a guess.
+     *
+     * @dataProvider importedModelProvider
+     */
+    #[DataProvider('importedModelProvider')]
+    public function test_relationship_access_is_graded_by_the_class_an_import_names(string $import, string $class, Severity $expected): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => self::POST_WITH_AUTHOR_MODEL,
+            'app/Http/Controllers/ArticleController.php' => <<<PHP
+<?php
+
+namespace App\\Http\\Controllers;
+
+{$import}
+
+class ArticleController
+{
+    public function index()
+    {
+        \$articles = {$class}::all();
+
+        foreach (\$articles as \$article) {
+            echo \$article->author->name;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("Potential N+1 query: accessing 'author' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame($expected, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string, Severity}>
+     */
+    public static function importedModelProvider(): array
+    {
+        return [
+            'scanned model imported under an alias' => ['use App\\Models\\Post as Article;', 'Article', Severity::High],
+            'scanned model imported by its own name' => ['use App\\Models\\Post;', 'Post', Severity::High],
+            'unscanned class imported under an alias' => ['use Vendor\\Blog\\Entry as Article;', 'Article', Severity::Medium],
+        ];
+    }
+
+    /**
+     * Findings are deduplicated by variable and relation name, so two methods reusing $item
+     * report one finding. A guess about the first must not grade away what the registry
+     * proves about the second: the kept finding takes the higher grade, at the line of the
+     * first so its baseline hash is unchanged.
+     */
+    public function test_proven_finding_is_not_swallowed_by_an_earlier_guess_on_the_same_variable_name(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => self::POST_WITH_AUTHOR_MODEL,
+            'app/Models/Activity.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Activity extends \Acme\Audit\Entry {}
+PHP,
+            'app/Http/Controllers/FeedController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Activity;
+use App\Models\Post;
+
+class FeedController
+{
+    public function activity()
+    {
+        $items = Activity::latest()->get();
+        foreach ($items as $item) {
+            echo $item->author->name;
+        }
+    }
+
+    public function posts()
+    {
+        $items = Post::latest()->get();
+        foreach ($items as $item) {
+            echo $item->author->name;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $issue = $result->getIssues()[0];
+        $this->assertSame("Potential N+1 query: accessing 'author' inside loop", $issue->message);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame(14, $issue->location?->line);
+    }
+
+    /**
+     * Inside a model, self:: and static:: name that model, so a relation it declares is
+     * proven there just as it is through the model's own name.
+     *
+     * @dataProvider selfReferenceProvider
+     */
+    #[DataProvider('selfReferenceProvider')]
+    public function test_relationship_access_on_a_self_query_inside_the_model_is_proven(string $query): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Post.php' => <<<PHP
+<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Relations\\BelongsTo;
+
+class Post extends Model
+{
+    public function author(): BelongsTo
+    {
+        return \$this->belongsTo(User::class);
+    }
+
+    public static function digest(): array
+    {
+        \$out = [];
+        \$posts = {$query};
+        foreach (\$posts as \$post) {
+            \$out[] = \$post->author->name;
+        }
+
+        return \$out;
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+        $this->assertSame("Potential N+1 query: accessing 'author' inside loop", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function selfReferenceProvider(): array
+    {
+        return [
+            'self::query()' => ['self::query()->latest()->get()'],
+            'static::all()' => ['static::all()'],
+        ];
+    }
+
+    /**
+     * A query run through a relation method is only as proven as that relation. reviews() is
+     * decided by its name alone here, while author() is declared on the model.
+     */
+    public function test_relation_query_in_a_loop_is_graded_by_how_the_relation_was_decided(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Concerns/HasAuthor.php' => <<<'PHP'
+<?php
+
+namespace App\Models\Concerns;
+
+use App\Models\User;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+trait HasAuthor
+{
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP,
+            'app/Models/Post.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use App\Models\Concerns\HasAuthor;
+
+class Post extends \Acme\Catalog\RecordBase
+{
+    use HasAuthor;
+}
+PHP,
+            'app/Http/Controllers/PostController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Post;
+
+class PostController
+{
+    public function index()
+    {
+        $posts = Post::all();
+
+        foreach ($posts as $post) {
+            echo $post->reviews()->count();
+            echo $post->author()->first();
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $severities = [];
+        foreach ($analyzer->analyze()->getIssues() as $issue) {
+            if (array_key_exists('query', $issue->metadata)) {
+                $severities[$issue->message] = $issue->severity;
+            }
+        }
+
+        $this->assertSame([
+            'N+1 query: executing \'$post->reviews()->count()\' inside loop' => Severity::Medium,
+            'N+1 query: executing \'$post->author()->first()\' inside loop' => Severity::High,
+        ], $severities);
+    }
+
+    private const POST_WITH_AUTHOR_MODEL = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Post extends Model
+{
+    public function author(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+PHP;
+
+    /**
+     * One per-iteration query, `Profile::where()->...first()`, in a class at $path, after
+     * $preamble.
+     */
+    private function analyzeLoopQueryIn(string $path, string $extends, string $preamble): ResultInterface
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\\Fixture;
+
+use App\\Models\\Profile;
+use App\\Models\\User;
+use Illuminate\\Console\\Command;
+
+class Subject {$extends}
+{
+    public function handle(\$builder): int
+    {
+        {$preamble}
+
+        \$users = User::all();
+
+        foreach (\$users as \$user) {
+            \$profile = Profile::where('user_id', \$user->id)->first();
+        }
+
+        return 0;
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([$path => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        return $analyzer->analyze();
     }
 }

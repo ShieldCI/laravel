@@ -11,6 +11,7 @@ use ShieldCI\Analyzers\BestPractices\LogicInBladeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Support\BladeCompilerFactory;
@@ -1399,5 +1400,67 @@ class EloquentNPlusOneBladeTest extends AnalyzerTestCase
         ], ['app', 'routes', 'resources/views']);
 
         $this->assertSame([], $this->relationFindings($result));
+    }
+
+    public function test_proven_relation_read_in_a_view_stays_high(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->airportIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
+    }
+
+    /**
+     * City's parent is outside the scanned paths, so the scan holds no relationship set for it
+     * and airports is reported on its name alone, at a lower grade than a proven relation.
+     */
+    public function test_relation_decided_by_the_name_heuristic_in_a_view_is_downgraded(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => "<?php\nnamespace App\\Models;\nclass City extends \\Acme\\Catalog\\RecordBase {}",
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->airportIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame("Potential N+1 query: accessing 'airports' inside loop", $issues[0]->message);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+    }
+
+    /**
+     * The same holds for a query run through that relation: airports() is decided by its name
+     * alone, so the query it runs per iteration is graded Medium too.
+     */
+    public function test_relation_query_decided_by_the_name_heuristic_in_a_view_is_downgraded(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => "<?php\nnamespace App\\Models;\nclass City extends \\Acme\\Catalog\\RecordBase {}",
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports()->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->queryExecutionIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame("N+1 query: executing '\$city->airports()->count()' inside loop", $issues[0]->message);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+    }
+
+    public function test_proven_relation_query_in_a_view_stays_high(): void
+    {
+        $result = $this->analyze([
+            'app/Models/City.php' => self::CITY_MODEL,
+            'app/Http/Controllers/CityController.php' => self::CITY_CONTROLLER,
+            'resources/views/cities/index.blade.php' => "@foreach(\$cities as \$city)\n  {{ \$city->airports()->count() }}\n@endforeach",
+        ]);
+
+        $issues = $this->queryExecutionIssues($result);
+        $this->assertCount(1, $issues);
+        $this->assertSame(Severity::High, $issues[0]->severity);
     }
 }

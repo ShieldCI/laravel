@@ -348,4 +348,32 @@ class ViewRenderScannerTest extends TestCase
         $this->assertSame('Collection<Shelf>', $resolved['shelves']['type']);
         $this->assertEqualsCanonicalizing(['books', 'books.publisher'], $resolved['shelves']['eagerLoads']);
     }
+
+    /**
+     * An anonymous class's method is not part of the closure that declares it, so what the
+     * method assigns does not retype the closure's own bindings.
+     */
+    public function test_anonymous_class_method_inside_a_route_closure_is_not_part_of_its_scope(): void
+    {
+        $dir = $this->uniqueTempPath('vrs_');
+        $file = $this->write($dir, 'web.php', <<<'PHP'
+        <?php
+        Route::get('/shelves', function () {
+            $shelves = Shelf::all();
+            $presenter = new class {
+                public function render() {
+                    $shelves = Book::all();
+                }
+            };
+            return view('shelves.index', compact('shelves'));
+        });
+        PHP);
+
+        $resolved = (new ViewRenderScanner(new AstParser))
+            ->scan([$file], $dir.'/resources/views')
+            ->resolve($dir.'/resources/views/shelves/index.blade.php');
+
+        $this->assertNotNull($resolved);
+        $this->assertSame('Collection<Shelf>', $resolved['shelves']['type']);
+    }
 }

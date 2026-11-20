@@ -21,6 +21,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\ClassifiesFiles;
 use ShieldCI\Concerns\IdentifiesNonQueryClasses;
 use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\BladeCompilerFactory;
@@ -40,6 +41,19 @@ use ShieldCI\Support\ViewRenderScanner;
  */
 class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
 {
+    use ClassifiesFiles;
+
+    /**
+     * Calls that show a command already batches its rows or eager-loads its relations.
+     * Lowercase, because PHP resolves a method name without regard to case.
+     *
+     * @var list<string>
+     */
+    private const BOUNDED_ITERATION_METHODS = [
+        'chunk', 'chunkbyid', 'chunkbyiddesc', 'each', 'eachbyid', 'cursor',
+        'lazy', 'lazybyid', 'lazybyiddesc', 'with', 'load', 'loadmissing',
+    ];
+
     /**
      * @param  AstParser  $parser  Narrowed from ParserInterface because the Blade path names
      *                             the template it compiled and translates the failing line
@@ -106,12 +120,14 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
+                $isBatchCommand = $this->isBoundedBatchCommand($file, $ast);
+
                 foreach ($visitor->getIssues() as $issue) {
                     $issues[] = $this->createIssueWithSnippet(
                         message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
                         filePath: $file,
                         lineNumber: $issue['line'],
-                        severity: $this->metadata()->severity,
+                        severity: $isBatchCommand ? Severity::Medium : $this->relationshipSeverity($issue['proven']),
                         recommendation: $this->getRecommendation($issue['relationship'], $issue['loop_type']),
                         metadata: [
                             'relationship' => $issue['relationship'],
@@ -128,7 +144,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                         message: "N+1 query: executing '{$issue['query']}' inside loop",
                         filePath: $file,
                         lineNumber: $issue['line'],
-                        severity: $this->metadata()->severity,
+                        severity: $isBatchCommand ? Severity::Medium : $this->relationshipSeverity($issue['proven']),
                         recommendation: $this->getQueryRecommendation($issue['query'], $issue['loop_type']),
                         metadata: [
                             'query' => $issue['query'],
@@ -172,6 +188,42 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
+    }
+
+    /**
+     * Whether the file is an Artisan command that already batches its rows or eager-loads.
+     *
+     * Bounded per-entity work in a batch command is not a request-path N+1: it runs off the
+     * request, a chunk at a time, so it is graded Medium. The calls are read from the AST, so
+     * a method named only in a string or a comment does not count.
+     *
+     * @param  array<Node>  $ast
+     */
+    private function isBoundedBatchCommand(string $file, array $ast): bool
+    {
+        if (! $this->isConsoleCommand($file)) {
+            return false;
+        }
+
+        $call = (new NodeFinder)->findFirst($ast, fn (Node $node): bool => ($node instanceof Expr\MethodCall
+            || $node instanceof Expr\NullsafeMethodCall
+            || $node instanceof Expr\StaticCall)
+            && $node->name instanceof Node\Identifier
+            && in_array($node->name->toLowerString(), self::BOUNDED_ITERATION_METHODS, true));
+
+        return $call !== null;
+    }
+
+    /**
+     * A relationship the registry proves is graded High. One only the name heuristic vouches
+     * for, on a model whose relationships the scan could not establish, is a guess, so it is
+     * graded Medium, as is a query run through it. Any other query-shaped call in a loop, a
+     * static call or a chain rooted in one ending in a query method, is marked proven: it is
+     * judged by its shape, not checked against a known model, and keeps the High it had.
+     */
+    private function relationshipSeverity(bool $proven): Severity
+    {
+        return $proven ? Severity::High : Severity::Medium;
     }
 
     /**
@@ -275,7 +327,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 message: "Potential N+1 query: accessing '{$issue['relationship']}' inside loop",
                 filePath: $file,
                 lineNumber: $bladeLine,
-                severity: $this->metadata()->severity,
+                severity: $this->relationshipSeverity($issue['proven']),
                 recommendation: "\${$issue['variable']} reaches this view from {$source}. Eager-load the '{$eagerLoadPath}' relation there (with()) so the view iterates data already in memory.",
                 metadata: [
                     'relationship' => $issue['relationship'],
@@ -297,7 +349,7 @@ class EloquentNPlusOneAnalyzer extends AbstractFileAnalyzer
                 message: "N+1 query: executing '{$issue['query']}' inside loop",
                 filePath: $file,
                 lineNumber: $bladeLine,
-                severity: $this->metadata()->severity,
+                severity: $this->relationshipSeverity($issue['proven']),
                 recommendation: $this->getQueryRecommendation($issue['query'], $issue['loop_type']),
                 metadata: [
                     'query' => $issue['query'],
@@ -1738,6 +1790,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         'chunk', 'chunkbyid', 'each', 'eachbyid', 'cursor', 'lazy', 'lazybychunksof',
     ];
 
+    /** How a name was established as a relationship: by the registry, or by its shape alone. */
+    private const RELATION_PROVEN = 'proven';
+
+    private const RELATION_GUESSED = 'guessed';
+
     /**
      * @var array<string> Pessimistic-lock builder methods. A query acquiring one is
      *                    inherently per-row and can neither be eager-loaded nor batched.
@@ -1745,12 +1802,18 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     private const LOCK_METHODS = ['lockforupdate', 'sharedlock'];
 
     /**
-     * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string}>
+     * `proven` is true only for a single relation the relationship registry holds. It is
+     * false when the name heuristic decided it, and for any chain of more than one link.
+     *
+     * @var array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string, proven: bool}>
      */
     private array $issues = [];
 
     /**
-     * @var array<int, array{query: string, line: int, loop_type: string}>
+     * `proven` is false only for a query run through a relation method that the name
+     * heuristic, rather than the relationship registry, decided is a relationship.
+     *
+     * @var array<int, array{query: string, line: int, loop_type: string, proven: bool}>
      */
     private array $queryIssues = [];
 
@@ -1785,6 +1848,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      */
     private array $relationLoadedChecks = [];
 
+    /**
+     * Short name of each enclosing class-like declaration, innermost last; null for an
+     * anonymous class, a trait, an interface or an enum.
+     *
+     * @var list<?string>
+     */
+    private array $classStack = [];
+
     private ModelVariableScanner $modelVars;
 
     private RelationshipRegistry $relationshipRegistry;
@@ -1816,6 +1887,13 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // Before anything reads a class name: namespace and use declarations are reached
         // ahead of the code that relies on them, so the table is complete by then.
         $this->trackImports($node);
+
+        // Pushed rather than assigned, so an anonymous class inside a method does not leave
+        // its own (unnamed) scope behind for the rest of that method. Only a named class
+        // answers for self:: and static::; in a trait they name whichever class uses it.
+        if ($node instanceof Stmt\ClassLike) {
+            $this->classStack[] = $node instanceof Stmt\Class_ ? $node->name?->toString() : null;
+        }
 
         // Feed every node to the model-variable scanner so it can infer variable
         // types (e.g. $posts is a Collection<Post>) and eager-loaded relationships.
@@ -1920,8 +1998,9 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     // a plain column on that model has to be rejected separately: reading
                     // $user->settings->notifications walks into a JSON column, and eager
                     // loading the reported path would raise RelationNotFoundException.
-                    if ($this->isActualOrProbableRelationship($loopVariable, $lastProperty) &&
-                        $this->isActualOrProbableRelationship($loopVariable, $chain[0])) {
+                    $tailEvidence = $this->relationshipEvidence($loopVariable, $lastProperty);
+                    $headEvidence = $this->relationshipEvidence($loopVariable, $chain[0]);
+                    if ($tailEvidence !== null && $headEvidence !== null) {
                         // Get the first relationship in the chain (e.g., 'user' from 'user.team')
                         $firstRelationship = $chain[0];
 
@@ -1934,6 +2013,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'loop_type' => $loopType,
                                 'variable' => $loopVariable,
                                 'relation_path' => $this->modelVars->relationPathOf($loopVariable),
+                                // Only a single link is proven. A longer chain's tail belongs to
+                                // the head relation's related model, which the scan does not
+                                // record, so the registry answer about the tail above was
+                                // given for the wrong model and proves nothing.
+                                'proven' => count($chain) === 1 && $headEvidence === self::RELATION_PROVEN,
                             ];
                         }
                     }
@@ -1950,7 +2034,8 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $methodName = $node->name->toString();
 
                     // Check if this looks like a relationship method
-                    if ($this->isActualOrProbableRelationship($loopVariable, $methodName, true)) {
+                    $evidence = $this->relationshipEvidence($loopVariable, $methodName, true);
+                    if ($evidence !== null) {
                         // Only flag if NOT eager loaded AND NOT checked with relationLoaded()
                         if (! $this->isEagerLoaded($loopVariable, $methodName) &&
                             ! $this->isRelationLoadedChecked($loopVariable, $methodName)) {
@@ -1960,6 +2045,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'loop_type' => $loopType,
                                 'variable' => $loopVariable,
                                 'relation_path' => $this->modelVars->relationPathOf($loopVariable),
+                                'proven' => $evidence === self::RELATION_PROVEN,
                             ];
                         }
                     }
@@ -1979,12 +2065,14 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                     $inner->name instanceof Node\Identifier) {
 
                     $relationName = $inner->name->toString();
-                    if ($this->isActualOrProbableRelationship($loopVariable, $relationName, true) &&
+                    $evidence = $this->relationshipEvidence($loopVariable, $relationName, true);
+                    if ($evidence !== null &&
                         ! $this->isEagerLoaded($loopVariable, $relationName)) {
                         $this->queryIssues[] = [
                             'query' => "\${$loopVariable}->{$relationName}()->{$node->name->toString()}()",
                             'line' => $node->getStartLine(),
                             'loop_type' => $loopType,
+                            'proven' => $evidence === self::RELATION_PROVEN,
                         ];
                     }
                 }
@@ -2018,6 +2106,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'query' => "{$className}::{$methodName}()",
                                 'line' => $node->getStartLine(),
                                 'loop_type' => $loopType,
+                                'proven' => true,
                             ];
                         }
                     }
@@ -2044,6 +2133,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
                                 'query' => $queryDescription,
                                 'line' => $node->getStartLine(),
                                 'loop_type' => $loopType,
+                                'proven' => true,
                             ];
                         }
                     }
@@ -2060,6 +2150,11 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         if ($pendingLoop !== null) {
             unset($this->pendingForeachLoops[spl_object_id($node)]);
             $this->loopStack[] = $pendingLoop;
+        }
+
+        // Mirrors the ClassLike push in enterNode() exactly, or the stack drifts.
+        if ($node instanceof Stmt\ClassLike) {
+            array_pop($this->classStack);
         }
 
         // Track loop exit - pop from stack and clear relationLoaded checks
@@ -2170,15 +2265,28 @@ class NPlusOneVisitor extends NodeVisitorAbstract
      *
      * Method-call context uses looksLikeRelationshipMethod (stricter exclusions) to avoid
      * false positives on helpers like relationLoaded(), count(), etc.
+     *
+     * Returns null when the name is not a relationship, RELATION_PROVEN when the registry
+     * holds it, and RELATION_GUESSED when only the name heuristic says it is one.
+     *
+     * @return self::RELATION_*|null
      */
-    private function isActualOrProbableRelationship(string $loopVariable, string $name, bool $isMethodCall = false): bool
+    private function relationshipEvidence(string $loopVariable, string $name, bool $isMethodCall = false): ?string
     {
         $model = $this->modelVars->typeOf($loopVariable);
 
         // Variable type completely unknown (flatMap, complex chains, etc.), so don't flag.
         // Conservative default: false negatives are preferable to false positives.
         if ($model === null || str_starts_with($model, 'Collection<')) {
-            return false;
+            return null;
+        }
+
+        // The scanner records a type through the file's imports, so an aliased model already
+        // carries its class name. self:: and static:: inside a model name that model, which the
+        // import table cannot answer, so they are read off the enclosing declaration instead.
+        if (in_array(strtolower($model), ['self', 'static'], true)) {
+            $enclosing = $this->classStack === [] ? null : $this->classStack[array_key_last($this->classStack)];
+            $model = $enclosing ?? $model;
         }
 
         // A declared attribute read as a property is never a relationship: Model reads a
@@ -2188,7 +2296,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         // column is taken to be a helper, not judged by its name.
         if ($this->modelAttributesRegistry->has($model, $name) &&
             (! $isMethodCall || ! $this->relationshipRegistry->has($model, $name))) {
-            return false;
+            return null;
         }
 
         // An accessor answers a property read, so it shadows a relationship of the same name
@@ -2197,34 +2305,36 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         if ($isMethodCall
             ? $this->accessorRegistry->hasAttributeMethod($model, $name)
             : $this->accessorRegistry->has($model, $name)) {
-            return false;
+            return null;
         }
 
         if ($this->relationshipRegistry->has($model, $name)) {
-            return true;
+            return self::RELATION_PROVEN;
         }
 
         // A method declared to return a built-in type cannot be a relationship, whatever
         // its name suggests.
         if ($this->relationshipRegistry->declaresPlainMethod($model, $name)) {
-            return false;
+            return null;
         }
 
         if ($this->relationshipRegistry->declaresOwn($model)) {
-            return false;
+            return null;
         }
 
         if ($this->relationshipRegistry->isFullyResolved($model) &&
             ! $this->relationshipRegistry->hasMember($model, strtolower($name)) &&
             ! $this->namesRelationReachedThrough($model, $name)) {
-            return false;
+            return null;
         }
 
         // Model outside the scanned paths, or one the scanner could not read in full.
         // Fall back to heuristic so existing code without model files still works.
-        return $isMethodCall
+        $looksLikeRelationship = $isMethodCall
             ? $this->looksLikeRelationshipMethod($name)
             : $this->looksLikeRelationship($name);
+
+        return $looksLikeRelationship ? self::RELATION_GUESSED : null;
     }
 
     /**
@@ -2963,7 +3073,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Get collected issues.
      *
-     * @return array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string}>
+     * @return array<int, array{relationship: string, line: int, loop_type: string, variable: string, relation_path: ?string, proven: bool}>
      */
     public function getIssues(): array
     {
@@ -2971,11 +3081,22 @@ class NPlusOneVisitor extends NodeVisitorAbstract
         $unique = [];
         $seen = [];
 
+        // The first occurrence keeps its line, so its baseline hash is unchanged, but it
+        // takes the higher grade: a guess about one loop must not hide what the registry
+        // proves about another loop reusing the same variable name.
+        $provenKeys = [];
+        foreach ($this->issues as $issue) {
+            if ($issue['proven']) {
+                $provenKeys[$issue['variable'].'_'.$issue['relationship']] = true;
+            }
+        }
+
         foreach ($this->issues as $issue) {
             // Include variable name to prevent false deduplication across different variables
             // Don't include line to deduplicate same relationship accessed multiple times
             $key = $issue['variable'].'_'.$issue['relationship'];
             if (! isset($seen[$key])) {
+                $issue['proven'] = isset($provenKeys[$key]);
                 $unique[] = $issue;
                 $seen[$key] = true;
             }
@@ -2987,7 +3108,7 @@ class NPlusOneVisitor extends NodeVisitorAbstract
     /**
      * Get collected query issues (queries executed inside loops).
      *
-     * @return array<int, array{query: string, line: int, loop_type: string}>
+     * @return array<int, array{query: string, line: int, loop_type: string, proven: bool}>
      */
     public function getQueryIssues(): array
     {

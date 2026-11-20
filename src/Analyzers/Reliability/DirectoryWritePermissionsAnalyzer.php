@@ -279,7 +279,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         $issues[] = $this->createIssue(
             message: $message,
             location: new Location($this->getRelativePath($locationPath)),
-            severity: $this->metadata()->severity,
+            severity: Severity::Critical,
             recommendation: $this->buildRecommendation($formattedMissing, $formattedNonWritable),
             metadata: [
                 'missing_directories' => $formattedMissing,
@@ -448,7 +448,9 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
             null
         );
 
-        if (is_array($links) && ! empty($links)) {
+        // As in Laravel's storage:link, only a missing value falls back to the default
+        // pair; an empty array means the application declares no links.
+        if (is_array($links)) {
             // Filter to ensure we have string keys and values
             $validLinks = [];
             foreach ($links as $link => $target) {
@@ -540,7 +542,7 @@ class DirectoryWritePermissionsAnalyzer extends AbstractFileAnalyzer
         $issues[] = $this->createIssue(
             message: $message,
             location: new Location($this->getRelativePath($locationPath)),
-            severity: $this->metadata()->severity,
+            severity: Severity::Medium,
             recommendation: $this->buildSymlinkRecommendation($formattedSymlinks),
             metadata: [
                 'broken_symlinks' => $formattedSymlinks,

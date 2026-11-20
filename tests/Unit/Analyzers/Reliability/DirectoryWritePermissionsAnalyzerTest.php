@@ -10,6 +10,7 @@ use Illuminate\Routing\Router;
 use ShieldCI\Analyzers\Reliability\DirectoryWritePermissionsAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
@@ -628,7 +629,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('symlinks are valid', $result->getMessage());
     }
 
-    public function test_fails_when_symlink_missing(): void
+    public function test_warns_when_symlink_missing(): void
     {
         $tempDir = $this->createTempDirectory([
             'storage/app/public/.gitkeep' => '',
@@ -657,7 +658,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
         $this->assertHasIssueContaining('symlink', $result);
 
         $issues = $result->getIssues();
@@ -673,7 +674,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('missing', $symlinkIssue->metadata['broken_symlinks'][0]['reason']);
     }
 
-    public function test_fails_when_symlink_target_missing(): void
+    public function test_warns_when_symlink_target_missing(): void
     {
         $tempDir = $this->createTempDirectory([
             'storage/.gitkeep' => '',
@@ -706,7 +707,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $symlinkIssue = null;
@@ -720,7 +721,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         $this->assertEquals('broken', $symlinkIssue->metadata['broken_symlinks'][0]['reason']);
     }
 
-    public function test_fails_when_symlink_target_not_directory(): void
+    public function test_warns_when_symlink_target_not_directory(): void
     {
         $tempDir = $this->createTempDirectory([
             'storage/app/public' => 'this is a file, not a directory',
@@ -752,7 +753,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $symlinkIssue = null;
@@ -793,8 +794,69 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        // Should fail because default symlink doesn't exist
-        $this->assertFailed($result);
+        // Should warn because default symlink doesn't exist
+        $this->assertWarning($result);
+    }
+
+    public function test_empty_links_config_checks_no_symlinks(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        // An explicit empty array means "no links", as in storage:link
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertCount(0, $result->getIssues());
+    }
+
+    public function test_links_config_with_only_invalid_entries_checks_no_symlinks(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        // Every entry is filtered out, which must not revive the default pair
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                0 => $tempDir.'/storage/app/public',
+                $tempDir.'/public/storage' => 123,
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertCount(0, $result->getIssues());
     }
 
     public function test_uses_custom_symlinks_from_config(): void
@@ -893,7 +955,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $symlinkIssue = null;
@@ -934,7 +996,7 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
+        $this->assertWarning($result);
 
         $issues = $result->getIssues();
         $symlinkIssue = null;
@@ -946,6 +1008,111 @@ class DirectoryWritePermissionsAnalyzerTest extends AnalyzerTestCase
         }
         $this->assertNotNull($symlinkIssue);
         $this->assertEquals(2, $symlinkIssue->metadata['broken_symlink_count']);
+    }
+
+    // =========================================================================
+    // Severity Tests
+    // =========================================================================
+
+    public function test_missing_symlink_alone_is_medium_and_warns(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'storage/app/public/.gitkeep' => '',
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertArrayHasKey('broken_symlinks', $issues[0]->metadata);
+        $this->assertSame(Severity::Medium, $issues[0]->severity);
+        $this->assertWarning($result);
+    }
+
+    public function test_missing_directory_alone_is_critical_and_fails(): void
+    {
+        $tempDir = $this->createTempDirectory([]);
+
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => false,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertArrayHasKey('missing_directories', $issues[0]->metadata);
+        $this->assertSame(Severity::Critical, $issues[0]->severity);
+        $this->assertFailed($result);
+    }
+
+    public function test_directory_and_symlink_issues_keep_their_own_severities(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'bootstrap/cache/.gitkeep' => '',
+            'public/.gitkeep' => '',
+        ]);
+
+        config([
+            'shieldci.analyzers.reliability.directory-write-permissions.writable_directories' => [
+                $tempDir.'/storage',
+                $tempDir.'/bootstrap/cache',
+            ],
+            'filesystems.links' => [
+                $tempDir.'/public/storage' => $tempDir.'/storage/app/public',
+            ],
+            'shieldci.analyzers.reliability.directory-write-permissions.check_symlinks' => true,
+        ]);
+
+        /** @var DirectoryWritePermissionsAnalyzer $analyzer */
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setStatelessOverride(false); // Force web app mode
+        $analyzer->setBasePath($tempDir);
+
+        $result = $analyzer->analyze();
+
+        $directoryIssue = null;
+        $symlinkIssue = null;
+        foreach ($result->getIssues() as $issue) {
+            if (isset($issue->metadata['missing_directories'])) {
+                $directoryIssue = $issue;
+            }
+            if (isset($issue->metadata['broken_symlinks'])) {
+                $symlinkIssue = $issue;
+            }
+        }
+
+        $this->assertCount(2, $result->getIssues());
+        $this->assertNotNull($directoryIssue);
+        $this->assertNotNull($symlinkIssue);
+        $this->assertSame(Severity::Critical, $directoryIssue->severity);
+        $this->assertSame(Severity::Medium, $symlinkIssue->severity);
+        $this->assertFailed($result);
     }
 
     // =========================================================================

@@ -1,5 +1,45 @@
 # Changelog
 
+## v1.26.0
+
+### Changed
+- `csrf-protection` grades `$except` patterns that match every request, such as `**` and `*/*`, Critical instead of High, which can fail a default `fail_on: high` build (#666)
+- `csrf-protection` reads `withoutMiddleware()` on the variable holding a route, which can fail a default `fail_on: high` build (#668)
+- `csrf-protection` checks Blade `<form>` tags spanning several lines and reads `@csrf` only inside that form, which can fail a default `fail_on: high` build (#676)
+- `csrf-protection` reports a route file when any of its loads leaves out `web`, even if another load covers it, which can fail a default `fail_on: high` build (#677)
+- `csrf-protection` reports removing, replacing or excluding an app subclass of the CSRF middleware from the web group, which can fail a default `fail_on: high` build (#678)
+- `authentication-authorization` lets a route action array's `middleware` replace the registrar's and reads its `excluded_middleware`, which can fail a default `fail_on: high` build (#680)
+- `authentication-authorization` resolves bare-method routes in `Route::controller()` groups, so their sensitive methods and FormRequests are checked, which can fail a default `fail_on: high` build (#680)
+- `authentication-authorization` reads only the first argument of `withoutMiddleware()`, so a later `'auth'` no longer opts a route out, which can fail a default `fail_on: high` build (#680, #696)
+- `authentication-authorization` grades `Route::match()` and `Route::any()` routes that take a mutating verb, which can fail a default `fail_on: high` build (#696)
+- `authentication-authorization` treats excluding `Authenticate::class` as removing the `auth` alias, which can fail a default `fail_on: high` build (#696)
+- `database-status` probes every read replica of a read/write-split connection, so an unreachable replica fails the check, which can fail a default `fail_on: high` build (#713)
+- `directory-write-permissions` grades a missing or broken storage symlink Medium instead of Critical, so a fresh install warns rather than fails (#718)
+- `dev-dependencies-production` scans the vendor directory, read from `config.vendor-dir`, when composer lists no removals and `installed.json` is missing, which can fail a default `fail_on: high` build (#719)
+- `eloquent-n-plus-one` reports a call to a proven relation method even when a column or accessor shares its name, which can fail a default `fail_on: high` build (#722)
+- `eloquent-n-plus-one` checks views rendered from route closures, inline `view()` and `with()` bindings, and nested loops over a relation, which can fail a default `fail_on: high` build (#736)
+- `eloquent-n-plus-one` grades a relation guessed from its name, or a chain of two or more relations, Medium instead of High (#729)
+- `eloquent-n-plus-one` grades every finding Medium in a `Console/Commands` file that chunks, lazily iterates or eager-loads (#729)
+
+### Fixed
+- `csrf-protection` credits middleware added through the variable holding a route, such as `$route->middleware('web')` in a custom route file (#668)
+- `login-throttling` credits `throttle` added through a route variable inside a loop body (#668)
+- `csrf-protection` no longer reports a commented-out form, or a GET form carrying `data-method`, `formmethod` or `:method` (#676)
+- `csrf-protection` credits an app middleware extending the CSRF class under its own name, and reads `Class::class.':params'` web group entries (#678)
+- `csrf-protection` matches middleware exclusions by exact name or subclass, as Laravel's router does, so a leading-backslash string no longer strips the class (#678)
+- `authentication-authorization` counts the `Authenticate` class, its app subclasses and custom middleware groups holding auth as authentication (#680)
+- `authentication-authorization` reads auth from route action arrays, `HasMiddleware` controllers and controller constructors (#680)
+- `authentication-authorization` applies the middleware every load of a route file gives it, such as a `then:` closure or a `Route::group()` path, to that file's routes (#693)
+- `authentication-authorization` applies an auth group's middleware to a route file required inside the group's callback (#696)
+- `authentication-authorization` credits a `can` group attribute or action key as authorization on Laravel 11+ (#696)
+- `config-outside-config` no longer reports UUIDs or long snake_case and camelCase identifiers as API keys (#712)
+- `config-outside-config` matches `excluded_domains` against a host with a trailing dot, and skips a `null` entry instead of erroring (#712)
+- `directory-write-permissions` reads an empty `filesystems.links` as no links instead of checking `public/storage` (#718)
+- `dev-dependencies-production` reports only dev packages among composer's removals, so removing a production package no longer fails (#719)
+- `eloquent-n-plus-one` reads columns declared by `#[Fillable]`, `#[Appends]`, `casts()`, `$attributes` and `Attribute` accessors, so they are no longer reported as relations (#722)
+- `eloquent-n-plus-one` no longer reports writes to a relation property or relations eager-loaded through `withWhereHas()`, `load()` or a nested `with()` closure (#736)
+- `shield:analyze` restores the caller's time limit when it finishes, so an in-process call no longer leaves its timeout on a queue worker or test run (#739)
+
 ## v1.25.0
 
 ### Changed

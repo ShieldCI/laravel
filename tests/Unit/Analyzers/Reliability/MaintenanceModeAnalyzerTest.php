@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Reliability;
 
+use Illuminate\Foundation\Application;
 use PHPUnit\Framework\Attributes\Test;
 use ShieldCI\Analyzers\Reliability\MaintenanceModeAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
@@ -14,7 +15,30 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
 {
     protected function createAnalyzer(): AnalyzerInterface
     {
-        return new MaintenanceModeAnalyzer;
+        return new MaintenanceModeAnalyzer($this->application());
+    }
+
+    private function application(): Application
+    {
+        $app = $this->app;
+        $this->assertNotNull($app);
+
+        return $app;
+    }
+
+    /**
+     * An analyzer pointed at the application running the test, in production, which is the
+     * shape of a real shield:analyze run: AnalyzerManager sets the base path to base_path().
+     */
+    private function runningAppAnalyzer(): MaintenanceModeAnalyzer
+    {
+        $app = $this->application();
+        $app['config']->set('app.env', 'production');
+
+        $analyzer = new MaintenanceModeAnalyzer($app);
+        $analyzer->setBasePath($app->basePath());
+
+        return $analyzer;
     }
 
     /** @test */
@@ -341,5 +365,130 @@ class MaintenanceModeAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('immediately', $recommendation);
         $this->assertStringContainsString('affects real users', $recommendation);
         $this->assertStringContainsString('php artisan up', $recommendation);
+    }
+
+    // =========================================================================
+    // Running Application Tests
+    // =========================================================================
+
+    /** @test */
+    #[Test]
+    public function it_passes_when_the_running_application_is_up(): void
+    {
+        $app = $this->application();
+        $this->assertFileDoesNotExist($app->storagePath().'/framework/down');
+
+        $result = $this->runningAppAnalyzer()->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString('Application is not in maintenance mode', $result->getMessage());
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_the_cache_driver_reports_maintenance_mode(): void
+    {
+        $app = $this->application();
+        $app['config']->set('app.maintenance.driver', 'cache');
+        $app['config']->set('app.maintenance.store', 'array');
+
+        $app->maintenanceMode()->activate([]);
+
+        try {
+            $result = $this->runningAppAnalyzer()->analyze();
+        } finally {
+            $app->maintenanceMode()->deactivate();
+        }
+
+        $this->assertFailed($result);
+        $this->assertCount(1, $result->getIssues());
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Application is in maintenance mode in production environment - users are affected', $issue->message);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('cache', $issue->metadata['detected_via']);
+        $this->assertArrayNotHasKey('maintenance_file', $issue->metadata);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_relocated_storage_holds_the_down_file(): void
+    {
+        $app = $this->application();
+        $originalStoragePath = $app->storagePath();
+
+        $storage = $this->makeTempDirectory();
+        @mkdir($storage.'/framework', 0755, true);
+        file_put_contents($storage.'/framework/down', '{}');
+
+        $app->useStoragePath($storage);
+
+        try {
+            $result = $this->runningAppAnalyzer()->analyze();
+        } finally {
+            $app->useStoragePath($originalStoragePath);
+        }
+
+        $this->assertFailed($result);
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame('storage/framework/down', $issue->metadata['detected_via']);
+        $this->assertSame($storage.DIRECTORY_SEPARATOR.'framework'.DIRECTORY_SEPARATOR.'down', $issue->metadata['maintenance_file']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_warns_when_maintenance_status_cannot_be_determined(): void
+    {
+        $app = $this->application();
+        $app['config']->set('app.maintenance.driver', 'cache');
+        $app['config']->set('app.maintenance.store', 'shieldci-undefined-store');
+
+        $result = $this->runningAppAnalyzer()->analyze();
+
+        $this->assertWarning($result);
+        $this->assertCount(1, $result->getIssues());
+
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::Medium, $issue->severity);
+        $this->assertSame('Maintenance mode status could not be determined in production environment', $issue->message);
+        $this->assertStringContainsString('shieldci-undefined-store', $issue->recommendation);
+        $this->assertIsString($issue->metadata['error']);
+        $this->assertStringContainsString('shieldci-undefined-store', $issue->metadata['error']);
+        $this->assertSame('cache', $issue->metadata['detected_via']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_reads_the_analyzed_directory_when_it_is_not_the_running_application(): void
+    {
+        $app = $this->application();
+        $app['config']->set('app.maintenance.driver', 'cache');
+        $app['config']->set('app.maintenance.store', 'array');
+
+        $tempDir = $this->createTempDirectory([
+            'storage/framework/.gitkeep' => '',
+            '.env' => 'APP_ENV=production',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+
+        $app->maintenanceMode()->activate([]);
+
+        try {
+            $result = $analyzer->analyze();
+        } finally {
+            $app->maintenanceMode()->deactivate();
+        }
+
+        $this->assertPassed($result);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_does_not_run_in_ci(): void
+    {
+        $this->assertFalse(MaintenanceModeAnalyzer::$runInCI);
     }
 }

@@ -6,8 +6,10 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
 use PhpParser\Node;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\LogicInRoutesAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LogicInRoutesAnalyzerTest extends AnalyzerTestCase
@@ -2343,5 +2345,615 @@ PHP;
             $this->assertInstanceOf(Node\Name\FullyQualified::class, $resolved);
             $this->assertStringStartsWith('Illuminate\Support\Facades\\', $resolved->toString());
         }
+    }
+
+    /**
+     * A model read is graded by the read rules, not as "complex business logic": a builder
+     * method outside the plain where/find set, or a custom scope chained into a read terminal,
+     * is still a read, and a simple read passes under the default config.
+     *
+     * @dataProvider modelReadChainProvider
+     */
+    #[DataProvider('modelReadChainProvider')]
+    public function test_model_read_chain_is_not_graded_as_business_logic(string $expression): void
+    {
+        $result = $this->analyzeRouteReturning($expression);
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function modelReadChainProvider(): array
+    {
+        return [
+            'paginate' => ['Article::paginate(20)'],
+            'simplePaginate' => ['Article::simplePaginate()'],
+            'cursorPaginate' => ['Article::cursorPaginate(10)'],
+            'latest then get' => ['Article::latest()->get()'],
+            'oldest then first' => ['Article::oldest()->first()'],
+            'withCount then get' => ["Article::withCount('remarks')->get()"],
+            'custom scope then get' => ['Article::visible()->get()'],
+            'custom scope then paginate' => ['Article::visible()->paginate(20)'],
+            'where then paginate' => ["Article::where('state', 'live')->paginate(20)"],
+        ];
+    }
+
+    public function test_where_in_read_chain_is_graded_as_a_complex_read(): void
+    {
+        $result = $this->analyzeRouteReturning("Article::whereIn('id', [7, 8])->get()");
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('complex database queries', $result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('medium', $issue->severity->value);
+        $this->assertStringNotContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * A write anywhere in a model chain, or a model method that is neither a query method nor
+     * followed by a read terminal, keeps its High grade.
+     *
+     * @dataProvider modelWriteOrDomainCallProvider
+     */
+    #[DataProvider('modelWriteOrDomainCallProvider')]
+    public function test_model_write_or_domain_call_stays_high(string $expression, string $expectedMessage): void
+    {
+        $result = $this->analyzeRouteReturning($expression);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertSame($expectedMessage, $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function modelWriteOrDomainCallProvider(): array
+    {
+        return [
+            'static create' => [
+                'Article::create(request()->all())',
+                'Route closure contains database write operations, complex business logic',
+            ],
+            'where then update' => [
+                "Article::where('state', 'draft')->update(['state' => 'live'])",
+                'Route closure contains database write operations',
+            ],
+            'custom scope then delete' => [
+                'Article::visible()->delete()',
+                'Route closure contains database write operations, complex business logic',
+            ],
+            'custom scope read then higher-order delete' => [
+                'Article::visible()->get()->each->delete()',
+                'Route closure contains complex business logic',
+            ],
+            'custom scope read then nullsafe delete' => [
+                'Article::visible()->first()?->delete()',
+                'Route closure contains complex business logic',
+            ],
+            'domain method without a read terminal' => [
+                'Invoice::issueCredit($id)',
+                'Route closure contains complex business logic',
+            ],
+        ];
+    }
+
+    public function test_strict_mode_reports_direct_paginate_as_a_simple_read(): void
+    {
+        $result = $this->analyzeRouteReturning('Article::paginate(20)', allowSimpleReads: false);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('low', $issue->severity->value);
+        $this->assertSame('Route closure contains database queries (strict mode)', $issue->message);
+    }
+
+    public function test_strict_mode_reports_direct_all_as_a_simple_read(): void
+    {
+        $result = $this->analyzeRouteReturning('Article::all()', allowSimpleReads: false);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('low', $issue->severity->value);
+        $this->assertSame('Route closure contains database queries (strict mode)', $issue->message);
+    }
+
+    /**
+     * A read on its own is exempt from "complex business logic", but not when the closure also
+     * writes: the read's result, or anything else, may be what gets written.
+     *
+     * @dataProvider readThenWriteElsewhereProvider
+     */
+    #[DataProvider('readThenWriteElsewhereProvider')]
+    public function test_read_chain_in_a_closure_that_writes_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame('high', $result->getIssues()[0]->severity->value);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function readThenWriteElsewhereProvider(): array
+    {
+        return [
+            'scope read, write on the variable' => [
+                "Route::get('/a', function () { \$a = Article::visible()->first(); \$a->delete(); return 1; });",
+            ],
+            'latest read, write on the variable' => [
+                "Route::get('/a', function () { \$a = Article::latest()->first(); \$a->delete(); return 1; });",
+            ],
+            'scope read, write on an indexed element' => [
+                "Route::get('/a', function () { Article::visible()->get()[0]->delete(); return 1; });",
+            ],
+            'scope read, write inside an each callback' => [
+                "Route::get('/a', function () { Article::visible()->get()->each(function (\$a) { \$a->delete(); }); return 1; });",
+            ],
+            'long relation read, write on the result' => [
+                "Route::get('/a', function () { \$a = auth()->user()->articles()->latest()->first(); \$a->delete(); return 1; });",
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider restoreChainProvider
+     */
+    #[DataProvider('restoreChainProvider')]
+    public function test_restore_is_graded_as_a_write(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('database write operations', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function restoreChainProvider(): array
+    {
+        return [
+            'onlyTrashed then restore' => ["Route::get('/a', fn () => Article::onlyTrashed()->restore());"],
+            'withTrashed find then restore' => ["Route::get('/a', fn () => Article::withTrashed()->find(1)->restore());"],
+        ];
+    }
+
+    /**
+     * @dataProvider strictModeDirectReadProvider
+     */
+    #[DataProvider('strictModeDirectReadProvider')]
+    public function test_strict_mode_reports_direct_static_read(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes, allowSimpleReads: false);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('low', $issue->severity->value);
+        $this->assertSame('Route closure contains database queries (strict mode)', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function strictModeDirectReadProvider(): array
+    {
+        return [
+            'firstWhere' => ["Route::get('/a', fn () => Article::firstWhere('slug', 'x'));"],
+            'sum' => ["Route::get('/a', fn () => Article::sum('views'));"],
+            'findMany' => ["Route::get('/a', fn () => Article::findMany([1, 2]));"],
+            'value' => ["Route::get('/a', fn () => Article::value('title'));"],
+        ];
+    }
+
+    /**
+     * A chain of three or more calls that ends in a read terminal is a read, graded by the
+     * database-query rules rather than as "complex business logic".
+     *
+     * @dataProvider longReadChainProvider
+     */
+    #[DataProvider('longReadChainProvider')]
+    public function test_long_read_chain_is_not_graded_as_business_logic(string $routes, string $expectedStatus): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertSame($expectedStatus, $result->getStatus()->value);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertNotSame('high', $issue->severity->value, $issue->message);
+            $this->assertStringNotContainsString('complex business logic', $issue->message);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function longReadChainProvider(): array
+    {
+        return [
+            'query where latest paginate' => [
+                "Route::get('/a', fn () => Article::query()->where('live', true)->latest()->paginate(15));",
+                'warning',
+            ],
+            'with where latest paginate' => [
+                "Route::get('/a', fn () => Article::with('author')->where('live', true)->latest()->paginate(15));",
+                'warning',
+            ],
+            'request user relation read' => [
+                "Route::get('/a', fn (Request \$r) => \$r->user()->articles()->latest()->get());",
+                'passed',
+            ],
+            'auth user relation paginate' => [
+                "Route::get('/a', fn () => auth()->user()->articles()->paginate());",
+                'passed',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider longNonReadChainProvider
+     */
+    #[DataProvider('longNonReadChainProvider')]
+    public function test_long_non_read_chain_stays_business_logic(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function longNonReadChainProvider(): array
+    {
+        return [
+            'service chain without a read terminal' => [
+                "Route::get('/a', fn (\$service) => \$service->load()->transform()->render());",
+            ],
+            'facade chain ending in get' => [
+                "Route::get('/a', fn () => Http::withToken('t')->retry(3)->timeout(5)->get('https://example.test'));",
+            ],
+        ];
+    }
+
+    public function test_where_null_and_where_not_null_reads_are_graded_alike(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/a', fn () => Article::whereNull('archived_at')->get());"));
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/a', fn () => Article::whereNotNull('archived_at')->get());"));
+    }
+
+    /**
+     * Only a model static call or the signed-in user, reached through user(), roots a read
+     * chain. Any other receiver, such as an HTTP client or a service, keeps check 3.
+     *
+     * @dataProvider nonRelationReceiverChainProvider
+     */
+    #[DataProvider('nonRelationReceiverChainProvider')]
+    public function test_long_chain_on_a_non_relation_receiver_stays_business_logic(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonRelationReceiverChainProvider(): array
+    {
+        return [
+            'http client through a variable' => [
+                "Route::get('/a', function () { \$api = Http::withToken('t'); return \$api->retry(3)->timeout(5)->get('https://example.test'); });",
+            ],
+            'injected http factory' => [
+                "Route::get('/a', fn (Factory \$http) => \$http->withToken('t')->retry(3)->get('https://example.test'));",
+            ],
+            'new pending request' => [
+                "Route::get('/a', fn () => (new \\Illuminate\\Http\\Client\\PendingRequest)->withToken('t')->retry(3)->get('https://example.test'));",
+            ],
+            'injected service ending in sum' => [
+                "Route::get('/a', fn (\\App\\Services\\Ledger \$l) => \$l->forClient(1)->applyCredits()->settle()->sum('total'));",
+            ],
+            'new service ending in get' => [
+                "Route::get('/a', fn () => (new \\App\\Services\\Digest)->forMonth(1)->withTotals()->get());",
+            ],
+        ];
+    }
+
+    public function test_relation_read_through_a_property_hop_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/a', fn () => auth()->user()->team->articles()->latest()->get());"));
+    }
+
+    /**
+     * A read followed by a per-row callback is not a read: the callback can do anything.
+     *
+     * @dataProvider readThenCallbackProvider
+     */
+    #[DataProvider('readThenCallbackProvider')]
+    public function test_read_followed_by_a_callback_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function readThenCallbackProvider(): array
+    {
+        return [
+            'oldest then each' => [
+                "Route::post('/a', fn () => Member::oldest()->each(fn (\$m) => \$m->bill(100, 'card')));",
+            ],
+            'scope get then each' => [
+                "Route::post('/a', fn () => Article::visible()->get()->each(fn (\$a) => \$a->author->notify(new \\App\\Notifications\\Digest)));",
+            ],
+            'latest then each' => [
+                "Route::post('/a', fn () => Article::latest()->each(fn (\$a) => \$a->author->notify(new \\App\\Notifications\\Digest)));",
+            ],
+            'latest get then each' => [
+                "Route::post('/a', fn () => Article::latest()->get()->each(fn (\$a) => \$a->author->notify(new \\App\\Notifications\\Digest)));",
+            ],
+            'latest get in a foreach' => [
+                "Route::post('/a', function () { foreach (Article::latest()->get() as \$a) { \$a->author->notify(new \\App\\Notifications\\Digest); } return 1; });",
+            ],
+            'oldest then chunk' => [
+                "Route::post('/a', fn () => Article::oldest()->chunk(100, fn (\$as) => \$as->each->notify(new \\App\\Notifications\\Digest)));",
+            ],
+        ];
+    }
+
+    /**
+     * The read exemption covers only a closure whose whole body is one read chain. Any other
+     * statement beside the read, even a write-named call that does not touch the database,
+     * leaves the closure graded as before.
+     *
+     * @dataProvider nonModelWriteNamedCallProvider
+     */
+    #[DataProvider('nonModelWriteNamedCallProvider')]
+    public function test_statement_beside_a_read_keeps_the_business_logic_grade(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonModelWriteNamedCallProvider(): array
+    {
+        return [
+            'session helper increment' => [
+                "Route::get('/a', function () { session()->increment('views'); return Article::latest()->get(); });",
+            ],
+            'storage facade delete' => [
+                "Route::get('/a', function () { Storage::delete('x'); return Article::paginate(15); });",
+            ],
+            'cache facade increment' => [
+                "Route::get('/a', function () { Cache::increment('x'); return Article::paginate(15); });",
+            ],
+        ];
+    }
+
+    public function test_write_on_the_signed_in_user_cancels_the_read_exemption(): void
+    {
+        $result = $this->analyzeRouteFile("Route::get('/a', function () { auth()->user()->delete(); return Article::latest()->get(); });");
+
+        $this->assertFailed($result);
+        $this->assertSame('high', $result->getIssues()[0]->severity->value);
+    }
+
+    /**
+     * Writes, per-row callbacks and higher-order proxies beside or after a read keep the
+     * business-logic grade: the read exemption needs the whole body to be one read chain.
+     *
+     * @dataProvider notASingleReadChainProvider
+     */
+    #[DataProvider('notASingleReadChainProvider')]
+    public function test_body_that_is_not_a_single_read_chain_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('high', $issue->severity->value);
+        $this->assertStringContainsString('complex business logic', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function notASingleReadChainProvider(): array
+    {
+        return [
+            'write on a model short-named like a utility class' => [
+                "Route::delete('/a/{id}', function (\$id) { File::findOrFail(\$id)->delete(); return Article::latest()->paginate(); });",
+            ],
+            'force delete through a collect helper' => [
+                "Route::post('/a', function () { collect(Article::onlyTrashed()->get())->each->forceDelete(); return 'ok'; });",
+            ],
+            'per-row callback on a read held in a variable' => [
+                "Route::post('/a', function () { \$articles = Article::visible()->get(); \$articles->each(fn (\$a) => \$a->author->notify(new \\App\\Notifications\\Digest(\$a))); return 'ok'; });",
+            ],
+            'per-row callback before a count' => [
+                "Route::post('/a', fn () => Article::visible()->get()->each(fn (\$a) => \$a->author->notify(new \\App\\Notifications\\Digest(\$a)))->count());",
+            ],
+            'higher-order each proxy before a count' => [
+                "Route::post('/a', fn () => Article::latest()->get()->each->publish()->count());",
+            ],
+            'read terminal taking a callback' => [
+                "Route::get('/a', fn () => Article::findOr(1, fn () => abort(404)));",
+            ],
+            'array callable passed to each' => [
+                "Route::get('/a', fn () => Article::where('due', true)->get()->each([\\App\\Jobs\\SendReminder::class, 'dispatch'])->count());",
+            ],
+            'function name passed to each' => [
+                "Route::get('/a', fn () => Article::where('due', true)->get()->each('send_reminder')->count());",
+            ],
+            'invokable passed to each' => [
+                "Route::get('/a', fn () => Article::where('due', true)->get()->each(new \\App\\Actions\\ArchiveArticle)->count());",
+            ],
+            'invokable passed to tap' => [
+                "Route::get('/a', fn () => Article::where('due', true)->get()->tap(new \\App\\Actions\\ArchiveArticles)->count());",
+            ],
+            'array callable passed to pipe' => [
+                "Route::get('/a', fn () => Article::where('due', true)->get()->pipe([\\App\\Actions\\ArchiveArticles::class, 'run'])->count());",
+            ],
+            'builder in a variable, read in the return' => [
+                "Route::get('/a', function () { \$q = Article::latest(); return \$q->get(); });",
+            ],
+        ];
+    }
+
+    /**
+     * A paginator or serialisation call after a read terminal is still the read.
+     *
+     * @dataProvider readResultTailProvider
+     */
+    #[DataProvider('readResultTailProvider')]
+    public function test_read_followed_by_a_result_tail_is_not_business_logic(string $routes, string $expectedStatus): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertSame($expectedStatus, $result->getStatus()->value);
+        foreach ($result->getIssues() as $issue) {
+            $this->assertNotSame('high', $issue->severity->value, $issue->message);
+            $this->assertStringNotContainsString('complex business logic', $issue->message);
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function readResultTailProvider(): array
+    {
+        return [
+            'paginate with query string' => [
+                "Route::get('/a', fn () => Article::latest()->paginate(15)->withQueryString());",
+                'passed',
+            ],
+            'paginate with appends' => [
+                "Route::get('/a', fn () => Article::latest()->paginate(15)->appends(request()->query()));",
+                'passed',
+            ],
+            'take get to array' => [
+                "Route::get('/a', fn () => Article::latest()->take(5)->get()->toArray());",
+                'warning',
+            ],
+        ];
+    }
+
+    /**
+     * A comment after the return statement is parsed as an extra no-op statement; the body
+     * is still the single read chain.
+     *
+     * @dataProvider commentedReadChainProvider
+     */
+    #[DataProvider('commentedReadChainProvider')]
+    public function test_read_chain_with_a_trailing_comment_is_not_business_logic(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function commentedReadChainProvider(): array
+    {
+        return [
+            'line comment after the return' => [
+                "Route::get('/a', function () {\n    return Article::paginate(15); // newest first\n});",
+            ],
+            'block comment on its own line' => [
+                "Route::get('/a', function () {\n    return Article::paginate(15);\n    /* keep simple */\n});",
+            ],
+        ];
+    }
+
+    private function analyzeRouteFile(string $routes, bool $allowSimpleReads = true): ResultInterface
+    {
+        $config = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => [
+                        'logic-in-routes' => [
+                            'max_closure_lines' => 50,
+                            'allow_simple_reads' => $allowSimpleReads,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $code = "<?php\n\nuse App\\Models\\Article;\nuse App\\Models\\File;\nuse App\\Models\\Member;\nuse Illuminate\\Http\\Client\\Factory;\nuse Illuminate\\Http\\Request;\nuse Illuminate\\Support\\Facades\\Cache;\nuse Illuminate\\Support\\Facades\\Http;\nuse Illuminate\\Support\\Facades\\Route;\nuse Illuminate\\Support\\Facades\\Storage;\n\n{$routes}\n";
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, $config);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        return $analyzer->analyze();
+    }
+
+    private function analyzeRouteReturning(string $expression, bool $allowSimpleReads = true): ResultInterface
+    {
+        $config = new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => [
+                        'logic-in-routes' => [
+                            'max_closure_lines' => 5,
+                            'allow_simple_reads' => $allowSimpleReads,
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $code = <<<PHP
+<?php
+
+use App\\Models\\Article;
+use App\\Models\\Invoice;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get('/articles/{id}', function (\$id) {
+    return {$expression};
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, $config);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        return $analyzer->analyze();
     }
 }

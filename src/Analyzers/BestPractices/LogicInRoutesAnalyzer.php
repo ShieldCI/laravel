@@ -827,6 +827,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls) extends NodeVisitorAbstract
         {
+            /** @var list<string> Container methods that resolve, beyond SERVICE_CONTAINER_METHODS */
+            private const EXTRA_RESOLUTION_METHODS = ['offsetGet', 'build', 'factory'];
+
+            /** @var array<int, true> Bare app() calls whose parent method call only reads application info */
+            private array $exemptAppCalls = [];
+
             /**
              * @param  list<string>  $businessLogicFunctions
              * @param  list<string>  $businessLogicFacades
@@ -855,10 +861,21 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     return null;
                 }
 
+                // A bare app() is the application itself; a method called on it directly
+                // (app()->getLocale()) is not container resolution unless that method resolves
+                if ($node instanceof Node\Expr\MethodCall
+                    && $node->var instanceof Node\Expr\FuncCall
+                    && $this->isBareAppCall($node->var)
+                    && $node->name instanceof Node\Identifier
+                    && ! $this->isContainerResolutionMethod($node->name->toLowerString())) {
+                    $this->exemptAppCalls[spl_object_id($node->var)] = true;
+                }
+
                 // 1. Check for business logic function calls
                 if ($node instanceof Node\Expr\FuncCall && $node->name instanceof Node\Name) {
                     $funcName = $node->name->toString();
-                    if (in_array($funcName, $this->businessLogicFunctions, true)) {
+                    if (in_array($funcName, $this->businessLogicFunctions, true)
+                        && ! isset($this->exemptAppCalls[spl_object_id($node)])) {
                         $this->hasComplexLogic = true;
 
                         return null;
@@ -972,6 +989,30 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             private function isLikelyModel(Node\Name $name): bool
             {
                 return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
+            }
+
+            /**
+             * Determine if a call is app() with no arguments, which returns the application instance.
+             */
+            private function isBareAppCall(Node\Expr\FuncCall $node): bool
+            {
+                return $node->name instanceof Node\Name
+                    && $node->name->toLowerString() === 'app'
+                    && $node->args === [];
+            }
+
+            /**
+             * Determine if a method called on the container resolves from it.
+             */
+            private function isContainerResolutionMethod(string $lowerMethod): bool
+            {
+                foreach ([...$this->serviceContainerMethods, ...self::EXTRA_RESOLUTION_METHODS] as $method) {
+                    if (strtolower($method) === $lowerMethod) {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             /**

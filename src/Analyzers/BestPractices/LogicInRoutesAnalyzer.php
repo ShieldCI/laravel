@@ -142,6 +142,15 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'Mail', 'Notification', 'Queue', 'Event', 'Bus', 'Broadcast',
     ];
 
+    /** @var list<string> Static entry points of the Dispatchable trait (jobs and events): `SendDigest::dispatch()` */
+    private const DISPATCHABLE_STATIC_METHODS = [
+        'dispatch', 'dispatchSync', 'dispatchNow', 'dispatchIf', 'dispatchUnless',
+        'dispatchAfterResponse', 'withChain',
+    ];
+
+    /** @var list<string> Methods of the Notifiable trait that send a notification: `$user->notify(...)` */
+    private const NOTIFY_METHODS = ['notify', 'notifyNow'];
+
     /** @var list<string> Service container methods */
     private const SERVICE_CONTAINER_METHODS = ['make', 'makeWith', 'call', 'get'];
 
@@ -825,7 +834,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         // its calls are skipped by the model-method and heavy-chain checks below
         $readChainCalls = $this->singleReadChainCalls($closure);
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls) extends NodeVisitorAbstract
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS)) extends NodeVisitorAbstract
         {
             /** @var list<string> Container methods that resolve, beyond SERVICE_CONTAINER_METHODS */
             private const EXTRA_RESOLUTION_METHODS = ['offsetGet', 'build', 'factory'];
@@ -841,6 +850,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $utilityClasses
              * @param  list<string>  $safeFluentHelperFunctions
              * @param  array<int, true>  $readChainCalls
+             * @param  list<string>  $dispatchableStaticMethods  lowercased, since PHP method names are case-insensitive
+             * @param  list<string>  $notifyMethods  lowercased, since PHP method names are case-insensitive
              */
             public function __construct(
                 private bool &$hasComplexLogic,
@@ -852,7 +863,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $queryMethods,
                 private array $utilityClasses,
                 private array $safeFluentHelperFunctions,
-                private array $readChainCalls
+                private array $readChainCalls,
+                private array $dispatchableStaticMethods,
+                private array $notifyMethods
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -893,6 +906,25 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         return null;
                     }
 
+                    // Dispatchable jobs and events: SendDigest::dispatch(), ::dispatchSync(),
+                    // ::withChain([...])->dispatch(). Utility facades are skipped, so
+                    // Route::dispatch($request), which forwards a request, stays clean.
+                    if ($node->name instanceof Node\Identifier
+                        && in_array($node->name->toLowerString(), $this->dispatchableStaticMethods, true)
+                        && ! in_array($shortClassName, $this->utilityClasses, true)) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
+
+                    // Artisan commands: Artisan::call(), Artisan::queue(). Matched by resolved
+                    // name, so a model or other class whose short name is Artisan stays clean.
+                    if ($this->isArtisanFacade($node->class)) {
+                        $this->hasComplexLogic = true;
+
+                        return null;
+                    }
+
                     // Service container calls: App::make(), App::call(), etc.
                     if ($shortClassName === 'App'
                         && $node->name instanceof Node\Identifier
@@ -917,7 +949,16 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
                 }
 
-                // 3. Check for heavy method chains (3+ calls)
+                // 3. Notifications sent through the Notifiable trait: $user->notify(...)
+                if (($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall)
+                    && $node->name instanceof Node\Identifier
+                    && in_array($node->name->toLowerString(), $this->notifyMethods, true)) {
+                    $this->hasComplexLogic = true;
+
+                    return null;
+                }
+
+                // 4. Check for heavy method chains (3+ calls)
                 if ($node instanceof Node\Expr\MethodCall) {
                     $chainLength = $this->countMethodChain($node);
                     if ($chainLength >= 3) {
@@ -1013,6 +1054,23 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 }
 
                 return false;
+            }
+
+            /**
+             * Check if the class name is the Artisan facade: imported (under any alias),
+             * fully qualified, or the unimported global alias.
+             */
+            private function isArtisanFacade(Node\Name $name): bool
+            {
+                $resolvedName = $name->getAttribute('resolvedName');
+                $className = $resolvedName instanceof Node\Name\FullyQualified
+                    ? $resolvedName->toString()
+                    : $name->toString();
+
+                $className = ltrim($className, '\\');
+
+                return $className === 'Illuminate\\Support\\Facades\\Artisan'
+                    || $className === 'Artisan';
             }
 
             /**

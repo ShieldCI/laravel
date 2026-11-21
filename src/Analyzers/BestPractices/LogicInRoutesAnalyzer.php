@@ -273,7 +273,28 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         }
 
+        // Detect Route::middleware(...)->get(...) and other RouteRegistrar chains, where
+        // the handler sits on the last call of a chain rooted at the Route facade.
+        if ($node instanceof Node\Expr\MethodCall && $this->isRegistrarChainOnRouteFacade($node)) {
+            $this->analyzeRouteCall($node);
+        }
+
         return null;
+    }
+
+    /**
+     * Check if a method call ends a chain whose root is a static call on the Route facade.
+     */
+    private function isRegistrarChainOnRouteFacade(Node\Expr\MethodCall $node): bool
+    {
+        $current = $node->var;
+        while ($current instanceof Node\Expr\MethodCall) {
+            $current = $current->var;
+        }
+
+        return $current instanceof Node\Expr\StaticCall
+            && $current->class instanceof Node\Name
+            && $this->isRouteFacade($current->class);
     }
 
     /**
@@ -374,7 +395,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return end($parts) ?: $normalized;
     }
 
-    private function analyzeRouteCall(Node\Expr\StaticCall $node): void
+    private function analyzeRouteCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): void
     {
         if (empty($node->args)) {
             return;

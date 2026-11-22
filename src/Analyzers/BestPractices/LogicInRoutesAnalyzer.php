@@ -7,6 +7,7 @@ namespace ShieldCI\Analyzers\BestPractices;
 use Illuminate\Contracts\Config\Repository as Config;
 use PhpParser\ErrorHandler;
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use PhpParser\NodeTraverser;
 use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
@@ -157,16 +158,70 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'update', 'updateOrCreate', 'updateOrInsert',
         'delete', 'destroy', 'forceDelete', 'truncate',
         'save', 'push', 'touch', 'increment', 'decrement',
-        'upsert', 'firstOrCreate', 'firstOrNew',
+        'upsert', 'firstOrCreate', 'firstOrNew', 'restore',
     ];
 
     /** @var list<string> Eloquent static query methods (entry points) */
-    private const STATIC_QUERY_METHODS = ['where', 'find', 'all', 'first', 'query'];
+    private const STATIC_QUERY_METHODS = [
+        'where', 'find', 'all', 'first', 'query',
+        'findMany', 'findOr', 'firstOr', 'firstWhere', 'sole', 'value',
+        'paginate', 'simplePaginate', 'cursorPaginate',
+        'sum', 'avg', 'min', 'max', 'cursor', 'lazy',
+    ];
 
-    /** @var list<string> Terminal read methods that complete a query chain */
+    /**
+     * Terminal read methods that complete a query chain. chunk() and each() are left out:
+     * their callback runs per row and can do anything.
+     *
+     * @var list<string>
+     */
     private const TERMINAL_READ_METHODS = [
         'first', 'firstOrFail', 'find', 'findOrFail', 'get', 'pluck',
         'count', 'exists', 'sole', 'soleOrFail', 'value',
+        'doesntExist', 'findMany', 'findOr', 'firstOr', 'firstWhere',
+        'paginate', 'simplePaginate', 'cursorPaginate',
+        'sum', 'avg', 'min', 'max', 'cursor', 'lazy',
+    ];
+
+    /** @var list<string> Paginator and serialisation calls that may follow a read terminal and leave it a read */
+    private const READ_RESULT_TAIL_METHODS = [
+        'withQueryString', 'appends', 'fragment', 'withPath', 'onEachSide',
+        'toArray', 'toJson', 'values', 'keys', 'all', 'items',
+    ];
+
+    /**
+     * Methods that take a callback by contract, which may be an array callable, a function
+     * name or an invokable object as well as a closure.
+     *
+     * @var list<string>
+     */
+    private const CALLBACK_METHODS = [
+        'each', 'eachSpread', 'map', 'mapSpread', 'mapWithKeys', 'mapToGroups', 'flatMap',
+        'filter', 'reject', 'reduce', 'partition', 'sortBy', 'sortByDesc',
+        'tap', 'pipe', 'pipeInto', 'pipeThrough', 'transform', 'when', 'unless',
+        'chunk', 'chunkById', 'chunkMap', 'eachById',
+    ];
+
+    /** @var list<string> Collection higher-order proxies (->each->...), which act on every row */
+    private const HIGHER_ORDER_PROXIES = [
+        'average', 'avg', 'contains', 'doesntContain', 'each', 'every', 'filter', 'first',
+        'flatMap', 'groupBy', 'keyBy', 'map', 'max', 'min', 'partition', 'percentage',
+        'reject', 'skipUntil', 'skipWhile', 'some', 'sortBy', 'sortByDesc', 'sum',
+        'takeUntil', 'takeWhile', 'unique', 'unless', 'until', 'when',
+    ];
+
+    /**
+     * SQL-specific builder methods that make a read complex. A null check is a plain where
+     * clause, so neither whereNull nor whereNotNull is listed.
+     *
+     * @var list<string>
+     */
+    private const SQL_BUILDER_METHODS = [
+        'orWhere', 'whereIn', 'whereNotIn', 'whereBetween',
+        'join', 'leftJoin', 'rightJoin', 'crossJoin',
+        'having', 'havingRaw', 'groupBy',
+        'union', 'unionAll',
+        'lockForUpdate', 'sharedLock',
     ];
 
     /** @var list<string> Utility classes that are NOT business logic */
@@ -497,7 +552,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             'chain_length' => 0,
         ];
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
@@ -508,13 +563,17 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $staticQueryMethods
              * @param  list<string>  $utilityClasses
              * @param  list<string>  $terminalReadMethods
+             * @param  list<string>  $sqlBuilderMethods
+             * @param  list<string>  $readResultTailMethods
              */
             public function __construct(
                 private array &$result,
                 private array $writeMethods,
                 private array $staticQueryMethods,
                 private array $utilityClasses,
-                private array $terminalReadMethods
+                private array $terminalReadMethods,
+                private array $sqlBuilderMethods,
+                private array $readResultTailMethods
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -553,27 +612,23 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             } else {
                                 $this->result['has_complex_reads'] = true;
                             }
+                        } elseif ($chainInfo['chain_length'] === 1 && $this->isDirectSimpleRead($chainInfo['methods'][0])) {
+                            // A direct read followed only by result calls,
+                            // e.g. User::paginate(15)->withQueryString()
+                            $this->result['has_simple_reads'] = true;
                         }
-                        // Note: chain_length === 1 with MethodCall means the static method
-                        // returned something that had a method called on it - this is handled
-                        // by the StaticCall branch below for simple reads
+
+                        // The root StaticCall is skipped below, so its own method is checked
+                        // here: Model::whereIn(...)->get() is as complex as ->whereIn(...)
+                        if (in_array($chainInfo['methods'][0] ?? '', $this->sqlBuilderMethods, true)) {
+                            $this->result['has_complex_reads'] = true;
+                        }
                     }
 
                     // Check for SQL-specific methods that indicate complex queries
-                    if ($node->name instanceof Node\Identifier) {
-                        $method = $node->name->toString();
-
-                        // SQL-specific methods (not found on Collections)
-                        $queryBuilderMethods = [
-                            'orWhere', 'whereIn', 'whereNotIn', 'whereBetween', 'whereNull',
-                            'join', 'leftJoin', 'rightJoin', 'crossJoin',
-                            'having', 'havingRaw', 'groupBy',
-                            'union', 'unionAll',
-                            'lockForUpdate', 'sharedLock',
-                        ];
-                        if (in_array($method, $queryBuilderMethods, true)) {
-                            $this->result['has_complex_reads'] = true;
-                        }
+                    if ($node->name instanceof Node\Identifier
+                        && in_array($node->name->toString(), $this->sqlBuilderMethods, true)) {
+                        $this->result['has_complex_reads'] = true;
                     }
 
                     return null;
@@ -613,6 +668,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                                 // (the query builder will be used somewhere)
                                 $this->result['has_complex_reads'] = true;
                             }
+
+                            return null;
+                        }
+
+                        // SQL-specific builder method called statically (e.g., User::whereIn(...))
+                        if (in_array($method, $this->sqlBuilderMethods, true)) {
+                            $this->result['has_complex_reads'] = true;
                         }
                     }
                 }
@@ -649,7 +711,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              */
             private function isDirectSimpleRead(string $method): bool
             {
-                $directReadMethods = ['find', 'findOrFail', 'findOr', 'findMany', 'all', 'first', 'firstOrFail'];
+                $directReadMethods = [
+                    'find', 'findOrFail', 'findOr', 'findMany', 'all', 'first', 'firstOrFail',
+                    'firstOr', 'firstWhere', 'sole', 'value',
+                    'paginate', 'simplePaginate', 'cursorPaginate',
+                    'sum', 'avg', 'min', 'max', 'cursor', 'lazy',
+                ];
 
                 return in_array($method, $directReadMethods, true);
             }
@@ -699,6 +766,16 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
                 }
 
+                // Paginator or serialisation calls after a read terminal leave it the same read,
+                // e.g. User::latest()->paginate(15)->withQueryString()
+                $readMethods = $methods;
+                while (count($readMethods) > 1 && in_array(end($readMethods), $this->readResultTailMethods, true)) {
+                    array_pop($readMethods);
+                }
+                if (in_array(end($readMethods), $this->terminalReadMethods, true)) {
+                    $methods = $readMethods;
+                }
+
                 return [
                     'is_eloquent_chain' => $isEloquentChain,
                     'chain_length' => count($methods),
@@ -723,7 +800,11 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $ifDepth = 0;
         $hasLoops = false;
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS) extends NodeVisitorAbstract
+        // A closure whose whole body is one read chain is graded by analyzeDbQueries alone:
+        // its calls are skipped by the model-method and heavy-chain checks below
+        $readChainCalls = $this->singleReadChainCalls($closure);
+
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls) extends NodeVisitorAbstract
         {
             /**
              * @param  list<string>  $businessLogicFunctions
@@ -732,6 +813,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $queryMethods
              * @param  list<string>  $utilityClasses
              * @param  list<string>  $safeFluentHelperFunctions
+             * @param  array<int, true>  $readChainCalls
              */
             public function __construct(
                 private bool &$hasComplexLogic,
@@ -742,7 +824,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $serviceContainerMethods,
                 private array $queryMethods,
                 private array $utilityClasses,
-                private array $safeFluentHelperFunctions
+                private array $safeFluentHelperFunctions,
+                private array $readChainCalls
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -787,7 +870,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                         // Only flag if it's a model with a non-query method
                         if ($this->isLikelyModel($node->class)
-                            && ! in_array($method, $this->queryMethods, true)) {
+                            && ! in_array($method, $this->queryMethods, true)
+                            && ! isset($this->readChainCalls[spl_object_id($node)])) {
                             $this->hasComplexLogic = true;
 
                             return null;
@@ -799,8 +883,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\MethodCall) {
                     $chainLength = $this->countMethodChain($node);
                     if ($chainLength >= 3) {
-                        // Skip if chain starts from safe fluent API helper
-                        if (! $this->isChainFromSafeFluentRoot($node)) {
+                        // Skip if chain starts from safe fluent API helper, or is the read chain
+                        if (! $this->isChainFromSafeFluentRoot($node)
+                            && ! isset($this->readChainCalls[spl_object_id($node)])) {
                             $this->hasComplexLogic = true;
 
                             return null;
@@ -916,5 +1001,127 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $traverser->traverse([$closure]);
 
         return $hasComplexLogic;
+    }
+
+    /**
+     * The calls, by spl_object_id, of the read chain that is the closure's whole body: the
+     * expression of an arrow function, or the only statement of a closure as `return <chain>;`.
+     * Empty when the body is anything else.
+     *
+     * The chain is a read terminal, optionally followed by paginator or serialisation calls,
+     * over named method calls and relation property hops down to a model static call or the
+     * signed-in user. No call along it may be a write or take a callback.
+     *
+     * @return array<int, true>
+     */
+    private function singleReadChainCalls(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
+    {
+        // A comment after the last statement is parsed as a Nop statement
+        $statements = $closure instanceof Node\Expr\Closure
+            ? array_values(array_filter($closure->stmts, static fn (Node\Stmt $stmt): bool => ! $stmt instanceof Node\Stmt\Nop))
+            : [];
+
+        if ($closure instanceof Node\Expr\ArrowFunction) {
+            $current = $closure->expr;
+        } elseif (count($statements) === 1
+            && $statements[0] instanceof Node\Stmt\Return_
+            && $statements[0]->expr !== null) {
+            $current = $statements[0]->expr;
+        } else {
+            return [];
+        }
+
+        $calls = [];
+
+        while ($current instanceof Node\Expr\MethodCall
+            && $current->name instanceof Node\Identifier
+            && in_array($current->name->toString(), self::READ_RESULT_TAIL_METHODS, true)) {
+            if ($this->takesCallback($current)) {
+                return [];
+            }
+            $calls[spl_object_id($current)] = true;
+            $current = $current->var;
+        }
+
+        if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
+            || ! $current->name instanceof Node\Identifier
+            || ! in_array($current->name->toString(), self::TERMINAL_READ_METHODS, true)) {
+            return [];
+        }
+
+        while (true) {
+            if ($current instanceof Node\Expr\PropertyFetch
+                && $current->name instanceof Node\Identifier
+                && ! in_array($current->name->toString(), self::HIGHER_ORDER_PROXIES, true)) {
+                $current = $current->var;
+
+                continue;
+            }
+
+            if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
+                || ! $current->name instanceof Node\Identifier
+                || in_array($current->name->toString(), self::WRITE_METHODS, true)
+                || $this->takesCallback($current)) {
+                return [];
+            }
+
+            $calls[spl_object_id($current)] = true;
+
+            if (self::isSignedInUser($current)) {
+                return $calls;
+            }
+
+            if ($current instanceof Node\Expr\StaticCall) {
+                return $current->class instanceof Node\Name && self::isLikelyModel($current->class, self::UTILITY_CLASSES)
+                    ? $calls
+                    : [];
+            }
+
+            $current = $current->var;
+        }
+    }
+
+    /**
+     * Whether the call takes a callback by contract, is a first-class callable, or has an
+     * argument holding a closure, an arrow function or a first-class callable.
+     */
+    private function takesCallback(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    {
+        if ($call->isFirstClassCallable()
+            || ($call->name instanceof Node\Identifier && in_array($call->name->toString(), self::CALLBACK_METHODS, true))) {
+            return true;
+        }
+
+        $callback = (new NodeFinder)->findFirst($call->getArgs(), static function (Node $node): bool {
+            return $node instanceof Node\Expr\Closure
+                || $node instanceof Node\Expr\ArrowFunction
+                || ($node instanceof Node\Expr\CallLike && $node->isFirstClassCallable());
+        });
+
+        return $callback !== null;
+    }
+
+    /**
+     * Whether the expression is the signed-in user: auth()->user(), request()->user(),
+     * $request->user() or Auth::user().
+     */
+    private static function isSignedInUser(Node\Expr $expr): bool
+    {
+        if (! ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall)
+            || ! $expr->name instanceof Node\Identifier
+            || $expr->name->toString() !== 'user') {
+            return false;
+        }
+
+        if ($expr instanceof Node\Expr\StaticCall) {
+            return $expr->class instanceof Node\Name && self::getShortClassName($expr->class) === 'Auth';
+        }
+
+        $receiver = $expr->var;
+
+        return $receiver instanceof Node\Expr\Variable
+            || ($receiver instanceof Node\Expr\FuncCall
+                && $receiver->name instanceof Node\Name
+                && in_array($receiver->name->toString(), ['auth', 'request'], true));
     }
 }

@@ -3178,4 +3178,91 @@ PHP;
         sort($lines);
         $this->assertSame([7, 18], $lines);
     }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function bareAppHelperProvider(): array
+    {
+        return [
+            'getLocale' => ['fn () => app()->getLocale()'],
+            'environment' => ['fn () => app()->environment()'],
+            'environment with argument' => ["fn () => app()->environment('local') ? 'dev' : 'live'"],
+            'isLocal' => ['fn () => app()->isLocal()'],
+            'isProduction' => ['fn () => app()->isProduction()'],
+            'version' => ['fn () => app()->version()'],
+            'runningInConsole' => ['fn () => app()->runningInConsole()'],
+            'currentLocale' => ['fn () => app()->currentLocale()'],
+            'fully qualified' => ['fn () => \\app()->getLocale()'],
+            'closure body' => ["function () {\n    return ['locale' => app()->getLocale()];\n}"],
+        ];
+    }
+
+    /**
+     * @dataProvider bareAppHelperProvider
+     */
+    #[DataProvider('bareAppHelperProvider')]
+    public function test_passes_bare_app_helper_for_application_info(string $handler): void
+    {
+        $code = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/sample', {$handler});\n";
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function appContainerResolutionProvider(): array
+    {
+        return [
+            'app with class argument' => ['fn () => app(SampleBillingService::class)->charge(1)'],
+            'app with string argument' => ["fn () => app('sample.mailer')->send('sample')"],
+            'app make' => ['fn () => app()->make(SampleWidget::class)->run()'],
+            'app makeWith' => ["fn () => app()->makeWith(SampleWidget::class, ['size' => 1])->run()"],
+            'app call' => ["fn () => app()->call([SampleHandler::class, 'handle'])"],
+            'app get' => ["fn () => app()->get('sample.service')->run()"],
+            'app array access' => ["fn () => app()['sample.service']->run()"],
+            'resolve' => ['fn () => resolve(SampleWidget::class)->run()'],
+            'app magic property' => ["fn () => app()->sample_mailer->send('sample')"],
+            'app assigned to a variable' => ["function () {\n    \$container = app();\n    return \$container->make(SampleWidget::class)->run();\n}"],
+            'app nullsafe make' => ['fn () => app()?->make(SampleWidget::class)->run()'],
+            'app dynamic method name' => ["fn () => app()->{'make'}(SampleWidget::class)"],
+            'app make in another case' => ['fn () => app()->MAKE(SampleWidget::class)->run()'],
+            'app build' => ['fn () => app()->build(SampleWidget::class)->run()'],
+            'app factory' => ['fn () => app()->factory(SampleWidget::class)'],
+            'app offsetGet' => ["fn () => app()->offsetGet('sample.service')->run()"],
+            'app passed as an argument' => ["fn () => view('sample', ['container' => app()])"],
+        ];
+    }
+
+    /**
+     * @dataProvider appContainerResolutionProvider
+     */
+    #[DataProvider('appContainerResolutionProvider')]
+    public function test_flags_app_helper_container_resolution_as_high(string $handler): void
+    {
+        $code = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/sample', {$handler});\n";
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+        $issues = $result->getIssues();
+        $this->assertCount(1, $issues);
+        $this->assertEquals('high', $issues[0]->severity->value);
+    }
 }

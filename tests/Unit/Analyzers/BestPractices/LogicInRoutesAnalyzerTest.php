@@ -10,6 +10,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\BestPractices\LogicInRoutesAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LogicInRoutesAnalyzerTest extends AnalyzerTestCase
@@ -2430,11 +2431,11 @@ PHP;
             ],
             'custom scope read then higher-order delete' => [
                 'Article::visible()->get()->each->delete()',
-                'Route closure contains complex business logic',
+                'Route closure contains database write operations, complex business logic',
             ],
             'custom scope read then nullsafe delete' => [
                 'Article::visible()->first()?->delete()',
-                'Route closure contains complex business logic',
+                'Route closure contains database write operations, complex business logic',
             ],
             'domain method without a read terminal' => [
                 'Invoice::issueCredit($id)',
@@ -3444,5 +3445,515 @@ use Acme\\Jobs\\ArchiveDigest;',
                 "Route::get('/makers', fn () => Artisan::label());",
             ],
         ];
+    }
+
+    /**
+     * @dataProvider writeExpressionProvider
+     */
+    #[DataProvider('writeExpressionProvider')]
+    public function test_a_write_in_an_arrow_route_is_a_database_write(string $expression): void
+    {
+        $code = <<<PHP
+<?php
+
+use App\Models\Ticket;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/tickets/{id}', fn (\$id) => {$expression});
+PHP;
+
+        $result = $this->analyzeRouteCode($code);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('route-has-db-writes', $issue->metadata['code'] ?? null);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function writeExpressionProvider(): array
+    {
+        return [
+            // Already detected: the plain and chained spellings of a write.
+            'find()->delete()' => ['Ticket::find($id)->delete()'],
+            'where()->update()' => ["Ticket::where('id', \$id)->update(['open' => false])"],
+            'static destroy()' => ['Ticket::destroy($id)'],
+
+            // A nullsafe call on the found model.
+            'find()?->delete()' => ['Ticket::find($id)?->delete()'],
+            'where()->first()?->delete()' => ["Ticket::where('id', \$id)->first()?->delete()"],
+            'find()?->update()' => ["Ticket::find(\$id)?->update(['open' => false])"],
+            'find()?->labels()->sync()' => ['Ticket::find($id)?->labels()->sync([1])'],
+
+            // Pivot writes on a belongs-to-many relation.
+            'sync()' => ['Ticket::findOrFail($id)->labels()->sync([1])'],
+            'syncWithoutDetaching()' => ['Ticket::findOrFail($id)->labels()->syncWithoutDetaching([1])'],
+            'syncWithPivotValues()' => ["Ticket::findOrFail(\$id)->labels()->syncWithPivotValues([1], ['pinned' => true])"],
+            'attach()' => ['Ticket::findOrFail($id)->labels()->attach(1)'],
+            'detach()' => ['Ticket::findOrFail($id)->labels()->detach(1)'],
+            'toggle()' => ['Ticket::findOrFail($id)->labels()->toggle([1])'],
+            'updateExistingPivot()' => ["Ticket::findOrFail(\$id)->labels()->updateExistingPivot(1, ['pinned' => true])"],
+
+            // Has-many and builder writes.
+            'createMany()' => ["Ticket::findOrFail(\$id)->replies()->createMany([['body' => 'a']])"],
+            'saveMany()' => ['Ticket::findOrFail($id)->replies()->saveMany([])'],
+            'relation forceCreate()' => ["Ticket::findOrFail(\$id)->replies()->forceCreate(['body' => 'a'])"],
+            'static forceCreate()' => ["Ticket::forceCreate(['subject' => 'a'])"],
+
+            // The quiet variants, which skip model events but still write.
+            'static createQuietly()' => ["Ticket::createQuietly(['subject' => 'a'])"],
+            'static forceCreateQuietly()' => ["Ticket::forceCreateQuietly(['subject' => 'a'])"],
+            'createManyQuietly()' => ["Ticket::findOrFail(\$id)->replies()->createManyQuietly([['body' => 'a']])"],
+            'saveManyQuietly()' => ['Ticket::findOrFail($id)->replies()->saveManyQuietly([])'],
+            'saveQuietly()' => ['Ticket::findOrFail($id)->saveQuietly()'],
+            'updateQuietly()' => ["Ticket::findOrFail(\$id)->updateQuietly(['open' => false])"],
+            'deleteQuietly()' => ['Ticket::findOrFail($id)->deleteQuietly()'],
+            'forceDeleteQuietly()' => ['Ticket::findOrFail($id)->forceDeleteQuietly()'],
+            'restoreQuietly()' => ['Ticket::findOrFail($id)->restoreQuietly()'],
+            'incrementQuietly()' => ["Ticket::findOrFail(\$id)->incrementQuietly('views')"],
+            'decrementQuietly()' => ["Ticket::findOrFail(\$id)->decrementQuietly('views')"],
+            'touchQuietly()' => ['Ticket::findOrFail($id)->touchQuietly()'],
+            'pushQuietly()' => ['Ticket::findOrFail($id)->pushQuietly()'],
+
+            // The *OrFail, *OrFirst and multi-column writes.
+            'updateOrFail()' => ["Ticket::findOrFail(\$id)->updateOrFail(['open' => false])"],
+            'saveOrFail()' => ['Ticket::findOrFail($id)->saveOrFail()'],
+            'deleteOrFail()' => ['Ticket::findOrFail($id)->deleteOrFail()'],
+            'static createOrFirst()' => ["Ticket::createOrFirst(['subject' => 'a'])"],
+            'relation createOrFirst()' => ["Ticket::findOrFail(\$id)->replies()->createOrFirst(['body' => 'a'])"],
+            'static forceDestroy()' => ['Ticket::forceDestroy($id)'],
+            'incrementEach()' => ["Ticket::where('id', \$id)->incrementEach(['views' => 1])"],
+            'decrementEach()' => ["Ticket::findOrFail(\$id)->decrementEach(['views' => 1])"],
+            'insertUsing()' => ["Ticket::query()->insertUsing(['subject'], Ticket::query()->select('subject'))"],
+            'insertOrIgnoreUsing()' => ["Ticket::query()->insertOrIgnoreUsing(['subject'], Ticket::query()->select('subject'))"],
+            'insertOrIgnore()' => ["Ticket::query()->insertOrIgnore(['subject' => 'a'])"],
+            'insertGetId()' => ["Ticket::query()->insertGetId(['subject' => 'a'])"],
+            'upsert()' => ["Ticket::upsert([['subject' => 'a']], ['subject'])"],
+        ];
+    }
+
+    /**
+     * @dataProvider nonModelSameNamedCallProvider
+     */
+    #[DataProvider('nonModelSameNamedCallProvider')]
+    public function test_a_same_named_call_off_a_non_model_is_not_a_write(string $expression): void
+    {
+        $code = <<<PHP
+<?php
+
+use App\Services\FeatureFlags;
+use App\Support\Mirror;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/flags', fn () => {$expression});
+PHP;
+
+        $this->assertPassed($this->analyzeRouteCode($code));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonModelSameNamedCallProvider(): array
+    {
+        return [
+            'service toggle()' => ["FeatureFlags::current()->toggle('beta')"],
+            'service sync()' => ['Mirror::remote()->sync()'],
+            'service attach()' => ["Mirror::remote()->attach('origin')"],
+            'nullsafe service delete()' => ["FeatureFlags::current()?->delete('beta')"],
+        ];
+    }
+
+    /**
+     * @dataProvider modelNamedLikeAUtilityProvider
+     */
+    #[DataProvider('modelNamedLikeAUtilityProvider')]
+    public function test_a_write_on_a_model_named_like_a_utility_class_is_flagged(string $import, string $statement): void
+    {
+        $code = <<<PHP
+<?php
+
+use {$import};
+use Illuminate\Support\Facades\Route;
+
+Route::delete('/assets/{id}', function (\$id) {
+    {$statement}
+    return 'ok';
+});
+PHP;
+
+        $result = $this->analyzeRouteCode($code);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function modelNamedLikeAUtilityProvider(): array
+    {
+        return [
+            'App\Models\File' => ['App\Models\File', "File::where('id', \$id)->delete();"],
+            'App\Models\Storage' => ['App\Models\Storage', 'Storage::destroy($id);'],
+            'domain Models\Cache' => ['Domain\Media\Models\Cache', "Cache::whereKey(\$id)->update(['stale' => true]);"],
+            'App\Models\Config find()?->delete()' => ['App\Models\Config', 'Config::find($id)?->delete();'],
+            'App\Models\Config static create()' => ['App\Models\Config', "Config::create(['key' => \$id]);"],
+        ];
+    }
+
+    /**
+     * @dataProvider utilityFacadeCallProvider
+     */
+    #[DataProvider('utilityFacadeCallProvider')]
+    public function test_a_utility_facade_call_is_not_a_write(string $imports, string $statement): void
+    {
+        $code = <<<PHP
+<?php
+
+{$imports}
+use Illuminate\Support\Facades\Route;
+
+Route::delete('/assets/{name}', function (\$name) {
+    {$statement}
+    return 'ok';
+});
+PHP;
+
+        $this->assertPassed($this->analyzeRouteCode($code));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function utilityFacadeCallProvider(): array
+    {
+        return [
+            'Storage facade delete()' => ['use Illuminate\Support\Facades\Storage;', 'Storage::delete($name);'],
+            'Cache facade forget()' => ['use Illuminate\Support\Facades\Cache;', 'Cache::forget($name);'],
+            'File facade delete()' => ['use Illuminate\Support\Facades\File;', 'File::delete($name);'],
+            'unimported File delete()' => ['', 'File::delete($name);'],
+        ];
+    }
+
+    /**
+     * @dataProvider writeRootedAtTheUserOrAPropertyProvider
+     */
+    #[DataProvider('writeRootedAtTheUserOrAPropertyProvider')]
+    public function test_a_write_rooted_at_the_signed_in_user_or_through_a_property_is_a_database_write(string $import, string $closure): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile($import, $closure));
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function writeRootedAtTheUserOrAPropertyProvider(): array
+    {
+        return [
+            'auth()->user()->update()' => ['App\Models\Ticket', "fn () => auth()->user()->update(['name' => 'a'])"],
+            "auth('staff')->user()->delete()" => ['App\Models\Ticket', "fn () => auth('staff')->user()->delete()"],
+            'request()->user()->relation()->create()' => ['App\Models\Ticket', "fn () => request()->user()->tickets()->create(['subject' => 'a'])"],
+            '$request->user()->delete()' => ['Illuminate\Http\Request', 'fn (Request $request) => $request->user()->delete()'],
+            'Auth::user()->update()' => ['Illuminate\Support\Facades\Auth', "fn () => Auth::user()->update(['name' => 'a'])"],
+            'find()->property->update()' => ['App\Models\Ticket', "fn (\$id) => Ticket::find(\$id)->assignee->update(['name' => 'a'])"],
+            'find()?->property?->delete()' => ['App\Models\Ticket', 'fn ($id) => Ticket::find($id)?->assignee?->delete()'],
+            'get()->each->delete()' => ['App\Models\Ticket', "function (\$id) { Ticket::where('board_id', \$id)->get()->each->delete(); return 1; }"],
+            'auth()->user()->push()' => ['App\Models\Ticket', 'fn () => auth()->user()->push()'],
+        ];
+    }
+
+    /**
+     * @dataProvider readKeepsItsVerdictProvider
+     */
+    #[DataProvider('readKeepsItsVerdictProvider')]
+    public function test_a_read_or_a_non_model_call_keeps_passing(string $import, string $closure): void
+    {
+        $this->assertPassed($this->analyzeRouteCode($this->routeFile($import, $closure)));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function readKeepsItsVerdictProvider(): array
+    {
+        return [
+            // Reads on a model whose short name matches a utility class.
+            'App\Models\Config latest()->get()' => ['App\Models\Config', 'fn () => Config::latest()->get()'],
+            'App\Models\Response paginate()' => ['App\Models\Response', 'fn () => Response::paginate(10)'],
+            'App\Models\Config firstWhere()' => ['App\Models\Config', "fn (\$key) => Config::firstWhere('key', \$key)"],
+
+            // Reads on a model whose short name matches a business facade.
+            'App\Models\Event find()' => ['App\Models\Event', 'fn ($id) => Event::find($id)'],
+            'App\Models\Notification find()' => ['App\Models\Notification', 'fn ($id) => Notification::find($id)'],
+
+            // Reads through the signed-in user or a property, and a write off an arbitrary variable.
+            'request()->user() relation read' => ['App\Models\Ticket', 'fn () => request()->user()->tickets()->latest()->get()'],
+            'find()->property->relation()->get()' => ['App\Models\Ticket', 'fn ($id) => Ticket::find($id)->assignee->tickets()->get()'],
+            'arbitrary variable update()' => ['App\Models\Ticket', "fn (\$ticket) => \$ticket->update(['open' => false])"],
+
+            // Reads on a model that is one only by its namespace, not by its utility short name.
+            'App\Models\Config where()->orderBy()->get()' => ['App\Models\Config', "fn () => Config::where('group', 'mail')->orderBy('key')->get()"],
+            'App\Models\Config where()' => ['App\Models\Config', "fn () => Config::where('a', 1)"],
+            'domain Models\Cache query()->latest()->paginate()' => ['Domain\Media\Models\Cache', 'fn () => Cache::query()->latest()->paginate()'],
+
+            // Reads through a nullsafe link.
+            'find()?->toJson()' => ['App\Models\Ticket', 'fn ($id) => Ticket::find($id)?->toJson()'],
+            'where()->first()?->relation()->get()' => ['App\Models\Ticket', "fn (\$slug) => Ticket::where('slug', \$slug)->first()?->replies()->get()"],
+            'variable ?->whereIn()' => ['App\Models\Ticket', "fn (\$query) => \$query?->whereIn('id', [1])"],
+
+            // An in-memory push() on a loaded relation, which is a Collection.
+            'find()->property->push()' => ['App\Models\Ticket', 'fn ($id) => Ticket::findOrFail($id)->labels->push(new Label)->toJson()'],
+            'auth()->user()->property->push()' => ['App\Models\Ticket', 'fn ($role) => auth()->user()->roles->push($role)'],
+        ];
+    }
+
+    /**
+     * @dataProvider belongsToKeyChangeProvider
+     */
+    #[DataProvider('belongsToKeyChangeProvider')]
+    public function test_associate_and_dissociate_are_not_database_writes(string $closure): void
+    {
+        // BelongsTo::associate() and dissociate() only set the key and the relation in memory;
+        // nothing is saved until save() is called.
+        $result = $this->analyzeRouteCode($this->routeFile('App\Models\Ticket', $closure));
+
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringNotContainsString('database write operations', $issue->message);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function belongsToKeyChangeProvider(): array
+    {
+        return [
+            'associate()->toArray()' => ['fn ($id) => Ticket::findOrFail($id)->assignee()->associate(request()->user())->toArray()'],
+            'dissociate()' => ['fn () => Ticket::find(1)->assignee()->dissociate()'],
+        ];
+    }
+
+    public function test_collection_push_after_a_terminal_read_on_the_signed_in_user_is_not_a_write(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/roles', function () {
+    return Auth::user()->getRoleNames()->push('member');
+});
+PHP;
+
+        $this->assertPassed($this->analyzeRouteCode($code));
+    }
+
+    public function test_collection_push_after_a_nullsafe_relation_read_is_not_a_write(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Ticket;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/labels', function () {
+    return Ticket::find(1)?->labels()->pluck('name')->push('featured');
+});
+PHP;
+
+        $this->assertPassed($this->analyzeRouteCode($code));
+    }
+
+    public function test_collection_push_after_a_pluck_is_a_complex_query_not_a_write(): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile('App\Models\Ticket', "fn () => Ticket::where('a', 1)->pluck('name')->push('x')"));
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Route closure contains complex database queries', $issue->message);
+        $this->assertSame(Severity::Medium, $issue->severity);
+        $this->assertSame('route-has-complex-queries', $issue->metadata['code'] ?? null);
+    }
+
+    public function test_collection_push_on_the_signed_in_users_relation_keeps_the_business_logic_verdict(): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile('App\Models\Ticket', 'fn () => auth()->user()->tickets()->get()->push(1)'));
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Route closure contains complex business logic', $issue->message);
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertSame('route-has-business-logic', $issue->metadata['code'] ?? null);
+    }
+
+    /**
+     * @dataProvider firstClassCallableOfAWriteProvider
+     */
+    #[DataProvider('firstClassCallableOfAWriteProvider')]
+    public function test_a_first_class_callable_of_a_write_method_is_not_a_write(string $import, string $closure, ?string $expectedMessage): void
+    {
+        // delete(...) builds a Closure; nothing is written until it is called.
+        $result = $this->analyzeRouteCode($this->routeFile($import, $closure));
+
+        if ($expectedMessage === null) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($expectedMessage, $result->getIssues()[0]->message);
+    }
+
+    /**
+     * @return array<string, array{string, string, string|null}>
+     */
+    public static function firstClassCallableOfAWriteProvider(): array
+    {
+        return [
+            'Auth::user()->delete(...)' => ['Illuminate\Support\Facades\Auth', 'fn () => Auth::user()->delete(...)', null],
+            'find()?->delete(...)' => ['App\Models\Ticket', 'fn () => Ticket::find(1)?->delete(...)', null],
+            'find()->property->update(...)' => ['App\Models\Ticket', 'fn () => Ticket::find(1)->assignee->update(...)', null],
+            // A two-call chain that does not end in a terminal read keeps its read grade.
+            'find()->delete(...)' => ['App\Models\Ticket', 'fn () => Ticket::find(1)->delete(...)', 'Route closure contains complex database queries'],
+        ];
+    }
+
+    /**
+     * @dataProvider argumentlessPushProvider
+     */
+    #[DataProvider('argumentlessPushProvider')]
+    public function test_an_argumentless_push_is_a_database_write(string $import, string $closure): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile($import, $closure));
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function argumentlessPushProvider(): array
+    {
+        return [
+            'Auth::user()->push()' => ['Illuminate\Support\Facades\Auth', 'fn () => Auth::user()->push()'],
+            'find()->push()' => ['App\Models\Ticket', 'fn () => Ticket::find(1)->push()'],
+            // Master passes this: its chain walk stopped at the property. Model::push() saves.
+            'find()->property->push()' => ['App\Models\Ticket', 'fn () => Ticket::find(1)->assignee->push()'],
+        ];
+    }
+
+    /**
+     * @dataProvider strictModeReadOnAUtilityNamedModelProvider
+     */
+    #[DataProvider('strictModeReadOnAUtilityNamedModelProvider')]
+    public function test_strict_mode_keeps_passing_a_read_on_a_utility_named_model(string $import, string $closure): void
+    {
+        $this->assertPassed($this->analyzeRouteCode($this->routeFile($import, $closure), allowSimpleReads: false));
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function strictModeReadOnAUtilityNamedModelProvider(): array
+    {
+        return [
+            'App\Models\File find()' => ['App\Models\File', 'fn ($id) => File::find($id)'],
+            'App\Models\Config latest()->get()' => ['App\Models\Config', 'fn () => Config::latest()->get()'],
+        ];
+    }
+
+    public function test_strict_mode_still_flags_a_read_on_an_ordinary_model(): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile('App\Models\Ticket', 'fn ($id) => Ticket::find($id)'), allowSimpleReads: false);
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining('database queries (strict mode)', $result);
+        $this->assertSame(Severity::Low, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @dataProvider businessFacadeProvider
+     */
+    #[DataProvider('businessFacadeProvider')]
+    public function test_a_business_facade_call_stays_business_logic(string $imports): void
+    {
+        $code = <<<PHP
+<?php
+
+{$imports}
+use Illuminate\Support\Facades\Route;
+
+Route::post('/tickets/{id}', fn (\$id) => Event::dispatch('ticket.closed'));
+PHP;
+
+        $result = $this->analyzeRouteCode($code);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function businessFacadeProvider(): array
+    {
+        return [
+            'imported Event facade' => ['use Illuminate\Support\Facades\Event;'],
+            'unimported Event' => [''],
+        ];
+    }
+
+    private function routeFile(string $import, string $closure): string
+    {
+        return <<<PHP
+<?php
+
+use {$import};
+use Illuminate\Support\Facades\Route;
+
+Route::post('/tickets/{id}', {$closure});
+PHP;
+    }
+
+    private function analyzeRouteCode(string $code, bool $allowSimpleReads = true): ResultInterface
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([
+            'shieldci' => [
+                'analyzers' => [
+                    'best-practices' => [
+                        'logic-in-routes' => [
+                            'max_closure_lines' => 5,
+                            'allow_simple_reads' => $allowSimpleReads,
+                        ],
+                    ],
+                ],
+            ],
+        ]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        return $analyzer->analyze();
     }
 }

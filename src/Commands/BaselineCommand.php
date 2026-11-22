@@ -159,7 +159,25 @@ class BaselineCommand extends Command
             $baselineData,
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
         );
-        file_put_contents($outputPath, $json);
+        // Mirror AnalyzeCommand::saveReport(): create a missing parent directory and check
+        // the write instead of reporting success for a baseline that never landed. A bare
+        // file_put_contents() answered false on a missing directory or a permission failure
+        // while the success message and exit 0 still went out, so CI continued with no
+        // baseline at all. The @ keeps PHP's warning from aborting under an error handler;
+        // the return value carries the result the old code discarded.
+        $directory = dirname($outputPath);
+
+        if (! is_dir($directory) && ! @mkdir($directory, 0755, true) && ! is_dir($directory)) {
+            $this->error("❌ Could not create the baseline directory: {$directory}");
+
+            return self::FAILURE;
+        }
+
+        if (@file_put_contents($outputPath, $json) === false) {
+            $this->error("❌ Could not write the baseline to: {$outputPath}");
+
+            return self::FAILURE;
+        }
 
         $this->newLine();
         $this->info('✅ Baseline file generated successfully!');

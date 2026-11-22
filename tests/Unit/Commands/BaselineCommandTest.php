@@ -89,6 +89,91 @@ class BaselineCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_creates_a_missing_parent_directory_when_writing_the_baseline(): void
+    {
+        $this->registerMockAnalyzerManager([
+            new Issue(
+                message: 'Test issue',
+                location: new Location('/app/Test.php', 10),
+                severity: Severity::High,
+                recommendation: 'Fix this issue',
+            ),
+        ]);
+
+        // Reproduces #645: the configured directory does not exist, so the write used to
+        // fail while the command still reported success and exited 0.
+        $directory = $this->uniqueTempPath('shieldci-baseline-dir-');
+        $baselinePath = $directory.'/baseline.json';
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+
+        $this->assertSame(0, $exitCode);
+        $this->assertFileExists($baselinePath);
+        $this->assertIsArray(json_decode((string) file_get_contents($baselinePath), true));
+
+        @unlink($baselinePath);
+        @rmdir($directory);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_the_baseline_directory_cannot_be_created(): void
+    {
+        $this->registerMockAnalyzerManager([
+            new Issue(
+                message: 'Test issue',
+                location: new Location('/app/Test.php', 10),
+                severity: Severity::High,
+                recommendation: 'Fix this issue',
+            ),
+        ]);
+
+        // A regular file where the parent directory should be: mkdir cannot create it and
+        // cannot report that it already exists either. Mirrors shield:analyze --output.
+        $file = $this->uniqueTempPath('shieldci-baseline-not-a-dir-');
+        touch($file);
+        $baselinePath = $file.'/baseline.json';
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        @unlink($file);
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not create the baseline directory', $output);
+        $this->assertStringNotContainsString('Baseline file generated successfully', $output);
+        $this->assertFileDoesNotExist($baselinePath);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_the_baseline_file_cannot_be_written(): void
+    {
+        $this->registerMockAnalyzerManager([
+            new Issue(
+                message: 'Test issue',
+                location: new Location('/app/Test.php', 10),
+                severity: Severity::High,
+                recommendation: 'Fix this issue',
+            ),
+        ]);
+
+        // The parent exists, so only the write itself fails: the destination is a directory.
+        $directory = $this->makeTempDirectory('shieldci-baseline-write-');
+        config(['shieldci.baseline_file' => $directory]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not write the baseline', $output);
+        $this->assertStringNotContainsString('Baseline file generated successfully', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_writes_a_baseline_for_issues_holding_invalid_utf8(): void
     {
         $this->registerMockAnalyzerManager([

@@ -2956,4 +2956,226 @@ PHP;
 
         return $analyzer->analyze();
     }
+
+    /**
+     * @dataProvider registrarChainRouteProvider
+     */
+    #[DataProvider('registrarChainRouteProvider')]
+    public function test_flags_handler_closure_on_a_registrar_chain(string $route): void
+    {
+        // A route registered through a RouteRegistrar chain (Route::middleware()->get())
+        // carries its handler on the chain's last call rather than on the static call, and
+        // is graded as the same route registered with Route::get() would be.
+        $code = <<<PHP
+<?php
+
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\Route as Router;
+use App\Models\Widget;
+
+{$route}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
+        $this->assertSame(7, $issues[0]->location?->line);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function registrarChainRouteProvider(): array
+    {
+        $body = "function () {\n    return Widget::create(request()->all());\n}";
+
+        return [
+            'middleware then get' => ["Route::middleware('auth')->get('/widgets', {$body});"],
+            'prefix then post' => ["Route::prefix('admin')->post('/widgets', {$body});"],
+            'name then get' => ["Route::name('widgets.store')->get('/widgets', {$body});"],
+            'middleware, prefix and name then put' => ["Route::middleware(['auth'])->prefix('admin')->name('admin.')->put('/widgets', {$body});"],
+            'domain then get' => ["Route::domain('shop.example.test')->get('/widgets', {$body});"],
+            'withoutMiddleware then get' => ["Route::withoutMiddleware('throttle')->get('/widgets', {$body});"],
+            'middleware then any' => ["Route::middleware('auth')->any('/widgets', {$body});"],
+            'middleware then match' => ["Route::middleware('auth')->match(['get', 'post'], '/widgets', {$body});"],
+            'middleware then patch' => ["Route::middleware('auth')->patch('/widgets', {$body});"],
+            'middleware then delete' => ["Route::middleware('auth')->delete('/widgets', {$body});"],
+            'middleware then options' => ["Route::middleware('auth')->options('/widgets', {$body});"],
+            'middleware then arrow function' => ["Route::middleware('auth')->post('/widgets', fn () =>\n    Widget::create(request()->all()));"],
+            'aliased facade' => ["Router::middleware('auth')->post('/widgets', {$body});"],
+            'fully qualified facade' => ["\\Illuminate\\Support\\Facades\\Route::prefix('admin')->post('/widgets', {$body});"],
+        ];
+    }
+
+    public function test_registrar_chain_reports_the_same_issue_as_a_plain_route(): void
+    {
+        $plain = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\Widget;
+
+Route::post('/widgets', function () {
+    return Widget::create(request()->all());
+});
+PHP;
+
+        $chained = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\Widget;
+
+Route::middleware('auth')->post('/widgets', function () {
+    return Widget::create(request()->all());
+});
+PHP;
+
+        $plainDir = $this->createTempDirectory(['routes/web.php' => $plain]);
+        $chainedDir = $this->createTempDirectory(['routes/web.php' => $chained]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($plainDir);
+        $analyzer->setPaths(['routes']);
+        $plainIssues = $analyzer->analyze()->getIssues();
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($chainedDir);
+        $analyzer->setPaths(['routes']);
+        $chainedIssues = $analyzer->analyze()->getIssues();
+
+        $this->assertCount(1, $plainIssues);
+        $this->assertCount(1, $chainedIssues);
+        $this->assertSame($plainIssues[0]->message, $chainedIssues[0]->message);
+        $this->assertSame($plainIssues[0]->severity, $chainedIssues[0]->severity);
+        $this->assertSame($plainIssues[0]->recommendation, $chainedIssues[0]->recommendation);
+        $this->assertSame($plainIssues[0]->metadata, $chainedIssues[0]->metadata);
+    }
+
+    public function test_registrar_chain_with_trivial_closure_passes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::middleware('auth')->get('/widgets', function () {
+    return view('widgets.index');
+});
+
+Route::prefix('admin')->name('admin.')->get('/widgets', fn () => view('admin.widgets'));
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_registrar_chain_without_a_closure_handler_passes(): void
+    {
+        // Controller routes, resources and controller-group string actions carry no closure.
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Http\Controllers\WidgetController;
+
+Route::middleware('auth')->post('/widgets', [WidgetController::class, 'store']);
+Route::middleware('auth')->resource('gadgets', WidgetController::class);
+Route::controller(WidgetController::class)->post('/widgets/archive', 'archive');
+Route::controller(WidgetController::class)->group(function () {
+    Route::post('/widgets/restore', 'restore');
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_router_variable_chain_is_not_analysed(): void
+    {
+        // Only chains rooted at the Route facade are routes; a $router variable is out of scope.
+        $code = <<<'PHP'
+<?php
+
+use App\Models\Widget;
+
+$router->middleware('auth')->post('/widgets', function () {
+    return Widget::create(request()->all());
+});
+
+$router->post('/gadgets', function () {
+    return Widget::create(request()->all());
+});
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_registrar_group_closure_is_not_a_handler_but_its_routes_are_analysed_once(): void
+    {
+        // The group closure holds route registrations, so it is never graded itself even
+        // though it is long and contains a write; each nested handler is graded exactly once.
+        $code = <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+use App\Models\Widget;
+
+Route::middleware('auth')->prefix('admin')->group(function () {
+    Route::prefix('widgets')->post('/', function () {
+        return Widget::create(request()->all());
+    });
+
+    Route::get('/widgets', function () {
+        return view('admin.widgets');
+    });
+
+    Route::name('gadgets.')->get('/gadgets', fn () => view('admin.gadgets'));
+});
+
+Route::post('/widgets', function () {
+    return Widget::create(request()->all());
+})->middleware('auth')->name('widgets.store');
+PHP;
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $lines = array_map(fn ($issue) => $issue->location?->line, $result->getIssues());
+        sort($lines);
+        $this->assertSame([7, 18], $lines);
+    }
 }

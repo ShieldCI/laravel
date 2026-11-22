@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class MassAssignmentAnalyzerTest extends AnalyzerTestCase
@@ -99,8 +101,10 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_detects_model_without_fillable_or_guarded(): void
+    public function test_passes_model_without_fillable_or_guarded(): void
     {
+        // Eloquent's base Model declares $guarded = ['*'], so a model that declares neither
+        // property is totally guarded, exactly like an explicit $guarded = ['*'].
         $code = <<<'PHP'
 <?php
 
@@ -108,24 +112,26 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class Product extends Model
+class Province extends Model
 {
-    // No $fillable or $guarded
+    protected $table = 'provinces';
+
+    public function cities()
+    {
+        return $this->hasMany(City::class);
+    }
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Models/Product.php' => $code,
+            'app/Models/Province.php' => $code,
         ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('lacks mass assignment protection', $result);
+        $this->assertPassed($analyzer->analyze());
     }
 
     public function test_detects_empty_guarded_array(): void
@@ -190,8 +196,10 @@ PHP;
         $this->assertHasIssueContaining('$guarded = []', $result);
     }
 
-    public function test_detects_empty_guarded_on_pivot_outside_models_namespace(): void
+    public function test_detects_unhidden_sensitive_field_on_pivot_outside_models_namespace(): void
     {
+        // Detection must come from the Pivot parent, not the namespace. A Pivot's own
+        // $guarded = [] is its framework default, so the finding here is the $hidden one.
         $code = <<<'PHP'
 <?php
 
@@ -201,7 +209,7 @@ use Illuminate\Database\Eloquent\Relations\Pivot;
 
 class Membership extends Pivot
 {
-    protected $guarded = [];
+    protected $fillable = ['team_id', 'user_id', 'api_token'];
 }
 PHP;
 
@@ -217,8 +225,8 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertFailed($result);
-        $this->assertHasIssueContaining('$guarded = []', $result);
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining("Model 'Membership' has sensitive fields in \$fillable but no \$hidden attributes", $result);
     }
 
     public function test_detects_create_with_request_all(): void
@@ -1065,7 +1073,7 @@ use Illuminate\Database\Eloquent\Model;
 
 class User extends Model
 {
-    // No protection
+    protected $guarded = [];
 }
 PHP;
 
@@ -1081,7 +1089,7 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-        $this->assertHasIssueContaining('lacks mass assignment protection', $result);
+        $this->assertHasIssueContaining("Model 'User' has \$guarded = []", $result);
     }
 
     public function test_handles_invalid_php(): void
@@ -3021,157 +3029,77 @@ PHP;
     }
 
     // -------------------------------------------------------------------------
-    // Inherited protection (parent/vendor class already defines $fillable)
+    // Inheritance: a model's own declaration decides, and declaring none leaves
+    // Eloquent's default $guarded = ['*'] in force
     // -------------------------------------------------------------------------
 
-    public function test_passes_when_vendor_parent_has_fillable(): void
+    public function test_passes_when_neither_model_nor_its_parent_declares_protection(): void
     {
-        // Simulates PersonalAccessToken extends SanctumPersonalAccessToken where
-        // the Sanctum class already declares $fillable.
-        $parentCode = <<<'PHP'
-<?php
-
-namespace FakeVendor;
-
-use Illuminate\Database\Eloquent\Model;
-
-class BaseToken extends Model
-{
-    protected $fillable = ['name', 'token', 'abilities'];
-}
-PHP;
-
-        $childCode = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use FakeVendor\BaseToken as SanctumPAT;
-
-class PersonalAccessToken extends SanctumPAT
-{
-    // inherits $fillable from SanctumPAT
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'vendor/fakevendor/BaseToken.php' => $parentCode,
-            'app/Models/PersonalAccessToken.php' => $childCode,
-        ]);
-
-        // Write a classmap that maps the vendor FQN to its file using __DIR__-relative paths.
-        $classMapCode = <<<'PHP'
-<?php
-$vendorDir = dirname(__DIR__);
-return [
-    'FakeVendor\\BaseToken' => $vendorDir . '/fakevendor/BaseToken.php',
-];
-PHP;
-        mkdir($tempDir.'/vendor/composer', 0777, true);
-        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classMapCode);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        $result = $analyzer->analyze();
-
-        // No missing-protection issue — inherited $fillable satisfies the check.
-        $protectionIssues = array_filter(
-            $result->getIssues(),
-            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
-        );
-        $this->assertEmpty($protectionIssues, 'Should not flag model that inherits $fillable from a vendor parent');
-    }
-
-    public function test_passes_when_app_parent_has_fillable_via_psr4_fallback(): void
-    {
-        // Two-level App\ inheritance — no classmap, uses the PSR-4 App\ path fallback.
-        $baseCode = <<<'PHP'
+        $base = <<<'PHP'
 <?php
 
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class BaseModel extends Model
+abstract class Record extends Model
 {
-    protected $fillable = ['id', 'created_at', 'updated_at'];
 }
 PHP;
 
-        $childCode = <<<'PHP'
+        $child = <<<'PHP'
 <?php
 
 namespace App\Models;
 
-class User extends BaseModel
+class Ledger extends Record
 {
-    // inherits $fillable from BaseModel
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'app/Models/BaseModel.php' => $baseCode,
-            'app/Models/User.php' => $childCode,
+            'app/Models/Record.php' => $base,
+            'app/Models/Ledger.php' => $child,
         ]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $result = $analyzer->analyze();
-
-        $protectionIssues = array_filter(
-            $result->getIssues(),
-            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
-        );
-        $this->assertEmpty($protectionIssues, 'Should not flag model that inherits $fillable from an App\ parent');
+        $this->assertPassed($analyzer->analyze());
     }
 
-    public function test_still_flags_when_entire_inheritance_chain_lacks_protection(): void
+    public function test_detects_empty_guarded_on_child_of_a_parent_with_fillable(): void
     {
-        // Vendor parent also has no $fillable or $guarded — child must still be flagged.
-        $parentCode = <<<'PHP'
-<?php
-
-namespace FakeVendor;
-
-use Illuminate\Database\Eloquent\Model;
-
-class UnprotectedBase extends Model
-{
-    // deliberately no $fillable or $guarded
-}
-PHP;
-
-        $childCode = <<<'PHP'
+        // The child's own $guarded = [] replaces whatever the parent declared.
+        $base = <<<'PHP'
 <?php
 
 namespace App\Models;
 
-use FakeVendor\UnprotectedBase;
+use Illuminate\Database\Eloquent\Model;
 
-class Dangerous extends UnprotectedBase
+abstract class Record extends Model
 {
-    // also no $fillable or $guarded
+    protected $fillable = ['title'];
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Ledger extends Record
+{
+    protected $guarded = [];
 }
 PHP;
 
         $tempDir = $this->createTempDirectory([
-            'vendor/fakevendor/UnprotectedBase.php' => $parentCode,
-            'app/Models/Dangerous.php' => $childCode,
+            'app/Models/Record.php' => $base,
+            'app/Models/Ledger.php' => $child,
         ]);
-
-        $classMapCode = <<<'PHP'
-<?php
-$vendorDir = dirname(__DIR__);
-return [
-    'FakeVendor\\UnprotectedBase' => $vendorDir . '/fakevendor/UnprotectedBase.php',
-];
-PHP;
-        mkdir($tempDir.'/vendor/composer', 0777, true);
-        file_put_contents($tempDir.'/vendor/composer/autoload_classmap.php', $classMapCode);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -3180,12 +3108,9 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertFailed($result);
-
-        $protectionIssues = array_filter(
-            $result->getIssues(),
-            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
-        );
-        $this->assertNotEmpty($protectionIssues, 'Should still flag model when whole chain lacks protection');
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Ledger' has \$guarded = []", $result);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
     }
 
     public function test_passes_with_fillable_attribute(): void
@@ -3267,39 +3192,6 @@ PHP;
         $analyzer->setPaths(['.']);
 
         $this->assertPassed($analyzer->analyze());
-    }
-
-    public function test_passes_with_unguarded_attribute(): void
-    {
-        $code = <<<'PHP'
-<?php
-
-namespace App\Models;
-
-use Illuminate\Database\Eloquent\Attributes\Unguarded;
-use Illuminate\Database\Eloquent\Model;
-
-#[Unguarded]
-class User extends Model
-{
-}
-PHP;
-
-        $tempDir = $this->createTempDirectory([
-            'app/Models/User.php' => $code,
-        ]);
-
-        $analyzer = $this->createAnalyzer();
-        $analyzer->setBasePath($tempDir);
-        $analyzer->setPaths(['.']);
-
-        // #[Unguarded] counts as explicit mass-assignment configuration, so the
-        // "lacks protection" issue must not fire.
-        $protectionIssues = array_filter(
-            $analyzer->analyze()->getIssues(),
-            fn ($i) => isset($i->metadata['issue_type']) && $i->metadata['issue_type'] === 'missing_model_protection'
-        );
-        $this->assertEmpty($protectionIssues);
     }
 
     public function test_recognizes_hidden_attribute_for_sensitive_fillable_field(): void
@@ -3454,7 +3346,7 @@ use App\Models\BaseModel;
 
 class Invoice extends BaseModel
 {
-    // No $fillable or $guarded
+    protected $guarded = [];
 }
 PHP;
 
@@ -3486,7 +3378,8 @@ namespace App\Models;
 
 class Dto
 {
-    // No $fillable or $guarded, and no parent — not an Eloquent model.
+    // $guarded = [] would be Critical on a model, but with no parent this is not one.
+    protected $guarded = [];
 }
 PHP;
 
@@ -3499,5 +3392,634 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertPassed($result);
+    }
+
+    // -------------------------------------------------------------------------
+    // #[Fillable]/#[Guarded]/#[Hidden] are matched on the name the file resolves
+    // them to, not on the short name as written (#728)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Ways of writing Laravel's own #[Fillable] attribute on a model.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function laravelFillableSpellingProvider(): array
+    {
+        return [
+            'plain import' => ['use Illuminate\Database\Eloquent\Attributes\Fillable;', 'Fillable'],
+            'aliased import' => ['use Illuminate\Database\Eloquent\Attributes\Fillable as Assignable;', 'Assignable'],
+            'aliased group import' => ['use Illuminate\Database\Eloquent\Attributes\{Fillable as Assignable};', 'Assignable'],
+            'fully qualified without import' => ['', '\Illuminate\Database\Eloquent\Attributes\Fillable'],
+            'namespace import' => ['use Illuminate\Database\Eloquent\Attributes;', 'Attributes\Fillable'],
+        ];
+    }
+
+    /** @dataProvider laravelFillableSpellingProvider */
+    #[DataProvider('laravelFillableSpellingProvider')]
+    public function test_flags_sensitive_field_in_laravel_fillable_attribute_however_it_is_spelled(string $import, string $attribute): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[{$attribute}(['nickname', 'password'])]
+class Member extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_flags_unhidden_password_in_aliased_laravel_fillable_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable as Assignable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Assignable(['nickname', 'password'])]
+class Member extends Model
+{
+    protected $hidden = ['remember_token'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has 'password' in \$fillable but doesn't hide it from JSON output", $result);
+    }
+
+    /**
+     * A #[Fillable] that is not Laravel's: Model never reads it, so it lists nothing.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function foreignFillableProvider(): array
+    {
+        return [
+            'imported from another namespace' => ['use App\Attributes\Fillable;'],
+            'unimported, so in the model namespace' => [''],
+        ];
+    }
+
+    /** @dataProvider foreignFillableProvider */
+    #[DataProvider('foreignFillableProvider')]
+    public function test_ignores_a_fillable_attribute_that_is_not_laravels(string $import): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['nickname', 'password'])]
+class Member extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_aliased_laravel_hidden_attribute_hides_the_sensitive_field(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Hidden as Concealed;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['nickname', 'password'])]
+#[Concealed(['password'])]
+class Member extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_aliased_laravel_guarded_attribute_exempts_the_guarded_field(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Guarded as Protect;
+use Illuminate\Database\Eloquent\Model;
+
+#[Protect(['password'])]
+class Member extends Model
+{
+    protected $fillable = ['nickname', 'password'];
+
+    protected $hidden = ['remember_token'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    // -------------------------------------------------------------------------
+    // #[Unguarded] and #[Guarded([])] open every attribute, as $guarded = [] does
+    // -------------------------------------------------------------------------
+
+    /**
+     * Laravel attributes that leave a model with no guarded attributes at all.
+     *
+     * @return array<string, array{0: string, 1: string, 2: string, 3?: string}>
+     */
+    public static function unguardingAttributeProvider(): array
+    {
+        return [
+            'Unguarded, plain import' => ['use Illuminate\Database\Eloquent\Attributes\Unguarded;', 'Unguarded', '#[Unguarded]'],
+            'Unguarded, aliased import' => ['use Illuminate\Database\Eloquent\Attributes\Unguarded as Open;', 'Open', '#[Unguarded]'],
+            'Unguarded, fully qualified' => ['', '\Illuminate\Database\Eloquent\Attributes\Unguarded', '#[Unguarded]'],
+            'Guarded([]), plain import' => ['use Illuminate\Database\Eloquent\Attributes\Guarded;', 'Guarded([])', '#[Guarded([])]'],
+            'Guarded([]), aliased import' => ['use Illuminate\Database\Eloquent\Attributes\Guarded as Protect;', 'Protect([])', '#[Guarded([])]'],
+            'Unguarded beside an explicit $guarded = [\'*\']' => ['use Illuminate\Database\Eloquent\Attributes\Unguarded;', 'Unguarded', '#[Unguarded]', "protected \$guarded = ['*'];"],
+            'Unguarded beside $guarded = [0 => \'*\']' => ['use Illuminate\Database\Eloquent\Attributes\Unguarded;', 'Unguarded', '#[Unguarded]', "protected \$guarded = [0 => '*'];"],
+            'Unguarded, imported and written in lower case' => ['use Illuminate\Database\Eloquent\Attributes\unguarded;', 'unguarded', '#[Unguarded]'],
+        ];
+    }
+
+    /** @dataProvider unguardingAttributeProvider */
+    #[DataProvider('unguardingAttributeProvider')]
+    public function test_detects_attribute_that_unguards_every_attribute(string $import, string $attribute, string $writtenAs, string $body = ''): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[{$attribute}]
+class Ledger extends Model
+{
+    {$body}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Ledger' has {$writtenAs} which allows mass assignment of all attributes", $result);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * Guarded attributes that leave the model guarded, or that Laravel never applies.
+     *
+     * @return array<string, array{string, string, string}>
+     */
+    public static function guardingAttributeProvider(): array
+    {
+        return [
+            'Guarded wildcard' => ['use Illuminate\Database\Eloquent\Attributes\Guarded;', "Guarded(['*'])", ''],
+            'Guarded column list' => ['use Illuminate\Database\Eloquent\Attributes\Guarded;', "Guarded(['id'])", ''],
+            'Unguarded from another namespace' => ['use App\Attributes\Unguarded;', 'Unguarded', ''],
+            'Unguarded overridden by a $guarded property' => ['use Illuminate\Database\Eloquent\Attributes\Unguarded;', 'Unguarded', "protected \$guarded = ['id'];"],
+        ];
+    }
+
+    /** @dataProvider guardingAttributeProvider */
+    #[DataProvider('guardingAttributeProvider')]
+    public function test_passes_with_attribute_that_keeps_the_model_guarded(string $import, string $attribute, string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[{$attribute}]
+class Ledger extends Model
+{
+    {$body}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_reports_empty_guarded_property_once_beside_unguarded_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Unguarded;
+use Illuminate\Database\Eloquent\Model;
+
+#[Unguarded]
+class Ledger extends Model
+{
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Ledger' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+    }
+
+    // -------------------------------------------------------------------------
+    // $visible is an allow-list: a field it leaves out is never serialized
+    // -------------------------------------------------------------------------
+
+    /**
+     * Models whose $visible allow-list keeps a fillable password out of JSON output.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function visibleAllowListProvider(): array
+    {
+        return [
+            'visible property, no hidden' => ['', "protected \$visible = ['nickname'];"],
+            'visible property beside a hidden list without the password' => ['', "protected \$visible = ['nickname'];\n    protected \$hidden = ['remember_token'];"],
+            'aliased Visible attribute, no hidden' => ["use Illuminate\\Database\\Eloquent\\Attributes\\Visible as Shown;\n#[Shown(['nickname'])]", ''],
+        ];
+    }
+
+    /** @dataProvider visibleAllowListProvider */
+    #[DataProvider('visibleAllowListProvider')]
+    public function test_passes_when_visible_allow_list_omits_the_sensitive_field(string $attribute, string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+{$attribute}
+class Member extends Model
+{
+    protected \$fillable = ['nickname', 'password'];
+    {$body}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_flags_sensitive_field_the_visible_allow_list_exposes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Visible;
+use Illuminate\Database\Eloquent\Model;
+
+#[Visible(['nickname', 'password'])]
+class Member extends Model
+{
+    protected $fillable = ['nickname', 'password'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+    }
+
+    // -------------------------------------------------------------------------
+    // A finding that depends on an inherited default is only made when the model
+    // extends Model or Authenticatable directly; fillable wins over unguarding
+    // -------------------------------------------------------------------------
+
+    /**
+     * Models that look unguarded or unhidden in their own body but are not at runtime.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function notExposedAtRuntimeProvider(): array
+    {
+        $header = "<?php\n\nnamespace App\\Models;\n\n";
+
+        return [
+            'Unguarded under a project base that guards a column' => [[
+                'app/Models/BaseModel.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class BaseModel extends Model\n{\n    protected \$guarded = ['id'];\n}\n",
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Unguarded;\n\n#[Unguarded]\nclass Ledger extends BaseModel\n{\n}\n",
+            ]],
+            'Unguarded beside a Fillable attribute' => [[
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;\nuse Illuminate\\Database\\Eloquent\\Attributes\\Unguarded;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Fillable(['title'])]\n#[Unguarded]\nclass Ledger extends Model\n{\n}\n",
+            ]],
+            'Guarded([]) beside a fillable property' => [[
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Guarded;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Guarded([])]\nclass Ledger extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+            ]],
+            'empty guarded property beside a fillable property' => [[
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nclass Ledger extends Model\n{\n    protected \$fillable = ['title'];\n\n    protected \$guarded = [];\n}\n",
+            ]],
+            'Unguarded on a Pivot that guards everything' => [[
+                'app/Models/RoleUser.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Unguarded;\nuse Illuminate\\Database\\Eloquent\\Relations\\Pivot;\n\n#[Unguarded]\nclass RoleUser extends Pivot\n{\n    protected \$guarded = ['*'];\n}\n",
+            ]],
+            'Unguarded on a Pivot that keeps its own default' => [[
+                'app/Models/RoleUser.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Unguarded;\nuse Illuminate\\Database\\Eloquent\\Relations\\Pivot;\n\n#[Unguarded]\nclass RoleUser extends Pivot\n{\n}\n",
+            ]],
+            'sensitive fillable under a project base that hides it' => [[
+                'app/Models/BaseModel.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class BaseModel extends Model\n{\n    protected \$hidden = ['password'];\n}\n",
+                'app/Models/Member.php' => $header."class Member extends BaseModel\n{\n    protected \$fillable = ['nickname', 'password'];\n}\n",
+            ]],
+            'empty guarded property on a Pivot, its own default' => [[
+                'app/Models/RoleUser.php' => $header."use Illuminate\\Database\\Eloquent\\Relations\\Pivot;\n\nclass RoleUser extends Pivot\n{\n    protected \$guarded = [];\n}\n",
+            ]],
+            'empty guarded property on a MorphPivot, its own default' => [[
+                'app/Models/Taggable.php' => $header."use Illuminate\\Database\\Eloquent\\Relations\\MorphPivot;\n\nclass Taggable extends MorphPivot\n{\n    protected \$guarded = [];\n}\n",
+            ]],
+            'empty guarded property beside a fillable list held in a constant' => [[
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nclass Ledger extends Model\n{\n    const COLUMNS = ['title'];\n\n    protected \$fillable = self::COLUMNS;\n\n    protected \$guarded = [];\n}\n",
+            ]],
+            'Unguarded beside a fillable list held in a constant' => [[
+                'app/Models/Ledger.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Unguarded;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Unguarded]\nclass Ledger extends Model\n{\n    const COLUMNS = ['title'];\n\n    protected \$fillable = self::COLUMNS;\n}\n",
+            ]],
+            'Fillable attribute keeps only its leading array' => [[
+                'app/Models/Member.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Fillable(['nickname'], 'password')]\nclass Member extends Model\n{\n}\n",
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider notExposedAtRuntimeProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('notExposedAtRuntimeProvider')]
+    public function test_passes_when_the_model_is_not_exposed_at_runtime(array $files): void
+    {
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_detects_unguarded_attribute_on_a_direct_authenticatable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Unguarded;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+#[Unguarded]
+class Member extends Authenticatable
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has #[Unguarded] which allows mass assignment of all attributes", $result);
+    }
+
+    public function test_flags_sensitive_fillable_without_hidden_on_a_direct_authenticatable(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Foundation\Auth\User as Authenticatable;
+
+class Member extends Authenticatable
+{
+    protected $fillable = ['nickname', 'password'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+    }
+
+    public function test_own_hidden_list_stays_authoritative_under_a_project_base(): void
+    {
+        // A $hidden property replaces the parent's, so the parent cannot hide the password.
+        $base = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class BaseModel extends Model
+{
+    protected $hidden = ['password'];
+}
+PHP;
+
+        $child = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+class Member extends BaseModel
+{
+    protected $fillable = ['nickname', 'password'];
+
+    protected $hidden = ['remember_token'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/BaseModel.php' => $base,
+            'app/Models/Member.php' => $child,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has 'password' in \$fillable but doesn't hide it from JSON output", $result);
+    }
+
+    /**
+     * Models whose hidden and visible defaults are Model's, whatever their parent is named.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function modelSerializationDefaultsProvider(): array
+    {
+        return [
+            'Pivot' => ["use Illuminate\\Database\\Eloquent\\Relations\\Pivot;\n\nclass Member extends Pivot", 'api_token'],
+            'MorphPivot' => ["use Illuminate\\Database\\Eloquent\\Relations\\MorphPivot;\n\nclass Member extends MorphPivot", 'secret'],
+            'the global Eloquent alias' => ['class Member extends \\Eloquent', 'password'],
+        ];
+    }
+
+    /** @dataProvider modelSerializationDefaultsProvider */
+    #[DataProvider('modelSerializationDefaultsProvider')]
+    public function test_flags_sensitive_fillable_without_hidden_under_a_parent_with_model_defaults(string $declaration, string $field): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$declaration}
+{
+    protected \$fillable = ['nickname', '{$field}'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+    }
+
+    public function test_detects_empty_guarded_beside_an_empty_fillable_literal(): void
+    {
+        // An empty $fillable lists nothing, so fill() falls back to $guarded = [].
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ledger extends Model
+{
+    protected $fillable = [];
+
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Ledger' has \$guarded = [] which allows mass assignment of all attributes", $result);
     }
 }

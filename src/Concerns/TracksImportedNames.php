@@ -9,6 +9,7 @@ use PhpParser\NameContext;
 use PhpParser\Node;
 use PhpParser\Node\Name;
 use PhpParser\Node\Stmt;
+use PhpParser\NodeFinder;
 
 /**
  * Resolves a class name from imports collected during the walk, rather than from an
@@ -100,9 +101,10 @@ trait TracksImportedNames
      * the whole project, so for that one this reset is what keeps file N from being resolved
      * with file N-1's imports.
      *
-     * A consumer that is not a visitor at all drives startTrackingImports() itself and never
-     * reaches this, so the hook is dead surface there. The return type is spelled out rather
-     * than left to NodeVisitorAbstract's own docblock, which such a consumer does not inherit.
+     * A consumer that is not a visitor at all drives startTrackingImports() and
+     * trackImportsUntil() itself and never reaches this, so the hook is dead surface there.
+     * The return type is spelled out rather than left to NodeVisitorAbstract's own docblock,
+     * which such a consumer does not inherit.
      *
      * @param  array<Node>  $nodes
      * @return array<Node>|null
@@ -171,6 +173,41 @@ trait TracksImportedNames
                 );
             }
         }
+    }
+
+    /**
+     * Fill the import table with what is in effect at $target, walking the statements in
+     * the order the file writes them.
+     *
+     * Imports are only legal at the top level or directly inside a namespace, so those two
+     * levels are all the walk visits. It stops at the statement that is $target or contains
+     * it, which covers a class nested in a function or a conditional and an anonymous class.
+     * With no target, or one the file does not contain, the table ends up holding the imports
+     * in effect at the end of the file.
+     *
+     * @param  array<Node>  $stmts
+     * @return bool Whether $target was reached
+     */
+    private function trackImportsUntil(array $stmts, ?Node $target): bool
+    {
+        foreach ($stmts as $stmt) {
+            $this->trackImports($stmt);
+
+            if ($stmt instanceof Stmt\Namespace_) {
+                if ($this->trackImportsUntil($stmt->stmts, $target)) {
+                    return true;
+                }
+
+                continue;
+            }
+
+            if ($target !== null && ($stmt === $target
+                || (new NodeFinder)->findFirst($stmt, static fn (Node $node): bool => $node === $target) !== null)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

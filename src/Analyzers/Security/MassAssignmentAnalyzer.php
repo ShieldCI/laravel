@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\Support\FileParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\EloquentModelHelper;
 
@@ -20,7 +21,6 @@ use ShieldCI\Support\EloquentModelHelper;
  * Detects mass assignment vulnerabilities in Eloquent models.
  *
  * Checks for:
- * - Models without $fillable or $guarded
  * - Models with empty $guarded = []
  * - Models without $hidden attributes for sensitive data
  * - create() or update() with request()->all()
@@ -32,6 +32,8 @@ use ShieldCI\Support\EloquentModelHelper;
  */
 class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 {
+    use TracksImportedNames;
+
     /**
      * Dangerous Eloquent model static methods.
      */
@@ -116,9 +118,6 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         'two_factor_recovery_codes',
     ];
 
-    /** @var array<string, string>|null */
-    private ?array $composerClassMap = null;
-
     public function __construct(
         private AstParser $parser
     ) {}
@@ -163,8 +162,15 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             $classes = $this->parser->findClasses($ast);
             foreach ($classes as $class) {
                 if ($detector->isModel($class, $ast, $this->getBasePath())) {
-                    $this->checkModelProtection($file, $class, $issues);
-                    $this->checkHiddenAttributes($file, $class, $issues);
+                    // Resolve attribute names through the imports in effect at this class, so
+                    // an aliased #[Fillable] is Laravel's and an App\Attributes\Fillable is not.
+                    $this->startTrackingImports();
+                    $this->trackImportsUntil($ast, $class);
+
+                    $resolve = $this->resolvedClassFqn(...);
+
+                    $this->checkModelProtection($file, $class, $resolve, $issues);
+                    $this->checkHiddenAttributes($file, $class, $resolve, $issues);
                     $this->checkRelationshipSecurity($file, $class, $issues);
                 }
             }
@@ -190,55 +196,76 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if model has proper mass assignment protection.
+     * Base classes that leave every Model default in place: Model itself, Authenticatable,
+     * which adds nothing to it, and `Eloquent`, Laravel's default global alias of Model.
+     */
+    private const MODEL_BASES = [
+        'Illuminate\\Database\\Eloquent\\Model',
+        'Illuminate\\Foundation\\Auth\\User',
+        'Eloquent',
+    ];
+
+    /**
+     * Base classes that change only `$guarded`, to `[]`, and keep Model's `$hidden` and
+     * `$visible` defaults.
+     */
+    private const PIVOT_BASES = [
+        'Illuminate\\Database\\Eloquent\\Relations\\Pivot',
+        'Illuminate\\Database\\Eloquent\\Relations\\MorphPivot',
+    ];
+
+    /**
+     * Check whether the model opens every attribute to mass assignment, with `$guarded = []`
+     * or, while the property keeps its default, with `#[Unguarded]` or `#[Guarded([])]`.
      *
+     * A model that declares none of these is not reported. One extending Model inherits
+     * `$guarded = ['*']` and is totally guarded; Pivot and MorphPivot declare `$guarded = []`
+     * on purpose, for the pivot rows Eloquent writes itself.
+     *
+     * A class extending Pivot or MorphPivot directly is not reported for `$guarded = []`: it
+     * restates the parent's own default, and a Pivot that declares nothing behaves the same.
+     *
+     * A model that lists fillable columns is not reported either: fill() keeps only those
+     * columns whatever $guarded says.
+     *
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
      * @param  array<int, Issue>  &$issues
      */
-    private function checkModelProtection(string $file, Node\Stmt\Class_ $class, array &$issues): void
+    private function checkModelProtection(string $file, Node\Stmt\Class_ $class, \Closure $resolve, array &$issues): void
     {
-        $hasFillable = false;
-        $hasGuarded = false;
+        $parentKind = $this->parentKind($class, $resolve);
+
+        // A $fillable whose default is not an array literal, such as a constant, still lists
+        // columns; only their names are unknown.
+        if ($parentKind === 'pivot'
+            || EloquentModelHelper::extractFillableFields($class, $resolve) !== []
+            || $this->declaresNonLiteralProperty($class, 'fillable')) {
+            return;
+        }
+
         $hasEmptyGuarded = false;
+        // GuardsAttributes applies #[Unguarded]/#[Guarded] only while $guarded is still ['*'].
+        $attributesApply = true;
 
         foreach ($class->stmts as $stmt) {
             if ($stmt instanceof Node\Stmt\Property) {
                 foreach ($stmt->props as $prop) {
-                    if ($prop->name->toString() === 'fillable') {
-                        $hasFillable = true;
+                    if ($prop->name->toString() !== 'guarded') {
+                        continue;
                     }
 
-                    if ($prop->name->toString() === 'guarded') {
-                        $hasGuarded = true;
+                    if ($prop->default instanceof Node\Expr\Array_ && empty($prop->default->items)) {
+                        $hasEmptyGuarded = true;
+                    }
 
-                        // Check if $guarded = []
-                        if ($prop->default instanceof Node\Expr\Array_ && empty($prop->default->items)) {
-                            $hasEmptyGuarded = true;
-                        }
+                    if (! $this->isWildcardArray($prop->default)) {
+                        $attributesApply = false;
                     }
                 }
             }
         }
 
-        // Mass-assignment config can also be declared via #[Fillable]/#[Guarded]/#[Unguarded] attributes.
-        $hasFillable = $hasFillable || EloquentModelHelper::hasFillable($class);
-        $hasGuarded = $hasGuarded || EloquentModelHelper::hasGuarded($class);
-
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
-
-        // Issue if neither fillable nor guarded is set (and no ancestor provides either)
-        if (! $hasFillable && ! $hasGuarded && ! $this->parentClassHasProtection($file, $class)) {
-            $issues[] = $this->createIssueWithSnippet(
-                message: "Model '{$modelName}' lacks mass assignment protection (\$fillable or \$guarded)",
-                filePath: $file,
-                lineNumber: $class->getLine(),
-                severity: Severity::High,
-                recommendation: 'Add a protected fillable property listing only the fields you expect from user input, or a guarded property set to a wildcard to deny all attributes by default.',
-                metadata: [
-                    'model' => $modelName,
-                    'issue_type' => 'missing_model_protection',
-                ]
-            );
-        }
 
         // Issue if guarded is empty array (allows all)
         if ($hasEmptyGuarded) {
@@ -253,7 +280,125 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     'issue_type' => 'empty_guarded_array',
                 ]
             );
+
+            return;
         }
+
+        // The attribute only replaces a $guarded that is still ['*'], which an unread parent
+        // or a Pivot's own [] may not be.
+        $attribute = $attributesApply && $parentKind === 'model'
+            ? EloquentModelHelper::unguardingAttribute($class, $resolve)
+            : null;
+
+        if ($attribute !== null) {
+            $writtenAs = $attribute === 'Unguarded' ? '#[Unguarded]' : '#[Guarded([])]';
+
+            $issues[] = $this->createIssueWithSnippet(
+                message: "Model '{$modelName}' has {$writtenAs} which allows mass assignment of all attributes",
+                filePath: $file,
+                lineNumber: $class->getLine(),
+                severity: Severity::Critical,
+                recommendation: 'Remove the attribute and either specify which attributes are fillable, or leave guarded at its wildcard default to deny all attributes.',
+                metadata: [
+                    'model' => $modelName,
+                    'issue_type' => 'empty_guarded_array',
+                    'attribute' => $attribute,
+                ]
+            );
+        }
+    }
+
+    /**
+     * True for an array literal equal to `['*']`, the value Eloquent's own `$guarded` default
+     * holds, including the `[0 => '*']` spelling.
+     */
+    private function isWildcardArray(?Node\Expr $expr): bool
+    {
+        if (! $expr instanceof Node\Expr\Array_ || count($expr->items) !== 1) {
+            return false;
+        }
+
+        $item = $expr->items[0];
+        if (! $item instanceof Node\Expr\ArrayItem || $item->byRef || $item->unpack) {
+            return false;
+        }
+
+        $keyIsZero = $item->key === null
+            || ($item->key instanceof Node\Scalar\Int_ && $item->key->value === 0)
+            || ($item->key instanceof Node\Scalar\String_ && $item->key->value === '0');
+
+        return $keyIsZero && $item->value instanceof Node\Scalar\String_ && $item->value->value === '*';
+    }
+
+    /**
+     * Which defaults the model inherits for what it does not override: `model` when it extends
+     * Model, Authenticatable or the global `Eloquent` alias directly, `pivot` when it extends
+     * Pivot or MorphPivot directly, null for any other parent.
+     *
+     * The model's own configuration is authoritative only for what it overrides. A `pivot`
+     * keeps Model's `$hidden` and `$visible` defaults but has `$guarded = []` of its own. A
+     * project base class may declare anything, and this analyzer does not read its file, so a
+     * finding whose truth turns on an inherited value is not made under one: the attribute
+     * form of the unguarded finding, which needs an inherited `$guarded = ['*']` and so a
+     * `model` parent, and the missing-`$hidden` finding, which a parent's `$hidden` or
+     * `$visible` may answer. What the model declares as a property itself, `$guarded = []` or
+     * a `$hidden` list that replaces the parent's, is still reported.
+     *
+     * @param  \Closure(Node\Name): string  $resolve
+     * @return 'model'|'pivot'|null
+     */
+    private function parentKind(Node\Stmt\Class_ $class, \Closure $resolve): ?string
+    {
+        if ($class->extends === null) {
+            return null;
+        }
+
+        $parent = $resolve($class->extends);
+
+        foreach (['model' => self::MODEL_BASES, 'pivot' => self::PIVOT_BASES] as $kind => $bases) {
+            foreach ($bases as $base) {
+                if (strcasecmp($parent, $base) === 0) {
+                    return $kind;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * True if the class body declares the named property with a default that is not an array
+     * literal, so the list it holds cannot be read here.
+     */
+    private function declaresNonLiteralProperty(Node\Stmt\Class_ $class, string $name): bool
+    {
+        foreach ($class->getProperties() as $property) {
+            foreach ($property->props as $prop) {
+                if ($prop->name->toString() === $name
+                    && $prop->default !== null
+                    && ! $prop->default instanceof Node\Expr\Array_) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * True if the class body declares the named property itself.
+     */
+    private function declaresProperty(Node\Stmt\Class_ $class, string $name): bool
+    {
+        foreach ($class->getProperties() as $property) {
+            foreach ($property->props as $prop) {
+                if ($prop->name->toString() === $name) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -1089,23 +1234,33 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     /**
      * Check if model has proper $hidden attributes for sensitive data.
      *
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
      * @param  array<int, Issue>  &$issues
      */
-    private function checkHiddenAttributes(string $file, Node\Stmt\Class_ $class, array &$issues): void
+    private function checkHiddenAttributes(string $file, Node\Stmt\Class_ $class, \Closure $resolve, array &$issues): void
     {
         // Read configuration from either properties or #[Fillable]/#[Guarded]/#[Hidden] attributes.
-        $hasHidden = EloquentModelHelper::hasHidden($class);
-        $hasFillable = EloquentModelHelper::hasFillable($class);
-        $hiddenFields = EloquentModelHelper::extractHiddenFields($class);
-        $guardedFields = EloquentModelHelper::extractGuardedFields($class);
-        $fillableFields = EloquentModelHelper::extractFillableFields($class);
+        $hasHidden = EloquentModelHelper::hasHidden($class, $resolve);
+        $hasFillable = EloquentModelHelper::hasFillable($class, $resolve);
+        $hiddenFields = EloquentModelHelper::extractHiddenFields($class, $resolve);
+        $guardedFields = EloquentModelHelper::extractGuardedFields($class, $resolve);
+        $fillableFields = EloquentModelHelper::extractFillableFields($class, $resolve);
+        // A non-empty $visible is an allow-list: a field it leaves out is never serialized.
+        $visibleFields = EloquentModelHelper::extractVisibleFields($class, $resolve);
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
+        // Pivot and MorphPivot keep Model's $hidden and $visible defaults.
+        $inheritsModelDefaults = $this->parentKind($class, $resolve) !== null;
 
         // Check if password-related fields in $fillable are hidden
         // Fields in $guarded are not mass-assignable, so they're less critical to hide
-        if ($hasFillable && ! $hasHidden && ! empty($fillableFields)) {
+        // Under any other parent, an inherited $hidden or $visible may already cover them.
+        if ($inheritsModelDefaults && $hasFillable && ! $hasHidden && ! empty($fillableFields)) {
             $exposedSensitiveFields = array_intersect($fillableFields, self::SENSITIVE_FIELDS);
+
+            if ($visibleFields !== []) {
+                $exposedSensitiveFields = array_intersect($exposedSensitiveFields, $visibleFields);
+            }
 
             if (! empty($exposedSensitiveFields)) {
                 $issues[] = $this->createIssueWithSnippet(
@@ -1124,10 +1279,13 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         // Check if sensitive fields are missing from $hidden when they appear to be accessible
-        if ($hasHidden && ! empty($hiddenFields)) {
+        // A $hidden property replaces the parent's list; a #[Hidden] attribute merges into it.
+        if ($hasHidden && ! empty($hiddenFields)
+            && ($inheritsModelDefaults || $this->declaresProperty($class, 'hidden'))) {
             foreach (self::SENSITIVE_FIELDS as $field) {
-                // Skip if field is already hidden or guarded
-                if (in_array($field, $hiddenFields, true) || in_array($field, $guardedFields, true)) {
+                // Skip if field is already hidden or guarded, or left out of a $visible allow-list
+                if (in_array($field, $hiddenFields, true) || in_array($field, $guardedFields, true)
+                    || ($visibleFields !== [] && ! in_array($field, $visibleFields, true))) {
                     continue;
                 }
 
@@ -1310,153 +1468,5 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         }
 
         return false;
-    }
-
-    /**
-     * Check whether any ancestor class declares $fillable or $guarded, preventing
-     * false positives on models that inherit mass assignment protection from a parent
-     * (e.g. PersonalAccessToken extending Laravel\Sanctum\PersonalAccessToken).
-     */
-    private function parentClassHasProtection(
-        string $file,
-        Node\Stmt\Class_ $class,
-        int $depth = 0
-    ): bool {
-        if ($depth > 3 || $class->extends === null) {
-            return false;
-        }
-
-        $parentName = $class->extends->toString();
-
-        // Direct Eloquent Model base — no ancestor provides inherited protection
-        if ($parentName === 'Model' || str_ends_with($parentName, '\\Model')) {
-            return false;
-        }
-
-        $fqn = $this->resolveParentClassFqn($parentName, $file);
-        $parentFile = $this->findClassFileByFqn($fqn);
-        if ($parentFile === null) {
-            return false;
-        }
-
-        $ast = $this->parser->parseFile($parentFile);
-        if (empty($ast)) {
-            return false;
-        }
-
-        foreach ($this->parser->findClasses($ast) as $parentClass) {
-            foreach ($parentClass->stmts as $stmt) {
-                if (! $stmt instanceof Node\Stmt\Property) {
-                    continue;
-                }
-
-                foreach ($stmt->props as $prop) {
-                    $name = $prop->name->toString();
-                    if ($name === 'fillable' || $name === 'guarded') {
-                        return true;
-                    }
-                }
-            }
-
-            if ($this->parentClassHasProtection($parentFile, $parentClass, $depth + 1)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /**
-     * Resolve a short or aliased parent class name to its fully-qualified name.
-     *
-     * Uses FileParser::extractUseStatements() which returns the raw body of each
-     * `use ...;` statement (e.g. "Laravel\Sanctum\PersonalAccessToken as SanctumPAT"),
-     * then falls back to the file's own namespace for same-namespace parents.
-     */
-    private function resolveParentClassFqn(string $shortName, string $file): string
-    {
-        if (str_starts_with($shortName, '\\')) {
-            return ltrim($shortName, '\\');
-        }
-
-        $q = preg_quote($shortName, '/');
-
-        foreach (FileParser::extractUseStatements($file) as $raw) {
-            $stmt = trim($raw);
-
-            // use Foo\Bar\Baz as ShortName
-            if (preg_match('/^([\w\\\\]+)\s+as\s+'.$q.'$/', $stmt, $m)) {
-                return $m[1];
-            }
-
-            // use Foo\Bar\ShortName  (last segment matches exactly)
-            if (str_ends_with($stmt, '\\'.$shortName)) {
-                return $stmt;
-            }
-        }
-
-        // Same-namespace parent
-        $ns = FileParser::extractNamespace($file);
-        if ($ns !== null && $ns !== '') {
-            return $ns.'\\'.$shortName;
-        }
-
-        return $shortName;
-    }
-
-    /**
-     * Look up a PHP file path for the given fully-qualified class name.
-     *
-     * Checks Composer's autoload_classmap.php first (covers vendor classes),
-     * then falls back to a PSR-4-style App\ path resolution (covers test fixtures
-     * that have no real vendor directory).
-     */
-    private function findClassFileByFqn(string $fqn): ?string
-    {
-        $map = $this->getComposerClassMap();
-        if (isset($map[$fqn])) {
-            return $map[$fqn];
-        }
-
-        if (str_starts_with($fqn, 'App\\')) {
-            $rel = str_replace('\\', DIRECTORY_SEPARATOR, substr($fqn, 4)).'.php';
-            $path = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.$rel;
-            if (file_exists($path)) {
-                return $path;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Load and cache Composer's autoload classmap (FQN → absolute file path).
-     *
-     * @return array<string, string>
-     */
-    private function getComposerClassMap(): array
-    {
-        if ($this->composerClassMap !== null) {
-            return $this->composerClassMap;
-        }
-
-        $classMapFile = $this->getBasePath()
-            .DIRECTORY_SEPARATOR.'vendor'
-            .DIRECTORY_SEPARATOR.'composer'
-            .DIRECTORY_SEPARATOR.'autoload_classmap.php';
-
-        if (! file_exists($classMapFile)) {
-            return $this->composerClassMap = [];
-        }
-
-        /** @var mixed $result */
-        $result = @include $classMapFile;
-
-        if (! is_array($result)) {
-            return $this->composerClassMap = [];
-        }
-
-        /** @var array<string, string> $result */
-        return $this->composerClassMap = $result;
     }
 }

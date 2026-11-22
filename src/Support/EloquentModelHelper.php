@@ -15,6 +15,11 @@ use PhpParser\Node;
  *
  * Analyzers that only inspect properties produce false positives on attribute-based
  * models. These helpers read both forms so callers don't have to.
+ *
+ * An attribute is matched on its short name as written unless the caller passes $resolve,
+ * the fully qualified name a reference resolves to in the declaring file. With it, the
+ * attribute must resolve into Illuminate\Database\Eloquent\Attributes, so an aliased import
+ * (`use ...\Fillable as F;`) is read and a `Fillable` from any other namespace is not.
  */
 final class EloquentModelHelper
 {
@@ -33,67 +38,123 @@ final class EloquentModelHelper
 
     /**
      * True if a `$fillable` property OR a `#[Fillable]` attribute is present.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      */
-    public static function hasFillable(Node\Stmt\Class_ $class): bool
+    public static function hasFillable(Node\Stmt\Class_ $class, ?\Closure $resolve = null): bool
     {
         return self::hasProperty($class, 'fillable')
-            || self::hasAttribute($class, ['Fillable']);
+            || self::hasAttribute($class, ['Fillable'], $resolve);
     }
 
     /**
      * True if a `$guarded` property OR a `#[Guarded]`/`#[Unguarded]` attribute is present.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      */
-    public static function hasGuarded(Node\Stmt\Class_ $class): bool
+    public static function hasGuarded(Node\Stmt\Class_ $class, ?\Closure $resolve = null): bool
     {
         return self::hasProperty($class, 'guarded')
-            || self::hasAttribute($class, ['Guarded', 'Unguarded']);
+            || self::hasAttribute($class, ['Guarded', 'Unguarded'], $resolve);
     }
 
     /**
      * True if a `$hidden` property OR a `#[Hidden]` attribute is present.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      */
-    public static function hasHidden(Node\Stmt\Class_ $class): bool
+    public static function hasHidden(Node\Stmt\Class_ $class, ?\Closure $resolve = null): bool
     {
         return self::hasProperty($class, 'hidden')
-            || self::hasAttribute($class, ['Hidden']);
+            || self::hasAttribute($class, ['Hidden'], $resolve);
+    }
+
+    /**
+     * The Eloquent attribute that leaves the class with nothing guarded: `Unguarded` for
+     * `#[Unguarded]`, `Guarded` for a `#[Guarded([])]` whose only argument is an empty array
+     * literal, null for neither. `#[Unguarded]` wins when both are present, as it does in
+     * GuardsAttributes.
+     *
+     * Laravel applies either only while the `$guarded` property still holds its `['*']`
+     * default, so whether a declared `$guarded` overrides it is the caller's to decide.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     */
+    public static function unguardingAttribute(Node\Stmt\Class_ $class, ?\Closure $resolve = null): ?string
+    {
+        $emptyGuarded = false;
+
+        foreach (self::attributes($class) as $attr) {
+            if (self::attributeIs($attr, 'Unguarded', $resolve)) {
+                return 'Unguarded';
+            }
+
+            if (self::attributeIs($attr, 'Guarded', $resolve)
+                && count($attr->args) === 1
+                && $attr->args[0]->value instanceof Node\Expr\Array_
+                && $attr->args[0]->value->items === []) {
+                $emptyGuarded = true;
+            }
+        }
+
+        return $emptyGuarded ? 'Guarded' : null;
     }
 
     /**
      * Fillable field names from a `$fillable` property OR `#[Fillable(...)]` attribute.
      *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      * @return list<string>
      */
-    public static function extractFillableFields(Node\Stmt\Class_ $class): array
+    public static function extractFillableFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
             self::extractFieldsFromProperty($class, 'fillable'),
-            self::extractFillableFieldsFromAttribute($class),
+            self::extractFieldsFromAttribute($class, 'Fillable', $resolve),
         ));
     }
 
     /**
      * Guarded field names from a `$guarded` property OR `#[Guarded(...)]` attribute.
      *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      * @return list<string>
      */
-    public static function extractGuardedFields(Node\Stmt\Class_ $class): array
+    public static function extractGuardedFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
             self::extractFieldsFromProperty($class, 'guarded'),
-            self::extractFieldsFromAttribute($class, 'Guarded'),
+            self::extractFieldsFromAttribute($class, 'Guarded', $resolve),
         ));
     }
 
     /**
      * Hidden field names from a `$hidden` property OR `#[Hidden(...)]` attribute.
      *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
      * @return list<string>
      */
-    public static function extractHiddenFields(Node\Stmt\Class_ $class): array
+    public static function extractHiddenFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
             self::extractFieldsFromProperty($class, 'hidden'),
-            self::extractFieldsFromAttribute($class, 'Hidden'),
+            self::extractFieldsFromAttribute($class, 'Hidden', $resolve),
+        ));
+    }
+
+    /**
+     * Visible field names from a `$visible` property OR `#[Visible(...)]` attribute.
+     *
+     * A non-empty list is an allow-list: Eloquent serializes only the attributes it names.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     * @return list<string>
+     */
+    public static function extractVisibleFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
+    {
+        return array_values(array_merge(
+            self::extractFieldsFromProperty($class, 'visible'),
+            self::extractFieldsFromAttribute($class, 'Visible', $resolve),
         ));
     }
 
@@ -110,7 +171,7 @@ final class EloquentModelHelper
      */
     public static function extractFillableFieldsFromAttribute(Node\Stmt\Class_ $class): array
     {
-        return self::extractFieldsFromAttribute($class, 'Fillable');
+        return self::extractFieldsFromAttribute($class, 'Fillable', null, false);
     }
 
     /**
@@ -127,7 +188,7 @@ final class EloquentModelHelper
      */
     public static function extractEloquentAttributeFields(Node\Stmt\ClassLike $class, string $attributeShortName, \Closure $resolve): array
     {
-        return self::extractFieldsFromAttribute($class, $attributeShortName, $resolve);
+        return self::extractFieldsFromAttribute($class, $attributeShortName, $resolve, false);
     }
 
     /**
@@ -136,23 +197,30 @@ final class EloquentModelHelper
      *
      * Without $resolve the attribute is matched on its short name as written.
      *
+     * With $asConstructed the arguments are read as Eloquent's attribute constructors keep
+     * them: a leading array is the whole list and any argument after it is dropped, so
+     * `#[Fillable(['a'], 'b')]` lists only `a`. Without it every argument is read, which is
+     * what extractFillableFieldsFromAttribute() and extractEloquentAttributeFields() have
+     * always returned to their callers.
+     *
      * @param  (\Closure(Node\Name): string)|null  $resolve
      * @return list<string>
      */
-    private static function extractFieldsFromAttribute(Node\Stmt\ClassLike $class, string $attributeShortName, ?\Closure $resolve = null): array
+    private static function extractFieldsFromAttribute(Node\Stmt\ClassLike $class, string $attributeShortName, ?\Closure $resolve = null, bool $asConstructed = true): array
     {
         $fields = [];
 
         foreach (self::attributes($class) as $attr) {
-            $matches = $resolve === null
-                ? self::shortName($attr->name->toString()) === $attributeShortName
-                : $resolve($attr->name) === self::ATTRIBUTE_NAMESPACE.'\\'.$attributeShortName;
-
-            if (! $matches) {
+            if (! self::attributeIs($attr, $attributeShortName, $resolve)) {
                 continue;
             }
 
-            foreach ($attr->args as $arg) {
+            $args = $attr->args;
+            if ($asConstructed && $args !== [] && $args[0]->value instanceof Node\Expr\Array_) {
+                $args = [$args[0]];
+            }
+
+            foreach ($args as $arg) {
                 if ($arg->value instanceof Node\Expr\Array_) {
                     foreach ($arg->value->items as $item) {
                         if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
@@ -219,19 +287,35 @@ final class EloquentModelHelper
     }
 
     /**
-     * True if the class carries any class-level attribute whose short name matches one of $names.
+     * True if the class carries any class-level attribute that is one of $names.
      *
-     * @param  list<string>  $names
+     * @param  list<string>  $names  Short names of Eloquent's own attributes
+     * @param  (\Closure(Node\Name): string)|null  $resolve
      */
-    private static function hasAttribute(Node\Stmt\Class_ $class, array $names): bool
+    private static function hasAttribute(Node\Stmt\Class_ $class, array $names, ?\Closure $resolve = null): bool
     {
         foreach (self::attributes($class) as $attr) {
-            if (in_array(self::shortName($attr->name->toString()), $names, true)) {
-                return true;
+            foreach ($names as $name) {
+                if (self::attributeIs($attr, $name, $resolve)) {
+                    return true;
+                }
             }
         }
 
         return false;
+    }
+
+    /**
+     * True if $attr is the Eloquent attribute $shortName: on its short name as written without
+     * $resolve, on its resolved fully qualified name with it, ignoring case as PHP does.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     */
+    private static function attributeIs(Node\Attribute $attr, string $shortName, ?\Closure $resolve): bool
+    {
+        return $resolve === null
+            ? self::shortName($attr->name->toString()) === $shortName
+            : strcasecmp($resolve($attr->name), self::ATTRIBUTE_NAMESPACE.'\\'.$shortName) === 0;
     }
 
     /**

@@ -215,4 +215,107 @@ PHP));
             EloquentModelHelper::extractEloquentAttributeFields($declarations[1], 'Appends', $resolve),
         );
     }
+
+    public function test_has_and_extract_helpers_match_the_resolved_name_when_given_a_resolver(): void
+    {
+        // Names are resolved first, so an aliased Laravel attribute is read and a same-named one
+        // from another namespace is not.
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $ast = $traverser->traverse($this->parser->parseCode(<<<'PHP'
+<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable as Assignable;
+use Illuminate\Database\Eloquent\Attributes\Guarded as Protect;
+use Illuminate\Database\Eloquent\Attributes\Unguarded as Open;
+use App\Attributes\Hidden;
+
+#[Assignable(['nickname'])]
+#[Protect(['role'])]
+#[Hidden(['nickname'])]
+class Member {}
+
+#[Open]
+class Note {}
+PHP));
+
+        $classes = (new NodeFinder)->findInstanceOf($ast, Node\Stmt\Class_::class);
+        $this->assertCount(2, $classes);
+        [$member, $note] = $classes;
+        $resolve = fn (Node\Name $name): string => $name->toString();
+
+        $this->assertTrue(EloquentModelHelper::hasFillable($member, $resolve));
+        $this->assertTrue(EloquentModelHelper::hasGuarded($member, $resolve));
+        $this->assertFalse(EloquentModelHelper::hasHidden($member, $resolve));
+        $this->assertTrue(EloquentModelHelper::hasGuarded($note, $resolve));
+        $this->assertSame(['nickname'], EloquentModelHelper::extractFillableFields($member, $resolve));
+        $this->assertSame(['role'], EloquentModelHelper::extractGuardedFields($member, $resolve));
+        $this->assertSame([], EloquentModelHelper::extractHiddenFields($member, $resolve));
+    }
+
+    public function test_unguarding_attribute_and_visible_fields_match_the_resolved_name(): void
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $ast = $traverser->traverse($this->parser->parseCode(<<<'PHP'
+<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Guarded;
+use Illuminate\Database\Eloquent\Attributes\Unguarded as Open;
+use Illuminate\Database\Eloquent\Attributes\Visible as Shown;
+
+#[Guarded([])]
+#[Open]
+#[Shown(['nickname'])]
+class Ledger { protected $visible = ['email']; }
+
+#[Guarded([])]
+class Entry {}
+
+#[Guarded(['id'])]
+#[Unguarded]
+class Note {}
+PHP));
+
+        $classes = (new NodeFinder)->findInstanceOf($ast, Node\Stmt\Class_::class);
+        $this->assertCount(3, $classes);
+        [$ledger, $entry, $note] = $classes;
+        $resolve = fn (Node\Name $name): string => $name->toString();
+
+        $this->assertSame('Unguarded', EloquentModelHelper::unguardingAttribute($ledger, $resolve));
+        $this->assertSame('Guarded', EloquentModelHelper::unguardingAttribute($entry, $resolve));
+        // The unimported #[Unguarded] resolves into App\Models, so it is not Laravel's.
+        $this->assertNull(EloquentModelHelper::unguardingAttribute($note, $resolve));
+        $this->assertSame(['email', 'nickname'], EloquentModelHelper::extractVisibleFields($ledger, $resolve));
+        $this->assertSame([], EloquentModelHelper::extractVisibleFields($entry, $resolve));
+    }
+
+    public function test_attribute_fields_are_read_as_constructed_and_matched_ignoring_case(): void
+    {
+        $traverser = new NodeTraverser;
+        $traverser->addVisitor(new NameResolver);
+        $ast = $traverser->traverse($this->parser->parseCode(<<<'PHP'
+<?php
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\fillable;
+use Illuminate\Database\Eloquent\Attributes\unguarded;
+
+#[fillable(['nickname'], 'password')]
+#[unguarded]
+class Member {}
+PHP));
+
+        $classes = (new NodeFinder)->findInstanceOf($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $classes);
+        $resolve = fn (Node\Name $name): string => $name->toString();
+
+        // Eloquent's constructor keeps only a leading array, so 'password' is not fillable.
+        $this->assertSame(['nickname'], EloquentModelHelper::extractFillableFields($classes[0], $resolve));
+        $this->assertSame('Unguarded', EloquentModelHelper::unguardingAttribute($classes[0], $resolve));
+        // The readers other analyzers call keep returning every argument.
+        $this->assertSame(['nickname', 'password'], EloquentModelHelper::extractEloquentAttributeFields($classes[0], 'Fillable', $resolve));
+    }
 }

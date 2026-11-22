@@ -3265,4 +3265,184 @@ PHP;
         $this->assertCount(1, $issues);
         $this->assertEquals('high', $issues[0]->severity->value);
     }
+
+    /**
+     * @dataProvider sideEffectingRouteBodyProvider
+     */
+    #[DataProvider('sideEffectingRouteBodyProvider')]
+    public function test_flags_job_dispatch_artisan_and_notify_as_business_logic(string $imports, string $route): void
+    {
+        $code = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n{$imports}\n{$route}\n";
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+        $issues = $result->getIssues();
+        $this->assertEquals('high', $issues[0]->severity->value);
+        $this->assertEquals('route-has-business-logic', $issues[0]->metadata['code']);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function sideEffectingRouteBodyProvider(): array
+    {
+        return [
+            'static dispatch, fully qualified job' => [
+                '',
+                "Route::post('/digests', function () {\n    \\Acme\\Jobs\\CompileDigest::dispatch();\n    return 'ok';\n});",
+            ],
+            'static dispatch, imported job with arguments' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests/{id}', fn (\$id) => CompileDigest::dispatch(\$id));",
+            ],
+            'dispatchSync' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::dispatchSync());",
+            ],
+            'dispatchNow' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::dispatchNow());",
+            ],
+            'dispatchIf' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::dispatchIf(true));",
+            ],
+            'dispatchUnless' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::dispatchUnless(false));",
+            ],
+            'dispatchAfterResponse' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::dispatchAfterResponse());",
+            ],
+            'withChain then dispatch' => [
+                'use Acme\\Jobs\\CompileDigest;
+use Acme\\Jobs\\ArchiveDigest;',
+                "Route::post('/digests', fn () => CompileDigest::withChain([new ArchiveDigest])->dispatch());",
+            ],
+            'dispatchable event' => [
+                'use Acme\\Events\\DigestRequested;',
+                "Route::post('/digests', fn () => DigestRequested::dispatch());",
+            ],
+            'Artisan::call via import' => [
+                'use Illuminate\\Support\\Facades\\Artisan;',
+                "Route::get('/flush', function () {\n    Artisan::call('cache:clear');\n    return 'flushed';\n});",
+            ],
+            'Artisan::queue via global alias' => [
+                '',
+                "Route::get('/flush', fn () => Artisan::queue('acme:rebuild'));",
+            ],
+            'Artisan::call fully qualified' => [
+                '',
+                "Route::get('/flush', fn () => \\Illuminate\\Support\\Facades\\Artisan::call('cache:clear'));",
+            ],
+            'Artisan facade under an alias' => [
+                'use Illuminate\\Support\\Facades\\Artisan as Console;',
+                "Route::get('/flush', fn () => Console::call('cache:clear'));",
+            ],
+            'notify on the request user' => [
+                'use Illuminate\\Http\\Request;',
+                "Route::post('/welcome', fn (Request \$r) => \$r->user()->notify(new \\Acme\\Notifications\\Greeting));",
+            ],
+            'notifyNow on a variable' => [
+                '',
+                "Route::post('/welcome/{member}', function (\$member) {\n    \$member->notifyNow(new \\Acme\\Notifications\\Greeting);\n    return 'sent';\n});",
+            ],
+            'nullsafe notify' => [
+                '',
+                "Route::post('/welcome', fn () => auth()->user()?->notify(new \\Acme\\Notifications\\Greeting));",
+            ],
+            'static dispatch in another letter case' => [
+                'use Acme\\Jobs\\CompileDigest;',
+                "Route::post('/digests', fn () => CompileDigest::Dispatch());",
+            ],
+            'notify in another letter case' => [
+                '',
+                "Route::post('/welcome/{member}', fn (\$member) => \$member->Notify(new \\Acme\\Notifications\\Greeting));",
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider sideEffectFreeRouteBodyProvider
+     */
+    #[DataProvider('sideEffectFreeRouteBodyProvider')]
+    public function test_does_not_flag_look_alikes_of_dispatch_artisan_and_notify(string $imports, string $route): void
+    {
+        $code = "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n{$imports}\n{$route}\n";
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function sideEffectFreeRouteBodyProvider(): array
+    {
+        return [
+            'view' => ['', "Route::get('/', fn () => view('landing'));"],
+            'redirect' => ['', "Route::get('/old', fn () => redirect('/new'));"],
+            'Str::of' => [
+                'use Illuminate\\Support\\Str;',
+                "Route::get('/slug/{t}', fn (\$t) => Str::of(\$t)->slug());",
+            ],
+            'Carbon::now' => [
+                'use Carbon\\Carbon;',
+                "Route::get('/time', fn () => Carbon::now()->toIso8601String());",
+            ],
+            'Route::dispatch forwards a request, not a job' => [
+                '',
+                "Route::get('/proxy', fn () => Route::dispatch(request()));",
+            ],
+            'a dispatch-prefixed static method that is not Dispatchable' => [
+                'use Acme\\Support\\Router;',
+                "Route::get('/table', fn () => Router::dispatchesTo('home'));",
+            ],
+            'a static dispatchesEvents property read' => [
+                'use Acme\\Models\\Invoice;',
+                "Route::get('/events', fn () => array_keys(Invoice::\$dispatchesEvents));",
+            ],
+            'a notify-prefixed method' => [
+                '',
+                "Route::get('/prefs/{member}', fn (\$member) => \$member->notifyVia());",
+            ],
+            'a notify property read' => [
+                '',
+                "Route::get('/prefs/{member}', fn (\$member) => \$member->notify);",
+            ],
+            'a free notify() function' => [
+                '',
+                "Route::get('/ping', fn () => notify('ping'));",
+            ],
+            'a model named Artisan, simple find' => [
+                'use App\\Models\\Artisan;',
+                "Route::get('/makers/{id}', fn (\$id) => Artisan::find(\$id));",
+            ],
+            'a model named Artisan, two-call read' => [
+                'use App\\Models\\Artisan;',
+                "Route::get('/makers', fn () => Artisan::where('active', 1)->get());",
+            ],
+            'a non-facade class named Artisan' => [
+                'use Acme\\Support\\Artisan;',
+                "Route::get('/makers', fn () => Artisan::label());",
+            ],
+        ];
+    }
 }

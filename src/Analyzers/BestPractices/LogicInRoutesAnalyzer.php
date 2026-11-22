@@ -168,7 +168,22 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'delete', 'destroy', 'forceDelete', 'truncate',
         'save', 'push', 'touch', 'increment', 'decrement',
         'upsert', 'firstOrCreate', 'firstOrNew', 'restore',
+        'insertUsing', 'insertOrIgnoreUsing', 'createOrFirst',
+        'updateOrFail', 'saveOrFail', 'deleteOrFail', 'forceDestroy',
+        'incrementEach', 'decrementEach',
+        'forceCreate', 'createMany', 'saveMany',
+        // Relation writes on pivot rows
+        'sync', 'syncWithoutDetaching', 'syncWithPivotValues',
+        'attach', 'detach', 'toggle', 'updateExistingPivot',
+        // Quiet variants skip model events but still write
+        'createQuietly', 'forceCreateQuietly', 'createManyQuietly', 'saveManyQuietly',
+        'saveQuietly', 'updateQuietly', 'deleteQuietly', 'forceDeleteQuietly',
+        'restoreQuietly', 'incrementQuietly', 'decrementQuietly', 'touchQuietly',
+        'pushQuietly',
     ];
+
+    /** @var list<string> Write methods that save only when called without arguments: Model::push() saves, Collection::push($value) does not */
+    private const ARGUMENTLESS_WRITE_METHODS = ['push'];
 
     /** @var list<string> Eloquent static query methods (entry points) */
     private const STATIC_QUERY_METHODS = [
@@ -367,13 +382,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         }
 
         // Check model namespace patterns (from resolved FQN)
-        if (str_starts_with($normalized, 'App\\Models\\') ||
-            str_starts_with($normalized, 'App\\Model\\')) {
-            return true;
-        }
-
-        // Domain-driven patterns: any namespace containing \Models\
-        if (str_contains($normalized, '\\Models\\')) {
+        if (self::isInModelsNamespace($name)) {
             return true;
         }
 
@@ -384,6 +393,41 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
         // Cannot determine from namespace - assume NOT a model
         return false;
+    }
+
+    /**
+     * Determine if a class is an Eloquent model for write detection.
+     *
+     * Unlike isLikelyModel(), an explicit models namespace wins over the utility short-name
+     * rejection, so a write on App\Models\File is seen while the File facade, which resolves
+     * under Illuminate\Support\Facades, is still rejected.
+     *
+     * @param  list<string>  $utilityClasses
+     *
+     * @internal
+     */
+    public static function isModelClass(Node\Name $name, array $utilityClasses): bool
+    {
+        return self::isInModelsNamespace($name) || self::isLikelyModel($name, $utilityClasses);
+    }
+
+    /**
+     * Check whether the resolved class name sits under App\Models\, App\Model\ or any \Models\ namespace.
+     *
+     * @internal
+     */
+    public static function isInModelsNamespace(Node\Name $name): bool
+    {
+        $resolvedName = $name->getAttribute('resolvedName');
+        $fqn = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
+        $normalized = ltrim($fqn, '\\');
+
+        return str_starts_with($normalized, 'App\\Models\\')
+            || str_starts_with($normalized, 'App\\Model\\')
+            // Domain-driven patterns: any namespace containing \Models\
+            || str_contains($normalized, '\\Models\\');
     }
 
     /**
@@ -582,7 +626,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             'chain_length' => 0,
         ];
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
@@ -595,6 +639,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $terminalReadMethods
              * @param  list<string>  $sqlBuilderMethods
              * @param  list<string>  $readResultTailMethods
+             * @param  list<string>  $argumentlessWriteMethods
              */
             public function __construct(
                 private array &$result,
@@ -603,7 +648,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $utilityClasses,
                 private array $terminalReadMethods,
                 private array $sqlBuilderMethods,
-                private array $readResultTailMethods
+                private array $readResultTailMethods,
+                private array $argumentlessWriteMethods
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -617,9 +663,16 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
                 }
 
-                // Process MethodCalls - walk DOWN via ->var to analyze Eloquent chains
-                if ($node instanceof Node\Expr\MethodCall) {
+                // Process MethodCalls (nullsafe included) - walk DOWN via ->var to analyze Eloquent chains
+                if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall) {
                     $chainInfo = $this->analyzeMethodCallChain($node);
+
+                    // A chain rooted at the signed-in user, reaching its model through a property
+                    // or a ?-> link, or rooted at a model known only by its namespace counts only
+                    // for its writes, so its reads keep their verdict.
+                    if ($chainInfo['is_write_only_chain'] && $chainInfo['has_writes']) {
+                        $this->result['has_writes'] = true;
+                    }
 
                     if ($chainInfo['is_eloquent_chain']) {
                         // Mark the root StaticCall as processed so it's not double-counted
@@ -656,7 +709,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
 
                     // Check for SQL-specific methods that indicate complex queries
-                    if ($node->name instanceof Node\Identifier
+                    if ($node instanceof Node\Expr\MethodCall
+                        && $node->name instanceof Node\Identifier
                         && in_array($node->name->toString(), $this->sqlBuilderMethods, true)) {
                         $this->result['has_complex_reads'] = true;
                     }
@@ -677,14 +731,19 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         $method = $node->name->toString();
 
                         // Check if this is likely an Eloquent model
-                        if (! $this->isLikelyModel($node->class)) {
+                        if (! $this->isModelClass($node->class)) {
                             return null;
                         }
 
                         // Direct write method (e.g., User::create([...]))
-                        if (in_array($method, $this->writeMethods, true)) {
+                        if ($this->isWriteCall($method, $node)) {
                             $this->result['has_writes'] = true;
 
+                            return null;
+                        }
+
+                        // A model known only by its namespace (App\Models\Config) counts for writes only
+                        if (! $this->isLikelyModel($node->class)) {
                             return null;
                         }
 
@@ -717,15 +776,37 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              */
             private function isDbFacade(Node\Name $name): bool
             {
-                $resolvedName = $name->getAttribute('resolvedName');
-                $className = $resolvedName instanceof Node\Name\FullyQualified
-                    ? $resolvedName->toString()
-                    : $name->toString();
-
-                $className = ltrim($className, '\\');
+                $className = ltrim($this->resolvedClassName($name), '\\');
 
                 return $className === 'Illuminate\\Support\\Facades\\DB'
                     || $className === 'DB';
+            }
+
+            private function resolvedClassName(Node\Name $name): string
+            {
+                $resolvedName = $name->getAttribute('resolvedName');
+
+                return $resolvedName instanceof Node\Name\FullyQualified
+                    ? $resolvedName->toString()
+                    : $name->toString();
+            }
+
+            /**
+             * Check for the signed-in user: user() on auth(), auth('guard'), request() or a variable.
+             */
+            private function isSignedInUserCall(Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall $call): bool
+            {
+                if (! $call->name instanceof Node\Identifier || $call->name->toString() !== 'user') {
+                    return false;
+                }
+
+                if ($call->var instanceof Node\Expr\Variable) {
+                    return true;
+                }
+
+                return $call->var instanceof Node\Expr\FuncCall
+                    && $call->var->name instanceof Node\Name
+                    && in_array($call->var->name->toString(), ['auth', 'request'], true);
             }
 
             /**
@@ -734,6 +815,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             private function isLikelyModel(Node\Name $name): bool
             {
                 return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
+            }
+
+            /**
+             * Determine if a class is an Eloquent model, letting a models namespace win over a utility short name.
+             */
+            private function isModelClass(Node\Name $name): bool
+            {
+                return LogicInRoutesVisitor::isModelClass($name, $this->utilityClasses);
             }
 
             /**
@@ -752,37 +841,91 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
 
             /**
+             * Check whether a call is a write; push() writes only without arguments, and a
+             * first-class callable (delete(...)) only builds a Closure.
+             */
+            private function isWriteCall(string $method, Node\Expr\CallLike $call): bool
+            {
+                if ($call->isFirstClassCallable() || ! in_array($method, $this->writeMethods, true)) {
+                    return false;
+                }
+
+                return $call->getRawArgs() === [] || ! in_array($method, $this->argumentlessWriteMethods, true);
+            }
+
+            /**
              * Walk DOWN via ->var to analyze a method call chain.
              *
              * This approach walks from the outermost MethodCall down through
              * the chain to find if the root is a model StaticCall.
              *
-             * @return array{is_eloquent_chain: bool, chain_length: int, has_writes: bool, methods: list<string>, root_position: int|null}
+             * @return array{is_eloquent_chain: bool, is_write_only_chain: bool, chain_length: int, has_writes: bool, methods: list<string>, root_position: int|null}
              */
-            private function analyzeMethodCallChain(Node\Expr\MethodCall $node): array
+            private function analyzeMethodCallChain(Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall $node): array
             {
                 $methods = [];
                 $hasWrites = false;
                 $current = $node;
                 $rootPosition = null;
+                $crossesProperty = false;
+                $crossesNullsafe = false;
+                $isUserRoot = false;
 
-                // Walk down through the method call chain
-                while ($current instanceof Node\Expr\MethodCall) {
-                    if ($current->name instanceof Node\Identifier) {
-                        $method = $current->name->toString();
-                        array_unshift($methods, $method); // Prepend to maintain order
-                        if (in_array($method, $this->writeMethods, true)) {
-                            $hasWrites = true;
+                // Walk down through the method call chain, across ?-> links and property
+                // hops (->author->, higher-order ->each->) as well
+                while (true) {
+                    if ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\NullsafeMethodCall) {
+                        if ($this->isSignedInUserCall($current)) {
+                            $isUserRoot = true;
+
+                            break;
                         }
+
+                        if ($current instanceof Node\Expr\NullsafeMethodCall) {
+                            $crossesNullsafe = true;
+                        }
+
+                        if ($current->name instanceof Node\Identifier) {
+                            $method = $current->name->toString();
+                            array_unshift($methods, $method); // Prepend to maintain order
+                            if ($this->isWriteCall($method, $current)) {
+                                $hasWrites = true;
+                            }
+                        }
+                        $current = $current->var;
+
+                        continue;
                     }
-                    $current = $current->var;
+
+                    if ($current instanceof Node\Expr\PropertyFetch || $current instanceof Node\Expr\NullsafePropertyFetch) {
+                        if ($current instanceof Node\Expr\NullsafePropertyFetch) {
+                            $crossesNullsafe = true;
+                        }
+
+                        $crossesProperty = true;
+                        $current = $current->var;
+
+                        continue;
+                    }
+
+                    break;
+                }
+
+                // Auth::user() is the signed-in user as well
+                if ($current instanceof Node\Expr\StaticCall
+                    && $current->class instanceof Node\Name
+                    && $current->name instanceof Node\Identifier
+                    && $current->name->toString() === 'user'
+                    && in_array(ltrim($this->resolvedClassName($current->class), '\\'), ['Illuminate\\Support\\Facades\\Auth', 'Auth'], true)) {
+                    $isUserRoot = true;
                 }
 
                 // Check if root is a StaticCall on a model
                 $isEloquentChain = false;
-                if ($current instanceof Node\Expr\StaticCall
+                if (! $isUserRoot
+                    && $current instanceof Node\Expr\StaticCall
                     && $current->class instanceof Node\Name
-                    && $this->isLikelyModel($current->class)) {
+                    && $this->isModelClass($current->class)) {
                     $isEloquentChain = true;
                     $rootPosition = $current->getStartFilePos();
 
@@ -790,7 +933,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     if ($current->name instanceof Node\Identifier) {
                         $method = $current->name->toString();
                         array_unshift($methods, $method);
-                        if (in_array($method, $this->writeMethods, true)) {
+                        if ($this->isWriteCall($method, $current)) {
                             $hasWrites = true;
                         }
                     }
@@ -806,8 +949,18 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     $methods = $readMethods;
                 }
 
+                // Reads are graded only on a plain chain from a model recognised by its short
+                // name, as before; any other chain counts for its writes only
+                $gradesReads = $isEloquentChain
+                    && ! $crossesProperty
+                    && ! $crossesNullsafe
+                    && $current instanceof Node\Expr\StaticCall
+                    && $current->class instanceof Node\Name
+                    && $this->isLikelyModel($current->class);
+
                 return [
-                    'is_eloquent_chain' => $isEloquentChain,
+                    'is_eloquent_chain' => $gradesReads,
+                    'is_write_only_chain' => $isUserRoot || ($isEloquentChain && ! $gradesReads),
                     'chain_length' => count($methods),
                     'has_writes' => $hasWrites,
                     'methods' => $methods,
@@ -899,8 +1052,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\StaticCall && $node->class instanceof Node\Name) {
                     $shortClassName = LogicInRoutesVisitor::getShortClassName($node->class);
 
-                    // Business facades (Mail, Notification, Queue, Event, Bus, Broadcast)
-                    if (in_array($shortClassName, $this->businessLogicFacades, true)) {
+                    // Business facades (Mail, Notification, Queue, Event, Bus, Broadcast); a model
+                    // that shares the short name (App\Models\Event) is not one
+                    if (in_array($shortClassName, $this->businessLogicFacades, true)
+                        && ! LogicInRoutesVisitor::isInModelsNamespace($node->class)) {
                         $this->hasComplexLogic = true;
 
                         return null;

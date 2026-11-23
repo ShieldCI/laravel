@@ -3923,6 +3923,181 @@ PHP;
         ];
     }
 
+    /**
+     * attach() with a file-shaped first argument is Mailable::attach() or MailMessage::attach(),
+     * not a pivot write, so the chain keeps the grade it has without the attach() call.
+     *
+     * @dataProvider fileShapedAttachProvider
+     */
+    #[DataProvider('fileShapedAttachProvider')]
+    public function test_attach_with_a_file_shaped_argument_is_not_a_write(string $imports, string $closure): void
+    {
+        $result = $this->analyzeRouteCode($this->attachRouteFile($imports, $closure));
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::Medium, $issue->severity);
+        $this->assertSame('Route closure contains complex database queries', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function fileShapedAttachProvider(): array
+    {
+        $chain = 'fn ($id) => Receipt::findOrFail($id)->toMailable()->attach';
+
+        return [
+            'string literal' => ['', $chain."('/srv/files/receipt.pdf')"],
+            'interpolated string' => ['', $chain.'("/srv/files/{$id}.pdf")'],
+            'string concatenation' => ['', $chain."('/srv/files/'.\$id.'.pdf')"],
+            'storage_path()' => ['', $chain."(storage_path('receipts/r.pdf'))"],
+            'public_path()' => ['', $chain."(public_path('r.pdf'))"],
+            'base_path()' => ['', $chain."(base_path('r.pdf'))"],
+            'resource_path()' => ['', $chain."(resource_path('r.pdf'))"],
+            'app_path()' => ['', $chain."(app_path('r.pdf'))"],
+            'database_path()' => ['', $chain."(database_path('r.pdf'))"],
+            'lang_path()' => ['', $chain."(lang_path('r.pdf'))"],
+            'config_path()' => ['', $chain."(config_path('r.pdf'))"],
+            'fully qualified \storage_path()' => ['', $chain."(\\storage_path('r.pdf'))"],
+            'mixed-case Storage_Path()' => ['', $chain."(Storage_Path('r.pdf'))"],
+            'fully qualified Attachment::fromPath()' => ['', $chain."(\\Illuminate\\Mail\\Mailables\\Attachment::fromPath('/r.pdf'))"],
+            'imported Attachment::fromStorage()' => ['use Illuminate\Mail\Mailables\Attachment;', $chain."(Attachment::fromStorage('r.pdf'))"],
+            'aliased Attachment' => ['use Illuminate\Mail\Mailables\Attachment as MailFile;', $chain."(MailFile::fromPath('/r.pdf'))"],
+            'new Attachment' => ['use Illuminate\Mail\Mailables\Attachment;', $chain.'(new Attachment(fn ($p) => $p))'],
+            'named file argument' => ['', $chain.'(file: $id)'],
+            'named file argument after named options' => ['', $chain."(options: ['as' => 'r.pdf'], file: '/srv/r.pdf')"],
+            'positional file with named options' => ['', $chain."('/srv/r.pdf', options: ['as' => 'r.pdf'])"],
+            'file name with an extension' => ['', $chain."('r.pdf')"],
+            'nowdoc path' => ['', $chain."(<<<'FILE'\n    /srv/r.pdf\n    FILE)"],
+            '__DIR__ concatenation' => ['', $chain."(__DIR__.'/r.pdf')"],
+            'path helper concatenation' => ['', $chain."(storage_path('a').'/b.pdf')"],
+            'ternary of two paths' => ['', $chain."(\$id ? '/srv/a.pdf' : '/srv/b.pdf')"],
+            'Attachment with a fluent tail' => ['use Illuminate\Mail\Mailables\Attachment;', $chain."(Attachment::fromPath('/r.pdf')->as('r.pdf')->withMime('application/pdf'))"],
+            'new Attachment with a fluent tail' => ['use Illuminate\Mail\Mailables\Attachment;', $chain."((new Attachment(fn (\$p) => \$p))->as('r.pdf'))"],
+            'base Illuminate\Mail\Attachment' => ['use Illuminate\Mail\Attachment;', $chain."(Attachment::fromPath('/r.pdf'))"],
+            'Storage::path()' => ['use Illuminate\Support\Facades\Storage;', $chain."(Storage::path('r.pdf'))"],
+            'Storage::disk()->path()' => ['use Illuminate\Support\Facades\Storage;', $chain."(Storage::disk('s3')->path('r.pdf'))"],
+            'unimported Storage alias' => ['', $chain."(Storage::path('r.pdf'))"],
+            'request()->file()' => ['', $chain."(request()->file('doc'))"],
+            'typed request variable file()' => ['use Illuminate\Http\Request;', "fn (\$id, Request \$req) => Receipt::findOrFail(\$id)->toMailable()->attach(\$req->file('doc'))"],
+            'absolute path without an extension' => ['', $chain."('/srv/files/receipt')"],
+            'upper-case extension' => ['', $chain."('R.PDF')"],
+            'interpolated name with an extension' => ['', $chain.'("{$id}.csv")'],
+            'concatenation onto an absolute directory' => ['', $chain."('/srv/'.\$id)"],
+        ];
+    }
+
+    /**
+     * attach() that is not positively file-shaped keeps its pivot write verdict.
+     *
+     * @dataProvider nonFileShapedAttachProvider
+     */
+    #[DataProvider('nonFileShapedAttachProvider')]
+    public function test_attach_without_a_file_shaped_argument_stays_a_write(string $imports, string $closure): void
+    {
+        $result = $this->analyzeRouteCode($this->attachRouteFile($imports, $closure));
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::High, $issue->severity);
+        $this->assertStringStartsWith('Route closure contains database write operations', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function nonFileShapedAttachProvider(): array
+    {
+        $pivot = 'fn ($id, $labelId) => Receipt::findOrFail($id)->labels()->attach';
+        $mail = 'fn ($id, $path) => Receipt::findOrFail($id)->toMailable()->attach';
+
+        return [
+            'pivot int' => ['', $pivot.'(7)'],
+            'pivot array' => ['', $pivot.'([7, 8])'],
+            'pivot variable' => ['', $pivot.'($labelId)'],
+            'pivot model variable' => ['', 'fn ($id, Label $label) => Receipt::findOrFail($id)->labels()->attach($label)'],
+            'pivot model property' => ['', 'fn ($id, Label $label) => Receipt::findOrFail($id)->labels()->attach($label->id)'],
+            'pivot named id argument' => ['', $pivot.'(id: 7)'],
+            'mail path variable' => ['', $mail.'($path)'],
+            'spread argument' => ['', $mail.'(...$path)'],
+            'unrecognised helper' => ['', $mail."(report_path('r.pdf'))"],
+            'helper imported from another namespace' => ['use function Acme\Files\storage_path;', $mail."(storage_path('r.pdf'))"],
+            'qualified helper' => ['', $mail."(Acme\\storage_path('r.pdf'))"],
+            'another Attachment class' => ['use App\Mail\Attachment;', $mail."(Attachment::fromPath('/r.pdf'))"],
+            'unimported Attachment' => ['', $mail."(Attachment::fromPath('/r.pdf'))"],
+            'pivot UUID key' => ['', $pivot."('3c1a9e52-6b0d-4f7e-8a21-5d4c3b2a1f09')"],
+            'pivot ULID key' => ['', $pivot."('01HZX4K7M2N8P5Q3R6S9T0V1W2')"],
+            'pivot slug key' => ['', $pivot."('release-notes')"],
+            'pivot interpolated key' => ['', $pivot.'("{$labelId}")'],
+            'pivot concatenated key' => ['', $pivot."('label-'.\$labelId)"],
+            'pivot key with attributes' => ['', $pivot."('reviewer', ['expires_at' => now()])"],
+            'signed-in user pivot key' => ['', "fn () => auth()->user()->labels()->attach('reviewer')"],
+            'named id argument after named attributes' => ['', $pivot.'(attributes: [], id: 7)'],
+            'ternary with a non-path branch' => ['', $pivot."(\$id ? '/srv/a.pdf' : \$labelId)"],
+            'another Storage class' => ['use App\Support\Storage;', $mail."(Storage::path('r.pdf'))"],
+            'file() on another receiver' => ['', $mail."(Receipt::file('doc'))"],
+            'tag name vue.js' => ['', 'fn ($id) => Receipt::findOrFail($id)->tags()->attach(\'vue.js\')'],
+            'tag name with pivot attributes' => ['', "fn (\$id) => Receipt::findOrFail(\$id)->tags()->attach('asp.net', ['pinned' => true])"],
+            'domain key' => ['', "fn (\$id) => Receipt::findOrFail(\$id)->domains()->attach('example.com')"],
+            'email key' => ['', "fn (\$id) => Receipt::findOrFail(\$id)->reviewers()->attach('ops@example.com')"],
+            'version key' => ['', "fn (\$id) => Receipt::findOrFail(\$id)->releases()->attach('v1.2')"],
+            'IP address key' => ['', "fn (\$id) => Receipt::findOrFail(\$id)->hosts()->attach('10.0.0.1')"],
+            'interpolated email key' => ['', 'fn ($id, $u) => Receipt::findOrFail($id)->reviewers()->attach("{$u}@example.com")'],
+            'nullsafe dotted key' => ['', "fn (\$id) => Receipt::find(\$id)?->tags()->attach('vue.js')"],
+            'relative slash key' => ['', $pivot."('team/backend')"],
+            'interpolated relative slash key' => ['', $pivot.'("teams/{$id}")'],
+            'concatenated dotted suffix' => ['', $pivot."(\$labelId.'.v2')"],
+            'bare __DIR__' => ['', $mail.'(__DIR__)'],
+            'file() on a model variable' => ['', 'fn ($id, Label $label) => Receipt::findOrFail($id)->labels()->attach($label->file())'],
+            'file() on an untyped variable' => ['', $mail."(\$path->file('doc'))"],
+            'file() on a variable typed as another Request' => ['use App\Http\Request;', "fn (\$id, Request \$req) => Receipt::findOrFail(\$id)->labels()->attach(\$req->file('doc'))"],
+        ];
+    }
+
+    /**
+     * attachData() and attachFromStorage() are not write methods, whatever their arguments.
+     *
+     * @dataProvider mailAttachVariantProvider
+     */
+    #[DataProvider('mailAttachVariantProvider')]
+    public function test_mail_attach_variants_are_not_writes(string $closure): void
+    {
+        $result = $this->analyzeRouteCode($this->attachRouteFile('', $closure));
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::Medium, $issue->severity);
+        $this->assertSame('Route closure contains complex database queries', $issue->message);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function mailAttachVariantProvider(): array
+    {
+        return [
+            'attachData()' => ["fn (\$id, \$bytes) => Receipt::findOrFail(\$id)->toMailable()->attachData(\$bytes, 'r.pdf')"],
+            'attachFromStorage()' => ['fn ($id, $path) => Receipt::findOrFail($id)->toMailable()->attachFromStorage($path)'],
+        ];
+    }
+
+    private function attachRouteFile(string $imports, string $closure): string
+    {
+        return <<<PHP
+<?php
+
+use App\Models\Receipt;
+{$imports}
+use Illuminate\Support\Facades\Route;
+
+Route::get('/receipts/{id}/mail', {$closure});
+PHP;
+    }
+
     private function routeFile(string $import, string $closure): string
     {
         return <<<PHP

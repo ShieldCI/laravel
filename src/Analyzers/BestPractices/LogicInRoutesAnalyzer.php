@@ -313,13 +313,111 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'action',
         'now',
         'today',
+        'cache',
+        'session',
     ];
+
+    /**
+     * Builder methods, beside the where* and orWhere* families, that only build a query, so a
+     * chain of them assigned to a variable, such as `$query = Article::latest();`, is a read
+     * once a later statement continues it.
+     *
+     * @var list<string>
+     */
+    private const BUILDER_METHODS = [
+        'query', 'has', 'orHas', 'doesntHave', 'orDoesntHave', 'with', 'withCount', 'without',
+        'latest', 'oldest', 'orderBy', 'orderByDesc', 'reorder',
+        'limit', 'take', 'skip', 'offset', 'select', 'addSelect', 'distinct',
+        'withTrashed', 'onlyTrashed', 'withoutTrashed',
+        'join', 'leftJoin', 'rightJoin', 'crossJoin', 'on', 'orOn',
+        'groupBy', 'having', 'when', 'unless',
+    ];
+
+    /**
+     * CALLBACK_METHODS names that the query builder itself defines (BuildsQueries and
+     * Conditionable), so a model static call of one is forwarded to the builder, never a scope.
+     *
+     * @var list<string>
+     */
+    private const BUILDER_CALLBACK_METHODS = ['each', 'tap', 'pipe', 'chunk', 'chunkById', 'chunkMap', 'eachById', 'when', 'unless'];
+
+    /** @var list<string> Builder callback methods whose callback is handed the builder itself */
+    private const BUILDER_RECEIVING_CALLBACK_METHODS = ['when', 'unless', 'tap'];
+
+    /** @var list<string> Request methods that read input */
+    private const REQUEST_INPUT_METHODS = [
+        'input', 'query', 'string', 'str', 'integer', 'boolean', 'float', 'date', 'enum',
+        'get', 'only', 'except', 'all', 'has', 'filled', 'route', 'header', 'cookie',
+    ];
+
+    /**
+     * Collection classes whose whereIn() and kin filter in memory.
+     *
+     * @var list<string>
+     *
+     * @internal public so the anonymous query visitor can read it
+     */
+    public const COLLECTION_CLASSES = [
+        'Illuminate\\Support\\Collection', 'Illuminate\\Database\\Eloquent\\Collection', 'Illuminate\\Support\\LazyCollection',
+    ];
+
+    /**
+     * Collection methods that return a collection, so a whereIn() after them still filters in
+     * memory.
+     *
+     * @var list<string>
+     *
+     * @internal public so the anonymous query visitor can read it
+     */
+    public const COLLECTION_METHODS = [
+        'where', 'whereStrict', 'whereIn', 'whereInStrict', 'whereNotIn', 'whereNotInStrict',
+        'whereBetween', 'whereNotBetween', 'whereNull', 'whereNotNull', 'whereInstanceOf',
+        'filter', 'reject', 'map', 'mapWithKeys', 'flatMap', 'flatten', 'collapse',
+        'sort', 'sortDesc', 'sortBy', 'sortByDesc', 'sortKeys', 'sortKeysDesc',
+        'values', 'keys', 'merge', 'concat', 'unique', 'uniqueStrict', 'reverse',
+        'take', 'skip', 'slice', 'only', 'except', 'keyBy', 'groupBy', 'pluck',
+        'diff', 'diffKeys', 'intersect', 'intersectByKeys',
+    ];
+
+    /**
+     * Model static and builder calls that return a collection of models (a lazy one for lazy()
+     * and cursor()).
+     *
+     * @var list<string>
+     *
+     * @internal public so the anonymous query visitor can read it
+     */
+    public const MODEL_COLLECTION_READS = ['get', 'all', 'lazy', 'lazyById', 'lazyByIdDesc', 'cursor'];
+
+    /**
+     * Static constructors of a collection class, lowercased.
+     *
+     * @var list<string>
+     *
+     * @internal public so the anonymous query visitor can read it
+     */
+    public const COLLECTION_FACTORY_METHODS = ['make', 'wrap', 'times', 'range', 'empty'];
 
     /** @var array<int, array{message: string, line: int, severity: Severity, recommendation: string, code: string, metadata: array<string, mixed>}> */
     private array $issues = [];
 
     /** @var array<int, true> Track which positions already have issues to avoid duplicates */
     private array $reportedPositions = [];
+
+    /** @var array<int, true> Uses, by spl_object_id, of route parameters bound to a model, which root a read */
+    private array $readRootVariables = [];
+
+    /** @var array<string, array{expr: Node\Expr, calls: array<int, true>}> Read chains assigned to a variable earlier in the closure body */
+    private array $assignedReadChains = [];
+
+    /** @var array<int, Node\Expr> Variable uses, by spl_object_id, that stand for an assigned read chain */
+    private array $readContinuations = [];
+
+    /** @var array<int, true> Calls of an assigned read chain that a later chain continues */
+    private array $continuedCalls = [];
+
+    /** @var array<int, true> Assigned read chains, by spl_object_id, that a later chain continues */
+    private array $continuedChains = [];
 
     /**
      * @param  \Closure(string): ?bool  $declaresModel  Eloquent verdict of a class's declaration under app/, null when unreadable
@@ -535,8 +633,11 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $problems = [];
         $maxSeverity = Severity::Low;
 
+        $boundModels = $this->modelParameterUses($closure) + $this->signedInUserVariableUses($closure);
+        $readBody = $this->readBody($closure, $boundModels);
+
         // Analyze database queries with granular classification
-        $queryInfo = $this->analyzeDbQueries($closure);
+        $queryInfo = $this->analyzeDbQueries($closure, $boundModels, $readBody['continuations'], $readBody['continued']);
 
         if ($queryInfo['has_writes']) {
             $problems[] = 'database write operations';
@@ -556,7 +657,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         // Note: simple reads with allowSimpleReads=true are not flagged
 
         // Check for complex business logic
-        if ($this->hasComplexBusinessLogic($closure, $queryInfo['has_writes'] || $queryInfo['has_raw_queries'])) {
+        if ($this->hasComplexBusinessLogic($closure, $readBody['calls'], $queryInfo['has_writes'] || $queryInfo['has_raw_queries'])) {
             $problems[] = 'complex business logic';
             if ($maxSeverity->level() < Severity::High->level()) {
                 $maxSeverity = Severity::High;
@@ -662,9 +763,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /**
      * Analyze database queries in the closure and classify them.
      *
+     * @param  array<int, true>  $rootVariables  variable uses, by spl_object_id, that hold a model and root a write
+     * @param  array<int, Node\Expr>  $continuations  variable uses that stand for the read chain assigned to them
+     * @param  array<int, true>  $continuedCalls  calls of an assigned read chain, graded where a later chain continues it
      * @return array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}
      */
-    private function analyzeDbQueries(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
+    private function analyzeDbQueries(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, array $rootVariables, array $continuations, array $continuedCalls): array
     {
         $result = [
             'has_writes' => false,
@@ -686,10 +790,25 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         }
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel, $rootVariables, $continuations, $continuedCalls) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
+
+            /** @var array<int, true> Variable uses that hold a model: bound route parameters, then the parameters of callbacks passed along a rooted chain */
+            private array $rootVariables;
+
+            /**
+             * Variables last assigned a collection, true when it holds models read from the
+             * database, per function scope: a nested closure sees only what it captures with
+             * use, an arrow function all of its parent's, and a parameter hides its name.
+             *
+             * @var non-empty-list<array<string, bool>>
+             */
+            private array $collectionScopes = [[]];
+
+            /** @var array<int, true> Calls followed in their chain by a per-row callback or a higher-order proxy */
+            private array $perRowChainCalls = [];
 
             /**
              * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $result
@@ -703,6 +822,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $attachmentExtensions
              * @param  list<string>  $requestVariables
              * @param  \Closure(string): ?bool  $declaresModel
+             * @param  array<int, true>  $boundVariables  uses of route parameters bound to a model
+             * @param  array<int, Node\Expr>  $continuations
+             * @param  array<int, true>  $continuedCalls
              */
             public function __construct(
                 private array &$result,
@@ -715,11 +837,40 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $argumentlessWriteMethods,
                 private array $attachmentExtensions,
                 private array $requestVariables,
-                private \Closure $declaresModel
-            ) {}
+                private \Closure $declaresModel,
+                private array $boundVariables,
+                private array $continuations,
+                private array $continuedCalls
+            ) {
+                $this->rootVariables = $boundVariables;
+            }
 
             public function enterNode(Node $node): ?Node
             {
+                if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+                    $this->enterFunctionScope($node);
+                }
+
+                // A variable assigned a collection: $c = collect(...)
+                if ($node instanceof Node\Expr\Assign && $node->var instanceof Node\Expr\Variable && is_string($node->var->name)) {
+                    $scope = array_key_last($this->collectionScopes);
+                    $holdsModels = $this->collectionKind($node->expr);
+                    if ($holdsModels !== null) {
+                        $this->collectionScopes[$scope][$node->var->name] = $holdsModels;
+                    } else {
+                        unset($this->collectionScopes[$scope][$node->var->name]);
+                    }
+                }
+
+                // A per-row callback or a higher-order proxy (->each->) marks every call before it
+                // in the chain; entered before them, as the chain's outer node
+                if (($node instanceof Node\Expr\MethodCall && LogicInRoutesVisitor::takesCallback($node))
+                    || (($node instanceof Node\Expr\PropertyFetch || $node instanceof Node\Expr\NullsafePropertyFetch)
+                        && $node->name instanceof Node\Identifier
+                        && LogicInRoutesVisitor::isHigherOrderProxy($node->name->toString()))) {
+                    $this->markPerRowChain($node->var);
+                }
+
                 // Check for DB facade calls (raw queries - always flagged)
                 if ($node instanceof Node\Expr\StaticCall) {
                     if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
@@ -731,7 +882,27 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 // Process MethodCalls (nullsafe included) - walk DOWN via ->var to analyze Eloquent chains
                 if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall) {
-                    $chainInfo = $this->analyzeMethodCallChain($node);
+                    // A call of an assigned read chain is graded where a later chain continues it,
+                    // as the single chain it stands for
+                    $chainInfo = isset($this->continuedCalls[spl_object_id($node)])
+                        ? ['is_eloquent_chain' => false, 'is_write_only_chain' => false, 'is_root_read' => false, 'chain_length' => 0, 'has_writes' => false, 'methods' => [], 'root_position' => null]
+                        : $this->analyzeMethodCallChain($node);
+
+                    // A collection method on a collection, such as Article::all()->whereIn(...), filters
+                    // in memory: the read that made the collection is graded on its own
+                    $isCollectionCall = $node->name instanceof Node\Identifier
+                        && LogicInRoutesVisitor::isMethodIn($node->name->toString(), LogicInRoutesVisitor::COLLECTION_METHODS)
+                        && ! isset($this->perRowChainCalls[spl_object_id($node)])
+                        && $this->collectionKind($node->var) !== null;
+                    if ($isCollectionCall && $chainInfo['has_writes']) {
+                        $this->result['has_writes'] = true;
+                    }
+
+                    // A read on the signed-in user or a bound model is a simple read, so only
+                    // strict mode reports it
+                    if ($chainInfo['is_root_read']) {
+                        $this->result['has_simple_reads'] = true;
+                    }
 
                     // A chain rooted at the signed-in user, reaching its model through a property
                     // or a ?-> link, or rooted at a model known only by its namespace counts only
@@ -740,7 +911,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         $this->result['has_writes'] = true;
                     }
 
-                    if ($chainInfo['is_eloquent_chain']) {
+                    if ($chainInfo['is_eloquent_chain'] && ! $isCollectionCall) {
                         // Mark the root StaticCall as processed so it's not double-counted
                         if ($chainInfo['root_position'] !== null) {
                             $this->processedChainRoots[$chainInfo['root_position']] = true;
@@ -774,10 +945,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         }
                     }
 
-                    // Check for SQL-specific methods that indicate complex queries
+                    // Check for SQL-specific methods that indicate complex queries; on a collection
+                    // they filter in memory
                     if ($node instanceof Node\Expr\MethodCall
                         && $node->name instanceof Node\Identifier
-                        && in_array($node->name->toString(), $this->sqlBuilderMethods, true)) {
+                        && in_array($node->name->toString(), $this->sqlBuilderMethods, true)
+                        && ! $isCollectionCall) {
                         $this->result['has_complex_reads'] = true;
                     }
 
@@ -789,7 +962,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 if ($node instanceof Node\Expr\StaticCall) {
                     // Skip if this StaticCall was already processed as part of a method chain
                     $position = $node->getStartFilePos();
-                    if (isset($this->processedChainRoots[$position])) {
+                    if (isset($this->processedChainRoots[$position]) || isset($this->continuedCalls[spl_object_id($node)])) {
                         return null;
                     }
 
@@ -800,6 +973,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                         if (! $this->isModelClass($node->class)) {
                             return null;
                         }
+
+                        $this->addCallbackParameterRoots([$node]);
 
                         // Direct write method (e.g., User::create([...]))
                         if ($this->isWriteCall($method, $node)) {
@@ -857,22 +1032,120 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     : $name->toString();
             }
 
-            /**
-             * Check for the signed-in user: user() on auth(), auth('guard'), request() or a variable.
-             */
-            private function isSignedInUserCall(Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall $call): bool
+            public function leaveNode(Node $node): ?Node
             {
-                if (! $call->name instanceof Node\Identifier || $call->name->toString() !== 'user') {
-                    return false;
+                if (($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) && count($this->collectionScopes) > 1) {
+                    array_pop($this->collectionScopes);
                 }
 
-                if ($call->var instanceof Node\Expr\Variable) {
-                    return true;
+                return null;
+            }
+
+            private function enterFunctionScope(Node\Expr\Closure|Node\Expr\ArrowFunction $function): void
+            {
+                $outer = $this->collectionScopes[array_key_last($this->collectionScopes)];
+                $scope = [];
+                if ($function instanceof Node\Expr\ArrowFunction) {
+                    $scope = $outer;
+                } else {
+                    foreach ($function->uses as $use) {
+                        if (is_string($use->var->name) && isset($outer[$use->var->name])) {
+                            $scope[$use->var->name] = $outer[$use->var->name];
+                        }
+                    }
                 }
 
-                return $call->var instanceof Node\Expr\FuncCall
-                    && $call->var->name instanceof Node\Name
-                    && in_array($call->var->name->toString(), ['auth', 'request'], true);
+                foreach ($function->params as $param) {
+                    if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name)) {
+                        unset($scope[$param->var->name]);
+                    }
+                }
+
+                $this->collectionScopes[] = $scope;
+            }
+
+            private function markPerRowChain(Node\Expr $expr): void
+            {
+                while ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\NullsafeMethodCall
+                    || $expr instanceof Node\Expr\PropertyFetch || $expr instanceof Node\Expr\NullsafePropertyFetch) {
+                    $this->perRowChainCalls[spl_object_id($expr)] = true;
+                    $expr = $expr->var;
+                }
+            }
+
+            /**
+             * Whether an expression is a collection: collect(...), a static constructor or new of
+             * a collection class, a model read of a collection (Article::all(),
+             * Article::latest()->get()), or a variable assigned one, followed only by
+             * COLLECTION_METHODS calls that take no callback. Null when it is not; otherwise
+             * whether it holds models read from the database.
+             */
+            private function collectionKind(Node\Expr $expr): ?bool
+            {
+                while ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\NullsafeMethodCall) {
+                    if (! $expr->name instanceof Node\Identifier) {
+                        return null;
+                    }
+
+                    $method = $expr->name->toString();
+                    if (LogicInRoutesVisitor::isMethodIn($method, LogicInRoutesVisitor::MODEL_COLLECTION_READS) && $this->isModelQuery($expr->var)) {
+                        return true;
+                    }
+
+                    if (! LogicInRoutesVisitor::isMethodIn($method, LogicInRoutesVisitor::COLLECTION_METHODS)
+                        || ($expr instanceof Node\Expr\MethodCall && LogicInRoutesVisitor::takesCallback($expr))) {
+                        return null;
+                    }
+
+                    $expr = $expr->var;
+                }
+
+                if ($expr instanceof Node\Expr\Variable) {
+                    return is_string($expr->name)
+                        ? $this->collectionScopes[array_key_last($this->collectionScopes)][$expr->name] ?? null
+                        : null;
+                }
+
+                if ($expr instanceof Node\Expr\FuncCall) {
+                    return $expr->name instanceof Node\Name && ltrim($expr->name->toLowerString(), '\\') === 'collect' ? false : null;
+                }
+
+                if ($expr instanceof Node\Expr\StaticCall) {
+                    if (! $expr->class instanceof Node\Name || ! $expr->name instanceof Node\Identifier) {
+                        return null;
+                    }
+
+                    if ($this->isCollectionClass($expr->class)) {
+                        return in_array($expr->name->toLowerString(), LogicInRoutesVisitor::COLLECTION_FACTORY_METHODS, true) ? false : null;
+                    }
+
+                    return LogicInRoutesVisitor::isMethodIn($expr->name->toString(), LogicInRoutesVisitor::MODEL_COLLECTION_READS) && $this->isLikelyModel($expr->class)
+                        ? true
+                        : null;
+                }
+
+                return $expr instanceof Node\Expr\New_ && $expr->class instanceof Node\Name && $this->isCollectionClass($expr->class)
+                    ? false
+                    : null;
+            }
+
+            /**
+             * Check whether an expression is a query chain down to a static call on a model.
+             */
+            private function isModelQuery(Node\Expr $expr): bool
+            {
+                while ($expr instanceof Node\Expr\MethodCall) {
+                    $expr = $expr->var;
+                }
+
+                return $expr instanceof Node\Expr\StaticCall
+                    && $expr->class instanceof Node\Name
+                    && $this->isLikelyModel($expr->class);
+            }
+
+            private function isCollectionClass(Node\Name $name): bool
+            {
+                return in_array(ltrim($this->resolvedClassName($name), '\\'), LogicInRoutesVisitor::COLLECTION_CLASSES, true);
             }
 
             /**
@@ -1071,7 +1344,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * This approach walks from the outermost MethodCall down through
              * the chain to find if the root is a model StaticCall.
              *
-             * @return array{is_eloquent_chain: bool, is_write_only_chain: bool, chain_length: int, has_writes: bool, methods: list<string>, root_position: int|null}
+             * @return array{is_eloquent_chain: bool, is_write_only_chain: bool, is_root_read: bool, chain_length: int, has_writes: bool, methods: list<string>, root_position: int|null}
              */
             private function analyzeMethodCallChain(Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall $node): array
             {
@@ -1082,12 +1355,20 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 $crossesProperty = false;
                 $crossesNullsafe = false;
                 $isUserRoot = false;
+                $walkedCalls = [];
 
                 // Walk down through the method call chain, across ?-> links and property
-                // hops (->author->, higher-order ->each->) as well
+                // hops (->author->, higher-order ->each->) as well, and through a variable
+                // that stands for the read chain assigned to it
                 while (true) {
+                    if ($current instanceof Node\Expr\Variable && isset($this->continuations[spl_object_id($current)])) {
+                        $current = $this->continuations[spl_object_id($current)];
+
+                        continue;
+                    }
+
                     if ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\NullsafeMethodCall) {
-                        if ($this->isSignedInUserCall($current)) {
+                        if (LogicInRoutesVisitor::isSignedInUser($current)) {
                             $isUserRoot = true;
 
                             break;
@@ -1097,6 +1378,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             $crossesNullsafe = true;
                         }
 
+                        $walkedCalls[] = $current;
                         if ($current->name instanceof Node\Identifier) {
                             $method = $current->name->toString();
                             array_unshift($methods, $method); // Prepend to maintain order
@@ -1123,14 +1405,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     break;
                 }
 
-                // Auth::user() is the signed-in user as well
-                if ($current instanceof Node\Expr\StaticCall
-                    && $current->class instanceof Node\Name
-                    && $current->name instanceof Node\Identifier
-                    && $current->name->toString() === 'user'
-                    && in_array(ltrim($this->resolvedClassName($current->class), '\\'), ['Illuminate\\Support\\Facades\\Auth', 'Auth'], true)) {
+                // Auth::user() and Auth::guard(...)->user() are the signed-in user as well
+                if ($current instanceof Node\Expr\StaticCall && LogicInRoutesVisitor::isSignedInUser($current)) {
                     $isUserRoot = true;
                 }
+
+                // A route parameter bound to a model, or the parameter of a callback passed along
+                // a rooted chain, holds a model
+                $isVariableRoot = $current instanceof Node\Expr\Variable && isset($this->rootVariables[spl_object_id($current)]);
 
                 // Check if root is a StaticCall on a model
                 $isEloquentChain = false;
@@ -1140,6 +1422,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     && $this->isModelClass($current->class)) {
                     $isEloquentChain = true;
                     $rootPosition = $current->getStartFilePos();
+                    $walkedCalls[] = $current;
 
                     // Include the static method in the chain count
                     if ($current->name instanceof Node\Identifier) {
@@ -1151,15 +1434,28 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     }
                 }
 
+                // The first parameter of a callback passed along the chain is a builder or a
+                // model of it, so a write on it is a write: ->when($x, fn ($q) => $q->delete())
+                // A variable holding models read from the database roots its per-row callbacks too:
+                // $articles->each(fn ($a) => $a->update([...]))
+                $isModelCollectionRoot = $current instanceof Node\Expr\Variable && $this->collectionKind($current) === true;
+
+                if ($isUserRoot || $isVariableRoot || $isEloquentChain || $isModelCollectionRoot) {
+                    $this->addCallbackParameterRoots($walkedCalls);
+                }
+
                 // Paginator or serialisation calls after a read terminal leave it the same read,
                 // e.g. User::latest()->paginate(15)->withQueryString()
                 $readMethods = $methods;
                 while (count($readMethods) > 1 && in_array(end($readMethods), $this->readResultTailMethods, true)) {
                     array_pop($readMethods);
                 }
-                if (in_array(end($readMethods), $this->terminalReadMethods, true)) {
+                $endsInRead = in_array(end($readMethods), $this->terminalReadMethods, true);
+                if ($endsInRead) {
                     $methods = $readMethods;
                 }
+
+                $isBoundRoot = $current instanceof Node\Expr\Variable && isset($this->boundVariables[spl_object_id($current)]);
 
                 // Reads are graded only on a plain chain from a model recognised by its short
                 // name, as before; any other chain counts for its writes only
@@ -1172,12 +1468,47 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 return [
                     'is_eloquent_chain' => $gradesReads,
-                    'is_write_only_chain' => $isUserRoot || ($isEloquentChain && ! $gradesReads),
+                    'is_write_only_chain' => $isUserRoot || $isVariableRoot || ($isEloquentChain && ! $gradesReads),
+                    'is_root_read' => ($isUserRoot || $isBoundRoot) && $endsInRead && ! $hasWrites,
                     'chain_length' => count($methods),
                     'has_writes' => $hasWrites,
                     'methods' => $methods,
                     'root_position' => $rootPosition,
                 ];
+            }
+
+            /**
+             * Record the uses of the first parameter of each closure or arrow function passed to
+             * the calls, directly or as an array value (with(['tags' => fn ($q) => ...])), as
+             * write roots. The chain is entered before its arguments, so they are known before
+             * the callback bodies are visited.
+             *
+             * @param  list<Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall|Node\Expr\StaticCall>  $calls
+             */
+            private function addCallbackParameterRoots(array $calls): void
+            {
+                foreach ($calls as $call) {
+                    if ($call->isFirstClassCallable()) {
+                        continue;
+                    }
+
+                    foreach ($call->getArgs() as $arg) {
+                        $values = $arg->value instanceof Node\Expr\Array_
+                            ? array_map(static fn (Node\ArrayItem $item): Node\Expr => $item->value, array_filter($arg->value->items))
+                            : [$arg->value];
+
+                        foreach ($values as $callback) {
+                            if (! ($callback instanceof Node\Expr\Closure || $callback instanceof Node\Expr\ArrowFunction)) {
+                                continue;
+                            }
+
+                            $parameter = $callback->params[0]->var ?? null;
+                            if ($parameter instanceof Node\Expr\Variable && is_string($parameter->name)) {
+                                $this->rootVariables += LogicInRoutesVisitor::variableUses($callback, $parameter->name);
+                            }
+                        }
+                    }
+                }
             }
         };
 
@@ -1190,17 +1521,16 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     }
 
     /**
+     * @param  array<int, true>  $readChainCalls  the calls of a read-only body (see readBody()), which are
+     *                                            graded by analyzeDbQueries alone and skipped by the
+     *                                            model-method and heavy-chain checks below
      * @param  bool  $closureHasWrites  whether analyzeDbQueries() found a database write or a DB facade query in the closure
      */
-    private function hasComplexBusinessLogic(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, bool $closureHasWrites): bool
+    private function hasComplexBusinessLogic(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, array $readChainCalls, bool $closureHasWrites): bool
     {
         $hasComplexLogic = false;
         $ifDepth = 0;
         $hasLoops = false;
-
-        // A closure whose whole body is one read chain is graded by analyzeDbQueries alone:
-        // its calls are skipped by the model-method and heavy-chain checks below
-        $readChainCalls = $this->singleReadChainCalls($closure);
 
         $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS), $this->declaresModel, $closureHasWrites) extends NodeVisitorAbstract
         {
@@ -1506,126 +1836,882 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * The calls, by spl_object_id, of the read chain that is the closure's whole body: the
-     * expression of an arrow function, or the only statement of a closure as `return <chain>;`.
-     * Empty when the body is anything else.
+     * The read-only body of a closure: the calls of its read chains, by spl_object_id, and how
+     * a variable holding an assigned read chain continues it. Empty when the body is anything
+     * else.
      *
-     * The chain is a read terminal, optionally followed by paginator or serialisation calls,
-     * over named method calls and relation property hops down to a model static call or the
-     * signed-in user. No call along it may be a write or take a callback.
+     * The body is an arrow function's read chain, or a closure whose statements are each on an
+     * allow-list, ending in `return <read chain>;`:
+     * - `$var = <read chain>;`, where the chain ends in a read terminal, or only builds a query
+     *   (Article::latest(), $team->members()->where(...)) that a later chain continues;
+     * - `$var = <plain value>;`: a literal, a constant, a request input read or a config() read;
+     * - a session() helper call.
+     * The returned chain may continue a variable assigned a read chain before.
      *
-     * @return array<int, true>
+     * A read chain is a read terminal, optionally followed by paginator or serialisation calls,
+     * over named method calls and relation property hops down to a model static call, the
+     * signed-in user or a route parameter bound to a model. No call along it may be a write,
+     * and each callback it passes must be a query callback (see callbacksAreReads()).
+     *
+     * @param  array<int, true>  $readRoots  uses of route parameters bound to a model
+     * @return array{calls: array<int, true>, continuations: array<int, Node\Expr>, continued: array<int, true>}
      */
-    private function singleReadChainCalls(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
+    private function readBody(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, array $readRoots): array
     {
-        // A comment after the last statement is parsed as a Nop statement
-        $statements = $closure instanceof Node\Expr\Closure
-            ? array_values(array_filter($closure->stmts, static fn (Node\Stmt $stmt): bool => ! $stmt instanceof Node\Stmt\Nop))
-            : [];
+        $this->readRootVariables = $readRoots;
+        $this->assignedReadChains = [];
+        $this->readContinuations = [];
+        $this->continuedCalls = [];
+        $this->continuedChains = [];
+        $none = ['calls' => [], 'continuations' => [], 'continued' => []];
+
+        $requestVariables = $this->requestParameterNames($closure);
 
         if ($closure instanceof Node\Expr\ArrowFunction) {
-            $current = $closure->expr;
-        } elseif (count($statements) === 1
-            && $statements[0] instanceof Node\Stmt\Return_
-            && $statements[0]->expr !== null) {
-            $current = $statements[0]->expr;
-        } else {
-            return [];
+            $calls = $this->returnedReadCalls($closure->expr, $requestVariables, []);
+
+            return $calls === null ? $none : ['calls' => $calls, 'continuations' => [], 'continued' => []];
+        }
+
+        // A comment after the last statement is parsed as a Nop statement
+        $statements = array_values(array_filter($closure->stmts, static fn (Node\Stmt $stmt): bool => ! $stmt instanceof Node\Stmt\Nop));
+        $return = array_pop($statements);
+        if (! $return instanceof Node\Stmt\Return_ || $return->expr === null) {
+            return $none;
         }
 
         $calls = [];
+        $builders = [];
+        $plainVariables = [];
+        foreach ($statements as $statement) {
+            if (! $statement instanceof Node\Stmt\Expression) {
+                return $none;
+            }
+
+            $expr = $statement->expr;
+            if ($expr instanceof Node\Expr\Assign
+                && $expr->var instanceof Node\Expr\Variable
+                && is_string($expr->var->name)) {
+                // A plain value, or the signed-in user, whose uses root reads (see signedInUserVariableUses())
+                if ($this->isPlainValue($expr->expr, $requestVariables) || self::isSignedInUser($expr->expr)) {
+                    unset($this->assignedReadChains[$expr->var->name]);
+                    $plainVariables[$expr->var->name] = true;
+
+                    continue;
+                }
+
+                if (! ($expr->expr instanceof Node\Expr\MethodCall || $expr->expr instanceof Node\Expr\StaticCall)) {
+                    return $none;
+                }
+
+                $assignedCalls = $this->readChainCalls($expr->expr, requireTerminal: false);
+                if ($assignedCalls === null) {
+                    return $none;
+                }
+
+                // A chain that does not end in a read must only build a query, for a later chain to read
+                if (! $this->endsInReadTerminal($expr->expr)) {
+                    if (! $this->isQueryBuilding($expr->expr)) {
+                        return $none;
+                    }
+                    $builders[spl_object_id($expr->expr)] = true;
+                }
+
+                $calls += $assignedCalls;
+                $this->assignedReadChains[$expr->var->name] = ['expr' => $expr->expr, 'calls' => $assignedCalls];
+                unset($plainVariables[$expr->var->name]);
+
+                continue;
+            }
+
+            if (! $this->isSessionHelperCall($expr, $requestVariables)) {
+                return $none;
+            }
+        }
+
+        $returnCalls = $this->returnedReadCalls($return->expr, $requestVariables, $plainVariables);
+        if ($returnCalls === null) {
+            return $none;
+        }
+
+        if (array_diff_key($builders, $this->continuedChains) !== []) {
+            return $none;
+        }
+
+        return ['calls' => $calls + $returnCalls, 'continuations' => $this->readContinuations, 'continued' => $this->continuedCalls];
+    }
+
+    /**
+     * The calls of a returned read: a read chain, or view(<name>, <data>) whose data array
+     * holds only read chains, plain values and variables assigned a read chain or a plain
+     * value, or compact() of such variables. Null when the expression is not one.
+     *
+     * @param  list<string>  $requestVariables
+     * @param  array<string, true>  $plainVariables
+     * @return array<int, true>|null
+     */
+    private function returnedReadCalls(Node\Expr $expr, array $requestVariables, array $plainVariables): ?array
+    {
+        if (! $expr instanceof Node\Expr\FuncCall || ! self::isHelperCall($expr, ['view'])) {
+            return $this->readChainCalls($expr, requireTerminal: true);
+        }
+
+        $args = $expr->getRawArgs();
+        if ($args === [] || count($args) > 2) {
+            return null;
+        }
+
+        $values = [];
+        foreach ($args as $arg) {
+            if (! $arg instanceof Node\Arg || $arg->unpack || $arg->byRef || $arg->name !== null) {
+                return null;
+            }
+            $values[] = $arg->value;
+        }
+
+        if (! $this->isPlainValue($values[0], $requestVariables)) {
+            return null;
+        }
+
+        $data = $values[1] ?? new Node\Expr\Array_;
+        $isVariable = fn (string $name): bool => isset($this->assignedReadChains[$name]) || isset($plainVariables[$name]);
+
+        if ($data instanceof Node\Expr\FuncCall && self::isHelperCall($data, ['compact'])) {
+            foreach ($data->getRawArgs() as $arg) {
+                if (! $arg instanceof Node\Arg || ! $arg->value instanceof Node\Scalar\String_ || ! $isVariable($arg->value->value)) {
+                    return null;
+                }
+            }
+
+            return [];
+        }
+
+        if (! $data instanceof Node\Expr\Array_) {
+            return null;
+        }
+
+        $calls = [];
+        foreach ($data->items as $item) {
+            if ($item->byRef || $item->unpack || ($item->key !== null && ! $this->isPlainValue($item->key, $requestVariables))) {
+                return null;
+            }
+
+            $value = $item->value;
+            if ($this->isPlainValue($value, $requestVariables)
+                || ($value instanceof Node\Expr\Variable && is_string($value->name) && $isVariable($value->name))) {
+                continue;
+            }
+
+            $valueCalls = $this->readChainCalls($value, requireTerminal: true);
+            if ($valueCalls === null) {
+                return null;
+            }
+            $calls += $valueCalls;
+        }
+
+        return $calls;
+    }
+
+    /**
+     * The calls of a read chain, by spl_object_id, or null when the expression is not one.
+     *
+     * @return array<int, true>|null
+     */
+    private function readChainCalls(Node\Expr $current, bool $requireTerminal): ?array
+    {
+        $spine = [];
+        // A variable that is the whole expression (return $articles;) continues no chain, so
+        // the assigned chain keeps its own grade
+        $current = $this->continueAssignedChain($current, continued: false);
 
         while ($current instanceof Node\Expr\MethodCall
             && $current->name instanceof Node\Identifier
-            && in_array($current->name->toString(), self::READ_RESULT_TAIL_METHODS, true)) {
-            if ($this->takesCallback($current)) {
-                return [];
-            }
-            $calls[spl_object_id($current)] = true;
-            $current = $current->var;
+            && self::isMethodIn($current->name->toString(), self::READ_RESULT_TAIL_METHODS)) {
+            $spine[] = $current;
+            $current = $this->continueAssignedChain($current->var);
         }
 
-        if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
-            || ! $current->name instanceof Node\Identifier
-            || ! in_array($current->name->toString(), self::TERMINAL_READ_METHODS, true)) {
-            return [];
+        if ($requireTerminal && ! $this->isTerminalReadCall($current)) {
+            return null;
         }
 
         while (true) {
             if ($current instanceof Node\Expr\PropertyFetch
                 && $current->name instanceof Node\Identifier
-                && ! in_array($current->name->toString(), self::HIGHER_ORDER_PROXIES, true)) {
-                $current = $current->var;
+                && ! self::isMethodIn($current->name->toString(), self::HIGHER_ORDER_PROXIES)) {
+                $current = $this->continueAssignedChain($current->var);
 
                 continue;
             }
 
-            if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
-                || ! $current->name instanceof Node\Identifier
-                || in_array($current->name->toString(), self::WRITE_METHODS, true)
-                || $this->takesCallback($current)) {
-                return [];
+            if ($current instanceof Node\Expr\Variable && isset($this->readRootVariables[spl_object_id($current)])) {
+                return $this->spineCalls($spine);
             }
 
-            $calls[spl_object_id($current)] = true;
+            if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
+                || ! $current->name instanceof Node\Identifier
+                || self::isMethodIn($current->name->toString(), self::WRITE_METHODS)) {
+                return null;
+            }
+
+            $spine[] = $current;
 
             if (self::isSignedInUser($current)) {
-                return $calls;
+                return $this->spineCalls($spine);
             }
 
             // The root is matched on its name alone, without reading its declaration: a
             // Model-suffixed class that is not Eloquent still roots a plain read chain
             if ($current instanceof Node\Expr\StaticCall) {
                 return $current->class instanceof Node\Name && self::isLikelyModel($current->class, self::UTILITY_CLASSES, static fn (): ?bool => null)
-                    ? $calls
-                    : [];
+                    ? $this->spineCalls($spine)
+                    : null;
             }
 
+            $current = $this->continueAssignedChain($current->var);
+        }
+    }
+
+    /**
+     * The calls of a read chain's spine, listed from its top down to its root, with those of the
+     * query callbacks it passes; null when a callback is not a read. A query callback is taken
+     * only before the first read terminal: after it, a closure runs per row of the result, as
+     * in ->get()->first(fn ($a) => ...).
+     *
+     * @param  list<Node\Expr\MethodCall|Node\Expr\StaticCall>  $spine
+     * @return array<int, true>|null
+     */
+    private function spineCalls(array $spine): ?array
+    {
+        $calls = [];
+        $afterTerminal = false;
+        foreach (array_reverse($spine) as $call) {
+            $afterTerminal = $afterTerminal || $this->isTerminalReadCall($call) || $this->isResultTailCall($call);
+            if (! $this->callbacksAreReads($call, $calls, allowClosures: ! $afterTerminal)) {
+                return null;
+            }
+
+            $calls[spl_object_id($call)] = true;
+        }
+
+        return $calls;
+    }
+
+    private function isResultTailCall(Node\Expr $expr): bool
+    {
+        return $expr instanceof Node\Expr\MethodCall
+            && $expr->name instanceof Node\Identifier
+            && self::isMethodIn($expr->name->toString(), self::READ_RESULT_TAIL_METHODS);
+    }
+
+    /**
+     * Whether a method name is in the list; PHP method names are case-insensitive.
+     *
+     * @param  list<string>  $methods
+     *
+     * @internal
+     */
+    public static function isMethodIn(string $method, array $methods): bool
+    {
+        $method = strtolower($method);
+        foreach ($methods as $candidate) {
+            if (strtolower($candidate) === $method) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isTerminalReadCall(Node\Expr $expr): bool
+    {
+        return ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall)
+            && $expr->name instanceof Node\Identifier
+            && self::isMethodIn($expr->name->toString(), self::TERMINAL_READ_METHODS);
+    }
+
+    /**
+     * Whether a chain ends in a read terminal, optionally followed by paginator or serialisation calls.
+     */
+    private function endsInReadTerminal(Node\Expr $expr): bool
+    {
+        while ($this->isResultTailCall($expr)) {
+            $expr = $expr->var;
+        }
+
+        return $this->isTerminalReadCall($expr);
+    }
+
+    /**
+     * Whether a chain only builds a query: builder methods (where*, orWhere*, BUILDER_METHODS)
+     * down to a model static builder call, a variable holding an assigned read chain, or one
+     * relation call on the signed-in user or a bound model.
+     */
+    private function isQueryBuilding(Node\Expr $current): bool
+    {
+        while (true) {
+            if ($current instanceof Node\Expr\Variable) {
+                return is_string($current->name) && isset($this->assignedReadChains[$current->name]);
+            }
+
+            if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)
+                || ! $current->name instanceof Node\Identifier) {
+                return false;
+            }
+
+            if ($current instanceof Node\Expr\StaticCall) {
+                return self::isBuilderMethod($current->name->toString());
+            }
+
+            // The relation call itself: $team->members(), auth()->user()->orders()
+            $receiver = $current->var;
+            if (($receiver instanceof Node\Expr\Variable && isset($this->readRootVariables[spl_object_id($receiver)]))
+                || self::isSignedInUser($receiver)) {
+                return true;
+            }
+
+            if (! self::isBuilderMethod($current->name->toString())) {
+                return false;
+            }
+
+            $current = $receiver;
+        }
+    }
+
+    private static function isBuilderMethod(string $method): bool
+    {
+        $lower = strtolower($method);
+
+        return str_starts_with($lower, 'where')
+            || str_starts_with($lower, 'orwhere')
+            || self::isMethodIn($method, self::BUILDER_METHODS);
+    }
+
+    /**
+     * Whether an assigned value is plain data: a literal, a constant, an array of them, a
+     * request input read (request('q'), request()->input('q'), $request->string('q')) or a
+     * config() read, with plain arguments.
+     *
+     * @param  list<string>  $requestVariables
+     */
+    private function isPlainValue(Node\Expr $expr, array $requestVariables): bool
+    {
+        if ($expr instanceof Node\Scalar\Int_ || $expr instanceof Node\Scalar\Float_ || $expr instanceof Node\Scalar\String_
+            || $expr instanceof Node\Expr\ConstFetch
+            || ($expr instanceof Node\Expr\ClassConstFetch && $expr->class instanceof Node\Name)) {
+            return true;
+        }
+
+        if ($expr instanceof Node\Expr\Array_) {
+            foreach ($expr->items as $item) {
+                if ($item->byRef || $item->unpack
+                    || ($item->key !== null && ! $this->isPlainValue($item->key, $requestVariables))
+                    || ! $this->isPlainValue($item->value, $requestVariables)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // request('q') or config('key', $default); request() alone is the request object
+        if ($expr instanceof Node\Expr\FuncCall) {
+            return self::isHelperCall($expr, ['request', 'config'])
+                && $expr->getRawArgs() !== []
+                && $this->hasPlainArguments($expr, $requestVariables);
+        }
+
+        // Request::input('q') on the facade
+        if ($expr instanceof Node\Expr\StaticCall) {
+            return $expr->class instanceof Node\Name
+                && $expr->name instanceof Node\Identifier
+                && self::isMethodIn($expr->name->toString(), self::REQUEST_INPUT_METHODS)
+                && in_array(ltrim(self::resolvedName($expr->class), '\\'), ['Illuminate\\Support\\Facades\\Request', 'Request'], true)
+                && $this->hasPlainArguments($expr, $requestVariables);
+        }
+
+        if ($expr instanceof Node\Expr\MethodCall
+            && $expr->name instanceof Node\Identifier
+            && self::isMethodIn($expr->name->toString(), self::REQUEST_INPUT_METHODS)
+            && $this->hasPlainArguments($expr, $requestVariables)) {
+            $receiver = $expr->var;
+
+            return ($receiver instanceof Node\Expr\FuncCall && self::isHelperCall($receiver, ['request']) && $receiver->getRawArgs() === [])
+                || ($receiver instanceof Node\Expr\Variable && in_array($receiver->name, $requestVariables, true));
+        }
+
+        return false;
+    }
+
+    /**
+     * @param  list<string>  $requestVariables
+     */
+    private function hasPlainArguments(Node\Expr\FuncCall|Node\Expr\MethodCall|Node\Expr\StaticCall $call, array $requestVariables): bool
+    {
+        foreach ($call->getRawArgs() as $arg) {
+            if (! $arg instanceof Node\Arg || $arg->unpack || ! $this->isPlainValue($arg->value, $requestVariables)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Names of the closure's parameters typed as the HTTP request: Illuminate\Http\Request,
+     * Illuminate\Foundation\Http\FormRequest, or a form request in an Http\Requests namespace
+     * (App\Http\Requests\StoreArticleRequest). A short name ending in Request alone is not
+     * enough: Illuminate\Http\Client\PendingRequest sends HTTP requests.
+     *
+     * @return list<string>
+     */
+    private function requestParameterNames(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
+    {
+        $names = [];
+        foreach ($closure->params as $param) {
+            if (! $param->type instanceof Node\Name || ! $param->var instanceof Node\Expr\Variable || ! is_string($param->var->name)) {
+                continue;
+            }
+
+            $type = ltrim(self::resolvedName($param->type), '\\');
+            if (in_array($type, ['Illuminate\\Http\\Request', 'Illuminate\\Foundation\\Http\\FormRequest', 'Request'], true)
+                || str_contains($type, '\\Http\\Requests\\')) {
+                $names[] = $param->var->name;
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * The read chain a variable was assigned earlier in the body, recorded as continued there;
+     * any other expression unchanged. A use is bound to the assignment before it on its first
+     * walk, so `$q = $q->where(...)` continues the earlier `$q`.
+     */
+    private function continueAssignedChain(Node\Expr $expr, bool $continued = true): Node\Expr
+    {
+        if (isset($this->readContinuations[spl_object_id($expr)])) {
+            return $this->readContinuations[spl_object_id($expr)];
+        }
+
+        if (! $expr instanceof Node\Expr\Variable || ! is_string($expr->name) || ! isset($this->assignedReadChains[$expr->name])) {
+            return $expr;
+        }
+
+        $assigned = $this->assignedReadChains[$expr->name];
+        if ($continued) {
+            $this->readContinuations[spl_object_id($expr)] = $assigned['expr'];
+            $this->continuedCalls += $assigned['calls'];
+            $this->continuedChains[spl_object_id($assigned['expr'])] = true;
+        }
+
+        return $assigned['expr'];
+    }
+
+    /**
+     * Whether the expression is a call on the session() helper, such as session()->increment('views'),
+     * or session([...]), with plain arguments to every call.
+     *
+     * @param  list<string>  $requestVariables
+     */
+    private function isSessionHelperCall(Node\Expr $expr, array $requestVariables): bool
+    {
+        while ($expr instanceof Node\Expr\MethodCall) {
+            if (! $this->hasPlainArguments($expr, $requestVariables)) {
+                return false;
+            }
+            $expr = $expr->var;
+        }
+
+        return $expr instanceof Node\Expr\FuncCall
+            && self::isHelperCall($expr, ['session'])
+            && $this->hasPlainArguments($expr, $requestVariables);
+    }
+
+    /**
+     * Whether the callbacks a call on a read chain passes keep it a read, adding the calls of
+     * each query callback's body to $calls.
+     *
+     * A closure or arrow function argument must be a query callback, and so must one that is a
+     * value of an array passed to an eager-load method (with(['tags' => fn ($q) => ...])).
+     * Any other argument holding a callback, or a first-class callable, is not a read. Of the
+     * methods that take a callback by contract, only the builder's when(), unless() and tap()
+     * hand their closure the builder; the others run it per row.
+     *
+     * Called without a closure, such a method is a read only as a model static call that the
+     * builder does not define, where it is a local scope (Article::filter(...)), or as when()
+     * or unless() with a single argument, which returns a proxy for the next call. Anywhere
+     * else its argument may be an array callable, a function name or an invokable.
+     *
+     * @param  array<int, true>  $calls
+     * @param  bool  $allowClosures  false after the read terminal, where a closure runs per row
+     */
+    private function callbacksAreReads(Node\Expr\MethodCall|Node\Expr\StaticCall $call, array &$calls, bool $allowClosures = true): bool
+    {
+        if ($call->isFirstClassCallable() || ! $call->name instanceof Node\Identifier) {
+            return false;
+        }
+
+        $method = $call->name->toString();
+        $passesClosure = false;
+        foreach ($call->getArgs() as $arg) {
+            $values = $arg->value instanceof Node\Expr\Array_ && self::isEagerLoadMethod($method)
+                ? $arg->value->items
+                : [$arg->value];
+
+            foreach ($values as $value) {
+                if ($value instanceof Node\ArrayItem) {
+                    if ($value->key !== null && self::containsCallback($value->key)) {
+                        return false;
+                    }
+                    $value = $value->value;
+                }
+
+                if ($value instanceof Node\Expr\Closure || $value instanceof Node\Expr\ArrowFunction) {
+                    $callbackCalls = $allowClosures ? $this->queryCallbackCalls($value) : null;
+                    if ($callbackCalls === null) {
+                        return false;
+                    }
+
+                    $calls += $callbackCalls;
+                    $passesClosure = true;
+
+                    continue;
+                }
+
+                if (self::containsCallback($value)) {
+                    return false;
+                }
+            }
+        }
+
+        if (! self::isMethodIn($method, self::CALLBACK_METHODS)) {
+            return true;
+        }
+
+        if ($passesClosure) {
+            return self::isMethodIn($method, self::BUILDER_RECEIVING_CALLBACK_METHODS);
+        }
+
+        if (self::isMethodIn($method, ['when', 'unless']) && count($call->getArgs()) === 1) {
+            return true;
+        }
+
+        return $call instanceof Node\Expr\StaticCall && ! self::isMethodIn($method, self::BUILDER_CALLBACK_METHODS);
+    }
+
+    private static function isEagerLoadMethod(string $method): bool
+    {
+        $lower = strtolower($method);
+
+        return str_starts_with($lower, 'with') || str_starts_with($lower, 'load');
+    }
+
+    /**
+     * Whether a call is handed a callable: it is a first-class callable, or an argument holds a
+     * closure, an arrow function or a first-class callable. A callback method (CALLBACK_METHODS)
+     * also counts an argument that may be a callable: a variable, an array, a string or a new
+     * invokable, except that sortBy() and sortByDesc() take a string or an array as the key.
+     * Without such an argument, as in sortBy('name') or filter(), no callback runs per row.
+     *
+     * @internal
+     */
+    public static function takesCallback(Node\Expr\MethodCall $call): bool
+    {
+        if ($call->isFirstClassCallable()) {
+            return true;
+        }
+
+        $method = $call->name instanceof Node\Identifier ? $call->name->toString() : null;
+        $isCallbackMethod = $method === null || self::isMethodIn($method, self::CALLBACK_METHODS);
+        $takesKeys = $method !== null && self::isMethodIn($method, ['sortBy', 'sortByDesc']);
+
+        foreach ($call->getArgs() as $arg) {
+            $value = $arg->value;
+            if (self::containsCallback($value)) {
+                return true;
+            }
+
+            if ($isCallbackMethod
+                && ($value instanceof Node\Expr\Variable
+                    || $value instanceof Node\Expr\New_
+                    || (! $takesKeys && ($value instanceof Node\Expr\Array_ || $value instanceof Node\Scalar\String_)))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @internal
+     */
+    public static function isHigherOrderProxy(string $property): bool
+    {
+        return self::isMethodIn($property, self::HIGHER_ORDER_PROXIES);
+    }
+
+    private static function containsCallback(Node\Expr $expr): bool
+    {
+        return (new NodeFinder)->findFirst($expr, static function (Node $node): bool {
+            return $node instanceof Node\Expr\Closure
+                || $node instanceof Node\Expr\ArrowFunction
+                || ($node instanceof Node\Expr\CallLike && $node->isFirstClassCallable());
+        }) !== null;
+    }
+
+    /**
+     * The calls of a query callback's body, or null when it is not one. A query callback, such
+     * as whereHas('tags', fn ($q) => $q->where('name', 'php')), only constrains the builder it
+     * is handed: its body is one chain, returned or not, of method calls on its first
+     * parameter. A call may be a constraint or a local scope, but not a write, a read terminal
+     * or its result call, a notification or a dispatch, and its own callbacks must be query
+     * callbacks.
+     *
+     * @return array<int, true>|null
+     */
+    private function queryCallbackCalls(Node\Expr\Closure|Node\Expr\ArrowFunction $callback): ?array
+    {
+        $parameter = $callback->params[0]->var ?? null;
+        if (! $parameter instanceof Node\Expr\Variable || ! is_string($parameter->name)) {
+            return null;
+        }
+
+        if ($callback instanceof Node\Expr\ArrowFunction) {
+            $current = $callback->expr;
+        } else {
+            $statements = array_values(array_filter($callback->stmts, static fn (Node\Stmt $stmt): bool => ! $stmt instanceof Node\Stmt\Nop));
+            if (count($statements) !== 1
+                || ! ($statements[0] instanceof Node\Stmt\Return_ || $statements[0] instanceof Node\Stmt\Expression)
+                || $statements[0]->expr === null) {
+                return null;
+            }
+            $current = $statements[0]->expr;
+        }
+
+        $calls = [];
+        while (true) {
+            if ($current instanceof Node\Expr\Variable && $current->name === $parameter->name) {
+                return $calls;
+            }
+
+            if (! $current instanceof Node\Expr\MethodCall
+                || ! $current->name instanceof Node\Identifier
+                || ! self::isQueryConstraintMethod($current->name->toString())
+                || ! $this->callbacksAreReads($current, $calls)) {
+                return null;
+            }
+
+            $calls[spl_object_id($current)] = true;
             $current = $current->var;
         }
     }
 
-    /**
-     * Whether the call takes a callback by contract, is a first-class callable, or has an
-     * argument holding a closure, an arrow function or a first-class callable.
-     */
-    private function takesCallback(Node\Expr\MethodCall|Node\Expr\StaticCall $call): bool
+    private static function isQueryConstraintMethod(string $method): bool
     {
-        if ($call->isFirstClassCallable()
-            || ($call->name instanceof Node\Identifier && in_array($call->name->toString(), self::CALLBACK_METHODS, true))) {
-            return true;
-        }
-
-        $callback = (new NodeFinder)->findFirst($call->getArgs(), static function (Node $node): bool {
-            return $node instanceof Node\Expr\Closure
-                || $node instanceof Node\Expr\ArrowFunction
-                || ($node instanceof Node\Expr\CallLike && $node->isFirstClassCallable());
-        });
-
-        return $callback !== null;
+        return ! self::isMethodIn($method, self::WRITE_METHODS)
+            && ! self::isMethodIn($method, self::TERMINAL_READ_METHODS)
+            && ! self::isMethodIn($method, self::READ_RESULT_TAIL_METHODS)
+            && ! self::isMethodIn($method, self::NOTIFY_METHODS)
+            && ! self::isMethodIn($method, self::DISPATCHABLE_STATIC_METHODS);
     }
 
     /**
-     * Whether the expression is the signed-in user: auth()->user(), request()->user(),
-     * $request->user() or Auth::user().
+     * Uses, by spl_object_id, of the closure's parameters whose type is a model, as route model
+     * binding fills them. They root both reads and writes; as for writes on static calls, a
+     * class in a models namespace counts though its short name is a utility's (App\Models\File).
+     *
+     * @return array<int, true>
      */
-    private static function isSignedInUser(Node\Expr $expr): bool
+    private function modelParameterUses(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
     {
-        if (! ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall)
+        $uses = [];
+        foreach ($closure->params as $param) {
+            if ($param->type !== null
+                && $param->var instanceof Node\Expr\Variable
+                && is_string($param->var->name)
+                && $this->isModelType($param->type)) {
+                $uses += self::variableUses($closure, $param->var->name);
+            }
+        }
+
+        return $uses;
+    }
+
+    /**
+     * Whether a parameter type is a model: a model class, nullable or not, or a union whose
+     * every member other than null is one.
+     */
+    private function isModelType(Node\ComplexType|Node\Identifier|Node\Name $type): bool
+    {
+        if ($type instanceof Node\NullableType) {
+            $type = $type->type;
+        }
+
+        if ($type instanceof Node\UnionType) {
+            $members = array_filter($type->types, static fn (Node $member): bool => ! ($member instanceof Node\Identifier && $member->toLowerString() === 'null'));
+
+            return $members !== [] && array_filter($members, fn (Node $member): bool => ! $this->isModelType($member)) === [];
+        }
+
+        return $type instanceof Node\Name && self::isModelClass($type, self::UTILITY_CLASSES, $this->declaresModel);
+    }
+
+    /**
+     * Uses, by spl_object_id, of a variable a top-level statement of the closure assigns the
+     * signed-in user, as in `$user = auth()->user();`.
+     *
+     * @return array<int, true>
+     */
+    private function signedInUserVariableUses(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): array
+    {
+        if (! $closure instanceof Node\Expr\Closure) {
+            return [];
+        }
+
+        $uses = [];
+        foreach ($closure->stmts as $statement) {
+            if ($statement instanceof Node\Stmt\Expression
+                && $statement->expr instanceof Node\Expr\Assign
+                && $statement->expr->var instanceof Node\Expr\Variable
+                && is_string($statement->expr->var->name)
+                && self::isSignedInUser($statement->expr->expr)) {
+                $uses += self::variableUses($closure, $statement->expr->var->name);
+            }
+        }
+
+        return $uses;
+    }
+
+    /**
+     * Uses, by spl_object_id, of a closure's variable in its body, including nested closures that
+     * capture it and nested arrow functions, but not those that declare a parameter of that name.
+     *
+     * @return array<int, true>
+     *
+     * @internal
+     */
+    public static function variableUses(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, string $name): array
+    {
+        $uses = [];
+        self::collectVariableUses($closure instanceof Node\Expr\ArrowFunction ? [$closure->expr] : $closure->stmts, $name, $uses);
+
+        return $uses;
+    }
+
+    /**
+     * @param  array<mixed>  $nodes
+     * @param  array<int, true>  $uses
+     */
+    private static function collectVariableUses(array $nodes, string $name, array &$uses): void
+    {
+        foreach ($nodes as $node) {
+            if (is_array($node)) {
+                self::collectVariableUses($node, $name, $uses);
+
+                continue;
+            }
+
+            if (! $node instanceof Node) {
+                continue;
+            }
+
+            if ($node instanceof Node\Expr\Variable && $node->name === $name) {
+                $uses[spl_object_id($node)] = true;
+
+                continue;
+            }
+
+            if ($node instanceof Node\Expr\Closure || $node instanceof Node\Expr\ArrowFunction) {
+                foreach ($node->params as $param) {
+                    if ($param->var instanceof Node\Expr\Variable && $param->var->name === $name) {
+                        continue 2;
+                    }
+                }
+
+                if ($node instanceof Node\Expr\ArrowFunction) {
+                    self::collectVariableUses([$node->expr], $name, $uses);
+
+                    continue;
+                }
+
+                foreach ($node->uses as $use) {
+                    if ($use->var->name === $name) {
+                        self::collectVariableUses($node->stmts, $name, $uses);
+                    }
+                }
+
+                continue;
+            }
+
+            // A named function or a class has a scope of its own
+            if ($node instanceof Node\FunctionLike || $node instanceof Node\Stmt\ClassLike) {
+                continue;
+            }
+
+            foreach ($node->getSubNodeNames() as $subNodeName) {
+                self::collectVariableUses([$node->$subNodeName], $name, $uses);
+            }
+        }
+    }
+
+    /**
+     * Whether the expression is the signed-in user: user() on auth(), auth('api'), request() or
+     * a variable, on a guard (auth()->guard('api'), Auth::guard('api')), Auth::user() or Request::user().
+     *
+     * @internal
+     */
+    public static function isSignedInUser(Node\Expr $expr): bool
+    {
+        if (! ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\NullsafeMethodCall || $expr instanceof Node\Expr\StaticCall)
             || ! $expr->name instanceof Node\Identifier
             || $expr->name->toString() !== 'user') {
             return false;
         }
 
         if ($expr instanceof Node\Expr\StaticCall) {
-            return $expr->class instanceof Node\Name && self::getShortClassName($expr->class) === 'Auth';
+            return $expr->class instanceof Node\Name
+                && in_array(ltrim(self::resolvedName($expr->class), '\\'), ['Illuminate\\Support\\Facades\\Auth', 'Auth', 'Illuminate\\Support\\Facades\\Request', 'Request'], true);
         }
 
         $receiver = $expr->var;
 
-        return $receiver instanceof Node\Expr\Variable
-            || ($receiver instanceof Node\Expr\FuncCall
-                && $receiver->name instanceof Node\Name
-                && in_array($receiver->name->toString(), ['auth', 'request'], true));
+        // A guard: auth()->guard('api') or Auth::guard('api')
+        if (($receiver instanceof Node\Expr\MethodCall || $receiver instanceof Node\Expr\StaticCall)
+            && $receiver->name instanceof Node\Identifier
+            && $receiver->name->toString() === 'guard') {
+            return $receiver instanceof Node\Expr\StaticCall
+                ? $receiver->class instanceof Node\Name && self::isAuthFacade($receiver->class)
+                : self::isHelperCall($receiver->var, ['auth']);
+        }
+
+        return $receiver instanceof Node\Expr\Variable || self::isHelperCall($receiver, ['auth', 'request']);
+    }
+
+    /**
+     * @param  list<string>  $helpers
+     */
+    private static function isHelperCall(Node\Expr $expr, array $helpers): bool
+    {
+        return $expr instanceof Node\Expr\FuncCall
+            && $expr->name instanceof Node\Name
+            && in_array($expr->name->toString(), $helpers, true);
+    }
+
+    private static function isAuthFacade(Node\Name $name): bool
+    {
+        return in_array(ltrim(self::resolvedName($name), '\\'), ['Illuminate\\Support\\Facades\\Auth', 'Auth'], true);
+    }
+
+    /**
+     * The class name NameResolver resolved, or the name as written when it could not.
+     */
+    private static function resolvedName(Node\Name $name): string
+    {
+        $resolvedName = $name->getAttribute('resolvedName');
+
+        return $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toString()
+            : $name->toString();
     }
 }

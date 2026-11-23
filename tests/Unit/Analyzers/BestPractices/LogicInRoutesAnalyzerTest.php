@@ -2726,9 +2726,9 @@ PHP;
     }
 
     /**
-     * The read exemption covers only a closure whose whole body is one read chain. Any other
-     * statement beside the read, even a write-named call that does not touch the database,
-     * leaves the closure graded as before.
+     * The read exemption covers only a closure whose statements are all reads or session()
+     * helper calls. Any other statement beside the read, even a write-named call that does not
+     * touch the database, leaves the closure graded as before.
      *
      * @dataProvider nonModelWriteNamedCallProvider
      */
@@ -2749,9 +2749,6 @@ PHP;
     public static function nonModelWriteNamedCallProvider(): array
     {
         return [
-            'session helper increment' => [
-                "Route::get('/a', function () { session()->increment('views'); return Article::latest()->get(); });",
-            ],
             'storage facade delete' => [
                 "Route::get('/a', function () { Storage::delete('x'); return Article::paginate(15); });",
             ],
@@ -2771,7 +2768,7 @@ PHP;
 
     /**
      * Writes, per-row callbacks and higher-order proxies beside or after a read keep the
-     * business-logic grade: the read exemption needs the whole body to be one read chain.
+     * business-logic grade: the read exemption needs every statement of the body to be a read.
      *
      * @dataProvider notASingleReadChainProvider
      */
@@ -2824,9 +2821,6 @@ PHP;
             ],
             'array callable passed to pipe' => [
                 "Route::get('/a', fn () => Article::where('due', true)->get()->pipe([\\App\\Actions\\ArchiveArticles::class, 'run'])->count());",
-            ],
-            'builder in a variable, read in the return' => [
-                "Route::get('/a', function () { \$q = Article::latest(); return \$q->get(); });",
             ],
         ];
     }
@@ -4520,5 +4514,904 @@ PHP,
         $analyzer->setPaths(['routes']);
 
         return $analyzer->analyze();
+    }
+
+    /**
+     * A query callback whose body only constrains the builder it is handed keeps the chain a read.
+     *
+     * @dataProvider queryCallbackReadProvider
+     */
+    #[DataProvider('queryCallbackReadProvider')]
+    public function test_a_read_with_a_query_callback_is_not_business_logic(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function queryCallbackReadProvider(): array
+    {
+        return [
+            'whereHas arrow callback' => [
+                "Route::get('/a', fn () => Article::whereHas('labels', fn (\$q) => \$q->where('slug', 'php'))->paginate(15));",
+            ],
+            'when arrow callback with the value' => [
+                "Route::get('/a', fn () => Article::when(request('term'), fn (\$q, \$term) => \$q->where('title', 'like', \"%{\$term}%\"))->paginate(15));",
+            ],
+            'whereHas statement callback' => [
+                "Route::get('/a', fn () => Article::whereHas('labels', function (\$q) { \$q->where('slug', 'php'); })->paginate(15));",
+            ],
+            'nested query callbacks' => [
+                "Route::get('/a', fn () => Article::when(request('tag'), fn (\$q) => \$q->whereHas('labels', fn (\$l) => \$l->where('slug', 'php')))->paginate(15));",
+            ],
+        ];
+    }
+
+    /**
+     * A callback that does more than constrain its builder keeps the business-logic grade.
+     *
+     * @dataProvider nonReadQueryCallbackProvider
+     */
+    #[DataProvider('nonReadQueryCallbackProvider')]
+    public function test_a_query_callback_that_is_not_a_read_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonReadQueryCallbackProvider(): array
+    {
+        return [
+            'callback sends a notification' => [
+                "Route::get('/a', fn () => Article::when(request('x'), fn (\$q) => \$q->first()->notify(new \\App\\Notifications\\Digest))->paginate(15));",
+            ],
+            'callback is rooted elsewhere' => [
+                "Route::get('/a', fn () => Article::when(request('x'), fn (\$q) => Member::query()->where('a', 1))->paginate(15));",
+            ],
+            'callback without a parameter' => [
+                "Route::get('/a', fn () => Article::when(request('x'), fn () => abort(404))->paginate(15));",
+            ],
+            'callback with two statements' => [
+                "Route::get('/a', fn () => Article::when(request('x'), function (\$q) { \$q->where('a', 1); \$q->where('b', 2); })->paginate(15));",
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider writeInAQueryCallbackProvider
+     */
+    #[DataProvider('writeInAQueryCallbackProvider')]
+    public function test_a_write_inside_a_query_callback_is_a_database_write(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function writeInAQueryCallbackProvider(): array
+    {
+        return [
+            'delete in a when callback' => [
+                "Route::get('/a', fn () => Article::when(request('purge'), fn (\$q) => \$q->delete())->paginate(15));",
+            ],
+            'delete in a whereHas callback' => [
+                "Route::get('/a', fn () => Article::whereHas('labels', fn (\$q) => \$q->delete())->get());",
+            ],
+            'update in a statement callback' => [
+                "Route::get('/a', fn () => Article::when(request('x'), function (\$q) { \$q->update(['seen' => true]); })->paginate(15));",
+            ],
+            'delete per chunk on a model static call' => [
+                "Route::post('/a', fn () => Article::chunk(100, fn (\$rows) => \$rows->each->delete()));",
+            ],
+            'delete per row after a read' => [
+                "Route::post('/a', fn () => Article::latest()->get()->each(fn (\$a) => \$a->delete()));",
+            ],
+            'delete in an eager-load constraint' => [
+                "Route::get('/a', fn () => Article::with(['labels' => fn (\$q) => \$q->delete()])->paginate(15));",
+            ],
+        ];
+    }
+
+    /**
+     * A model static call named like a collection callback method, with no callback argument,
+     * is a local scope.
+     *
+     * @dataProvider scopeNamedLikeACallbackMethodProvider
+     */
+    #[DataProvider('scopeNamedLikeACallbackMethodProvider')]
+    public function test_a_scope_named_like_a_callback_method_is_a_read(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function scopeNamedLikeACallbackMethodProvider(): array
+    {
+        return [
+            'filter scope' => ["Route::get('/a', fn () => Article::filter(request()->all())->paginate(15));"],
+            'when scope' => ["Route::get('/a', fn () => Article::when(request('q'))->paginate(15));"],
+            'sortBy scope' => ["Route::get('/a', fn () => Article::sortBy('title')->paginate(15));"],
+        ];
+    }
+
+    public function test_a_write_after_a_scope_named_like_a_callback_method_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteFile("Route::post('/a', fn () => Article::filter(request()->all())->update(['seen' => true]));");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    public function test_a_callback_method_name_on_an_instance_call_stays_high(): void
+    {
+        $result = $this->analyzeRouteFile("Route::get('/a', fn () => Article::latest()->filter(request()->all())->paginate(15));");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @dataProvider boundModelRelationReadProvider
+     */
+    #[DataProvider('boundModelRelationReadProvider')]
+    public function test_a_relation_read_on_a_route_bound_model_is_not_business_logic(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("use App\\Models\\Team;\n".$routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function boundModelRelationReadProvider(): array
+    {
+        return [
+            'arrow function' => ["Route::get('/t/{team}', fn (Team \$team) => \$team->members()->latest()->get());"],
+            'closure' => ["Route::get('/t/{team}', function (Team \$team) { return \$team->members()->latest()->paginate(15); });"],
+            'property hop' => ["Route::get('/t/{team}', fn (Team \$team) => \$team->owner->articles()->latest()->get());"],
+        ];
+    }
+
+    public function test_a_relation_chain_on_an_untyped_parameter_stays_high(): void
+    {
+        $result = $this->analyzeRouteFile("Route::get('/t/{team}', fn (\$team) => \$team->members()->latest()->get());");
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @dataProvider boundModelWriteProvider
+     */
+    #[DataProvider('boundModelWriteProvider')]
+    public function test_a_write_on_a_route_bound_model_is_a_database_write(string $routes): void
+    {
+        $result = $this->analyzeRouteFile("use App\\Models\\Team;\n".$routes);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function boundModelWriteProvider(): array
+    {
+        return [
+            'relation delete' => ["Route::delete('/t/{team}', fn (Team \$team) => \$team->members()->delete());"],
+            'model delete' => ["Route::delete('/t/{team}', fn (Team \$team) => \$team->delete());"],
+            'relation create' => ["Route::post('/t/{team}', fn (Team \$team) => \$team->members()->create(request()->all()));"],
+            'nullable type' => ["Route::delete('/t/{team}', fn (?Team \$team) => \$team->members()->delete());"],
+            'captured by a nested closure' => ["Route::delete('/t/{team}', function (Team \$team) { return tap(\$team, function () use (\$team) { \$team->members()->delete(); }); });"],
+        ];
+    }
+
+    /**
+     * @dataProvider guardedUserRelationReadProvider
+     */
+    #[DataProvider('guardedUserRelationReadProvider')]
+    public function test_a_relation_read_on_a_guarded_signed_in_user_is_not_business_logic(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("use Illuminate\\Support\\Facades\\Auth;\n".$routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function guardedUserRelationReadProvider(): array
+    {
+        return [
+            'auth helper guard' => ["Route::get('/me', fn () => auth()->guard('api')->user()->invoices()->latest()->get());"],
+            'Auth facade guard' => ["Route::get('/me', fn () => Auth::guard('api')->user()->invoices()->latest()->get());"],
+        ];
+    }
+
+    /**
+     * @dataProvider guardedUserWriteProvider
+     */
+    #[DataProvider('guardedUserWriteProvider')]
+    public function test_a_write_on_a_guarded_signed_in_user_is_a_database_write(string $routes): void
+    {
+        $result = $this->analyzeRouteFile("use Illuminate\\Support\\Facades\\Auth;\n".$routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function guardedUserWriteProvider(): array
+    {
+        return [
+            'relation create on the auth helper guard' => ["Route::post('/me', fn () => auth()->guard('api')->user()->invoices()->create(['total' => 1]));"],
+            'update on the Auth facade guard' => ["Route::post('/me', fn () => Auth::guard('api')->user()->update(['name' => 'x']));"],
+            'delete on the auth helper guard' => ["Route::post('/me', fn () => auth()->guard('api')->user()->delete());"],
+        ];
+    }
+
+    /**
+     * A read-only closure with several statements grades exactly as the same read written as
+     * a single return.
+     *
+     * @dataProvider multiStatementReadProvider
+     */
+    #[DataProvider('multiStatementReadProvider')]
+    public function test_a_multi_statement_read_grades_like_the_single_return_read(string $multiStatement, string $singleReturn, string $expectedStatus): void
+    {
+        $multi = $this->analyzeRouteFile($multiStatement);
+        $single = $this->analyzeRouteFile($singleReturn);
+
+        $this->assertSame($expectedStatus, $multi->getStatus()->value);
+        $this->assertSame($this->issueSummary($single), $this->issueSummary($multi));
+    }
+
+    /**
+     * @return array<string, array{string, string, string}>
+     */
+    public static function multiStatementReadProvider(): array
+    {
+        return [
+            'builder in a variable' => [
+                "Route::get('/a', function () { \$query = Article::latest(); return \$query->paginate(15); });",
+                "Route::get('/a', function () { return Article::latest()->paginate(15); });",
+                'passed',
+            ],
+            'query() in a variable' => [
+                "Route::get('/a', function () { \$query = Article::query(); return \$query->paginate(15); });",
+                "Route::get('/a', function () { return Article::query()->paginate(15); });",
+                'passed',
+            ],
+            'constraint after the variable' => [
+                "Route::get('/a', function () { \$query = Article::latest(); return \$query->where('live', true)->get(); });",
+                "Route::get('/a', function () { return Article::latest()->where('live', true)->get(); });",
+                'warning',
+            ],
+            'session helper beside the read' => [
+                "Route::get('/a', function () { session()->increment('views'); return Article::latest()->take(5)->get(); });",
+                "Route::get('/a', function () { return Article::latest()->take(5)->get(); });",
+                'warning',
+            ],
+            'result in a variable' => [
+                "Route::get('/a', function () { \$articles = Article::latest()->take(5)->get(); return \$articles; });",
+                "Route::get('/a', function () { return Article::latest()->take(5)->get(); });",
+                'warning',
+            ],
+            'two variables' => [
+                "Route::get('/a', function () { \$query = Article::latest(); \$query = \$query->where('live', true); return \$query->paginate(15); });",
+                "Route::get('/a', function () { return Article::latest()->where('live', true)->paginate(15); });",
+                'warning',
+            ],
+            'literal in a variable' => [
+                "Route::get('/a', function () { \$perPage = 15; return Article::latest()->paginate(\$perPage); });",
+                "Route::get('/a', function () { return Article::latest()->paginate(15); });",
+                'passed',
+            ],
+            'request input in a variable' => [
+                "Route::get('/a', function () { \$term = request('q'); return Article::latest()->where('title', \$term)->paginate(); });",
+                "Route::get('/a', function () { return Article::latest()->where('title', request('q'))->paginate(); });",
+                'warning',
+            ],
+            'request method and config in variables' => [
+                "Route::get('/a', function (Request \$request) { \$sort = \$request->string('sort'); \$size = config('shelf.size', [10, 20]); return Article::orderBy(\$sort)->paginate(\$size); });",
+                "Route::get('/a', function (Request \$request) { return Article::orderBy(\$request->string('sort'))->paginate(config('shelf.size', [10, 20])); });",
+                'passed',
+            ],
+        ];
+    }
+
+    /**
+     * @dataProvider multiStatementNonReadProvider
+     */
+    #[DataProvider('multiStatementNonReadProvider')]
+    public function test_a_multi_statement_closure_with_a_non_read_statement_stays_high(string $routes, string $expected): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining($expected, $result);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function multiStatementNonReadProvider(): array
+    {
+        return [
+            'write assigned then returned' => [
+                "Route::post('/a', function () { \$a = Article::create(request()->all()); return \$a; });",
+                'database write operations',
+            ],
+            'loop beside the read' => [
+                "Route::get('/a', function () { \$q = Article::latest(); foreach (request('tags', []) as \$t) { \$q->whereHas('labels', fn (\$l) => \$l->where('slug', \$t)); } return \$q->paginate(15); });",
+                'complex business logic',
+            ],
+            'if beside the read' => [
+                "Route::get('/a', function () { \$q = Article::latest(); if (request('x')) { \$q->archive(); } return \$q->paginate(15); });",
+                'complex business logic',
+            ],
+            'call on the variable beside the read' => [
+                "Route::get('/a', function () { \$q = Article::latest(); \$q->archive(); return \$q->paginate(15); });",
+                'complex business logic',
+            ],
+            'computed value beside the read' => [
+                "Route::get('/a', function () { \$n = strtoupper(request('q')); return Article::latest()->where('a', \$n)->get(); });",
+                'complex business logic',
+            ],
+        ];
+    }
+
+    public function test_a_cache_helper_read_chain_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/s', fn () => cache()->store('redis')->tags(['site'])->get('config'));"));
+    }
+
+    /**
+     * @dataProvider helperAndFacadeChainProvider
+     */
+    #[DataProvider('helperAndFacadeChainProvider')]
+    public function test_a_cache_or_session_helper_chain_grades_like_its_facade(string $helper, string $facade): void
+    {
+        $routes = "use Illuminate\\Support\\Facades\\Session;\n";
+
+        $this->assertSame(
+            $this->issueSummary($this->analyzeRouteFile($routes."Route::post('/s', fn () => {$facade});")),
+            $this->issueSummary($this->analyzeRouteFile($routes."Route::post('/s', fn () => {$helper});"))
+        );
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function helperAndFacadeChainProvider(): array
+    {
+        return [
+            'cache put' => ["cache()->store('redis')->tags(['site'])->put('config', 1)", "Cache::store('redis')->tags(['site'])->put('config', 1)"],
+            'cache increment' => ["cache()->store('redis')->tags(['site'])->increment('hits')", "Cache::store('redis')->tags(['site'])->increment('hits')"],
+            'session put' => ["session()->driver('array')->getHandler()->put('k', 1)", "Session::driver('array')->getHandler()->put('k', 1)"],
+        ];
+    }
+
+    /**
+     * @dataProvider collectionWhereInProvider
+     */
+    #[DataProvider('collectionWhereInProvider')]
+    public function test_a_collection_where_in_is_not_a_database_query(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("use Illuminate\\Support\\Collection;\n".$routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function collectionWhereInProvider(): array
+    {
+        return [
+            'collect whereIn' => ["Route::get('/k', fn () => collect(config('shelf.kinds'))->whereIn('kind', ['a', 'b']));"],
+            'Collection::make whereNotIn' => ["Route::get('/k', fn () => Collection::make(config('shelf.kinds'))->whereNotIn('kind', ['a']));"],
+            'new Collection whereBetween' => ["Route::get('/k', fn () => (new Collection(config('shelf.kinds')))->whereBetween('size', [1, 5]));"],
+        ];
+    }
+
+    /**
+     * @dataProvider nonCollectionWhereInProvider
+     */
+    #[DataProvider('nonCollectionWhereInProvider')]
+    public function test_a_where_in_off_a_collection_keeps_its_grade(string $routes, string $expectedMessage, Severity $expectedSeverity): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($expectedMessage, $result->getIssues()[0]->message);
+        $this->assertSame($expectedSeverity, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string, string, Severity}>
+     */
+    public static function nonCollectionWhereInProvider(): array
+    {
+        return [
+            'variable whereIn' => [
+                "Route::get('/k', fn (\$query) => \$query->whereIn('id', [1])->get());",
+                'Route closure contains complex database queries',
+                Severity::Medium,
+            ],
+            'DB table whereIn' => [
+                "Route::get('/k', fn () => DB::table('kinds')->whereIn('id', [1])->get());",
+                'Route closure contains raw database queries',
+                Severity::High,
+            ],
+        ];
+    }
+
+    public function test_a_write_in_a_collection_callback_stays_high(): void
+    {
+        $result = $this->analyzeRouteFile("Route::post('/k', fn () => collect(request('rows'))->each(fn (\$row) => Article::create(\$row)));");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * @return list<array{string, string}>
+     */
+    private function issueSummary(ResultInterface $result): array
+    {
+        return array_values(array_map(
+            static fn ($issue): array => [$issue->message, $issue->severity->value],
+            $result->getIssues()
+        ));
+    }
+
+    /**
+     * An assigned chain that neither ends in a read terminal nor only builds a query that a
+     * later statement continues is not a read.
+     *
+     * @dataProvider assignedNonReadChainProvider
+     */
+    #[DataProvider('assignedNonReadChainProvider')]
+    public function test_an_assigned_chain_that_is_not_a_read_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile("use App\\Models\\Post;\n".$routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function assignedNonReadChainProvider(): array
+    {
+        return [
+            'method on a relation property of the user' => [
+                "Route::post('/n', function () { \$marked = auth()->user()->unreadNotifications->markAsRead(); return auth()->user()->notifications()->latest()->get(); });",
+            ],
+            'domain method on a user relation' => [
+                "Route::post('/n', function (Request \$request) { \$s = \$request->user()->plan('default')->cancelNow(); return \$request->user()->plans()->get(); });",
+            ],
+            'domain method after a read on a bound model' => [
+                "Route::post('/n', function (Post \$o) { \$r = \$o->comments()->first()->approve(); return \$o->comments()->latest()->get(); });",
+            ],
+            'domain method after a model read' => [
+                "Route::post('/n', function () { \$r = Article::where('a', 1)->first()->publishNow(); return Article::latest()->get(); });",
+            ],
+            'builder never continued' => [
+                "Route::post('/n', function () { \$q = Article::latest()->where('a', 1); return Article::latest()->get(); });",
+            ],
+        ];
+    }
+
+    /**
+     * A builder method that takes a callback, called statically with a callable that is not a
+     * closure, cannot be a local scope: the callable is opaque.
+     *
+     * @dataProvider opaqueBuilderCallbackProvider
+     */
+    #[DataProvider('opaqueBuilderCallbackProvider')]
+    public function test_an_opaque_callable_passed_to_a_builder_callback_method_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function opaqueBuilderCallbackProvider(): array
+    {
+        return [
+            'closure held in a variable' => [
+                "\$purge = function (\$query) { \$query->delete(); };\nRoute::get('/a', function () use (\$purge) { return Article::when(request()->boolean('purge'), \$purge)->get(); });",
+            ],
+            'invokable passed to when' => ["Route::get('/a', fn () => Article::when(request('a'), new \\App\\Filters\\Archived)->paginate());"],
+            'array callable passed to unless' => ["Route::get('/a', fn () => Article::unless(request('a'), [\\App\\Filters::class, 'purge'])->paginate());"],
+            'invokable passed to tap' => ["Route::get('/a', fn () => Article::tap(new \\App\\Purge)->get());"],
+            'function name passed to each' => ["Route::get('/a', fn () => Article::each('x')->get());"],
+        ];
+    }
+
+    /**
+     * @dataProvider strictModeNewRootReadProvider
+     */
+    #[DataProvider('strictModeNewRootReadProvider')]
+    public function test_strict_mode_flags_a_read_on_a_bound_model_or_guarded_user(string $routes): void
+    {
+        $result = $this->analyzeRouteFile("use App\\Models\\Team;\n".$routes, allowSimpleReads: false);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database queries (strict mode)', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Low, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function strictModeNewRootReadProvider(): array
+    {
+        return [
+            'bound model relation' => ["Route::get('/t/{team}', fn (Team \$team) => \$team->members()->latest()->get());"],
+            'guarded user relation' => ["Route::get('/me', fn () => auth()->guard('api')->user()->invoices()->latest()->get());"],
+        ];
+    }
+
+    /**
+     * @dataProvider scopeInAQueryCallbackProvider
+     */
+    #[DataProvider('scopeInAQueryCallbackProvider')]
+    public function test_a_scope_inside_a_query_callback_is_a_read(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function scopeInAQueryCallbackProvider(): array
+    {
+        return [
+            'local scope' => ["Route::get('/a', fn () => Article::whereHas('author', fn (\$q) => \$q->active())->paginate(15));"],
+            'orderByRaw' => ["Route::get('/a', fn () => Article::whereHas('author', fn (\$q) => \$q->orderByRaw('x'))->paginate(15));"],
+        ];
+    }
+
+    public function test_an_eager_load_constraint_is_not_business_logic(): void
+    {
+        $result = $this->analyzeRouteFile("Route::get('/a', fn () => Article::latest()->with(['labels' => fn (\$q) => \$q->latest()])->paginate());");
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains complex database queries', $result->getIssues()[0]->message);
+    }
+
+    public function test_a_relation_read_on_the_request_facade_user_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteCode($this->routeFile('Illuminate\Support\Facades\Request', 'fn () => Request::user()->orders()->latest()->get()')));
+    }
+
+    public function test_a_write_on_the_request_facade_user_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteCode($this->routeFile('Illuminate\Support\Facades\Request', "fn () => Request::user()->update(['name' => 'x'])"));
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations', $result->getIssues()[0]->message);
+    }
+
+    public function test_a_relation_read_on_a_bound_model_named_like_a_utility_class_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/f/{file}', fn (File \$file) => \$file->versions()->latest()->get());"));
+    }
+
+    /**
+     * A session() statement beside a read is allowed only with plain arguments: a side effect
+     * passed to it is not laundered.
+     *
+     * @dataProvider sessionStatementWithASideEffectProvider
+     */
+    #[DataProvider('sessionStatementWithASideEffectProvider')]
+    public function test_a_session_statement_with_a_side_effect_argument_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function sessionStatementWithASideEffectProvider(): array
+    {
+        return [
+            'storage call in put' => ["Route::get('/a', function () { session()->put('x', Storage::delete('a')); return Article::paginate(15); });"],
+            'http call in flash' => ["Route::get('/a', function () { session()->flash('r', Http::post('https://api.example.test/charge', request()->all())->json()); return Article::latest()->get(); });"],
+            'service call in the array form' => ["Route::get('/a', function () { session(['r' => (new \\App\\Services\\Billing)->chargeAll()]); return Article::latest()->get(); });"],
+        ];
+    }
+
+    /**
+     * A closure passed after the read terminal runs per row of the result, so it is never a
+     * query callback.
+     *
+     * @dataProvider callbackAfterTheReadProvider
+     */
+    #[DataProvider('callbackAfterTheReadProvider')]
+    public function test_a_callback_passed_after_the_read_terminal_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('complex business logic', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function callbackAfterTheReadProvider(): array
+    {
+        return [
+            'first with a callback on a bound model' => ["Route::post('/m/{member}', fn (Member \$member) => \$member->invoices()->get()->first(fn (\$i) => \$i->sendReminder()));"],
+            'sum with a callback on the user' => ["Route::post('/m', fn () => auth()->user()->orders()->get()->sum(fn (\$o) => \$o->refund()));"],
+            'sole with a callback on a model read' => ["Route::post('/m', fn () => Article::latest()->get()->sole(fn (\$o) => \$o->cancel()));"],
+        ];
+    }
+
+    /**
+     * @dataProvider mixedCaseWriteInACallbackProvider
+     */
+    #[DataProvider('mixedCaseWriteInACallbackProvider')]
+    public function test_a_mixed_case_write_in_a_query_callback_stays_high(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function mixedCaseWriteInACallbackProvider(): array
+    {
+        return [
+            'Delete' => ["Route::get('/a', fn () => Article::when(request('purge'), fn (\$q) => \$q->Delete())->paginate(15));"],
+            'DELETE' => ["Route::get('/a', fn () => Article::when(request('purge'), fn (\$q) => \$q->DELETE())->paginate(15));"],
+        ];
+    }
+
+    /**
+     * A whereIn() is a collection filter only while every call from the collection root keeps
+     * a collection.
+     *
+     * @dataProvider whereInAfterLeavingTheCollectionProvider
+     */
+    #[DataProvider('whereInAfterLeavingTheCollectionProvider')]
+    public function test_a_where_in_after_leaving_the_collection_is_a_complex_query(string $routes): void
+    {
+        $this->assertHasIssueContaining('complex database queries', $this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function whereInAfterLeavingTheCollectionProvider(): array
+    {
+        return [
+            'relation of the first item' => ["Route::get('/k', fn () => collect([Article::find(1)])->first()->comments()->whereIn('status', ['a'])->get());"],
+            'toQuery' => ["Route::get('/k', fn () => \\Illuminate\\Database\\Eloquent\\Collection::make(request('ids'))->toQuery()->whereIn('id', [1])->get());"],
+        ];
+    }
+
+    public function test_a_relation_read_on_the_signed_in_user_in_a_variable_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/me', function () { \$user = auth()->user(); return \$user->orders()->latest()->get(); });"));
+    }
+
+    public function test_a_write_on_the_signed_in_user_in_a_variable_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteFile("Route::post('/me', function () { \$user = auth()->user(); \$user->orders()->delete(); return 'ok'; });");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * @dataProvider readPassedToAViewProvider
+     */
+    #[DataProvider('readPassedToAViewProvider')]
+    public function test_a_read_passed_to_a_view_is_not_business_logic(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function readPassedToAViewProvider(): array
+    {
+        return [
+            'read in the view data' => ["Route::get('/', fn () => view('welcome', ['articles' => Article::latest()->paginate(15)]));"],
+            'read in a variable through compact' => ["Route::get('/', function () { \$a = Article::latest()->paginate(15); return view('a', compact('a')); });"],
+        ];
+    }
+
+    public function test_a_write_passed_to_a_view_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteFile("Route::post('/', fn () => view('a', ['article' => Article::create(request()->all())]));");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * @dataProvider collectionRootProvider
+     */
+    #[DataProvider('collectionRootProvider')]
+    public function test_a_where_in_on_a_collection_from_a_read_or_a_variable_is_not_a_database_query(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("use Illuminate\\Support\\LazyCollection;\n".$routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function collectionRootProvider(): array
+    {
+        return [
+            'model all' => ["Route::get('/k', fn () => Article::all()->whereIn('type', ['a', 'b']));"],
+            'model read get' => ["Route::get('/k', fn () => Article::where('live', true)->get()->whereIn('type', ['a', 'b']));"],
+            'collection in a variable' => ["Route::get('/k', function () { \$c = collect(config('shelf.kinds')); return \$c->whereIn('t', ['a']); });"],
+            'lazy collection' => ["Route::get('/k', fn () => LazyCollection::make(config('shelf.kinds'))->whereIn('t', ['a']));"],
+        ];
+    }
+
+    public function test_a_write_on_a_union_typed_bound_model_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteFile("Route::delete('/m/{m}', fn (Member|Article \$m) => \$m->delete());");
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations', $result->getIssues()[0]->message);
+    }
+
+    public function test_a_relation_read_on_a_union_typed_bound_model_is_not_business_logic(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/m/{m}', fn (Member|Article \$m) => \$m->comments()->latest()->get());"));
+    }
+
+    /**
+     * @dataProvider requestInputInAVariableProvider
+     */
+    #[DataProvider('requestInputInAVariableProvider')]
+    public function test_request_input_in_a_variable_grades_like_the_inlined_read(string $multiStatement, string $singleReturn): void
+    {
+        $multi = $this->analyzeRouteFile($multiStatement);
+
+        $this->assertSame($this->issueSummary($this->analyzeRouteFile($singleReturn)), $this->issueSummary($multi));
+        $this->assertSame('warning', $multi->getStatus()->value);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function requestInputInAVariableProvider(): array
+    {
+        return [
+            'form request parameter' => [
+                "use App\\Http\\Requests\\StoreArticleRequest;\nRoute::get('/a', function (StoreArticleRequest \$request) { \$t = \$request->input('t'); return Article::latest()->where('t', \$t)->get(); });",
+                "use App\\Http\\Requests\\StoreArticleRequest;\nRoute::get('/a', function (StoreArticleRequest \$request) { return Article::latest()->where('t', \$request->input('t'))->get(); });",
+            ],
+            'Request facade' => [
+                "use Illuminate\\Support\\Facades\\Request as Input;\nRoute::get('/a', function () { \$t = Input::input('t'); return Article::latest()->where('t', \$t)->get(); });",
+                "use Illuminate\\Support\\Facades\\Request as Input;\nRoute::get('/a', function () { return Article::latest()->where('t', Input::input('t'))->get(); });",
+            ],
+        ];
+    }
+
+    public function test_a_callback_parameter_named_like_a_collection_variable_is_not_a_collection(): void
+    {
+        $result = $this->analyzeRouteFile("Route::get('/a', function () {\n    \$query = Article::latest()->get();\n\n    return Article::whereHas('labels', fn (\$query) => \$query->whereIn('slug', ['php']))->first();\n});");
+        $withoutTheVariable = $this->analyzeRouteFile("Route::get('/a', function () {\n    return Article::whereHas('labels', fn (\$query) => \$query->whereIn('slug', ['php']))->first();\n});");
+
+        $this->assertNotSame('passed', $result->getStatus()->value);
+        $this->assertHasIssueContaining('complex database queries', $result);
+        $this->assertSame($this->issueSummary($withoutTheVariable), $this->issueSummary($result));
+    }
+
+    public function test_an_arrow_function_capturing_a_collection_variable_keeps_it_a_collection(): void
+    {
+        $this->assertPassed($this->analyzeRouteFile("Route::get('/a', function () { \$items = collect(config('shelf.kinds')); return collect([1])->map(fn (\$x) => \$items->whereIn('slug', [\$x])); });"));
+    }
+
+    public function test_a_write_per_row_of_a_model_collection_in_a_variable_is_a_database_write(): void
+    {
+        $result = $this->analyzeRouteFile("Route::post('/a', function () { \$articles = Article::where('status', 'draft')->get(); return \$articles->whereIn('type', ['news'])->each(fn (\$article) => \$article->update(['archived' => true])); });");
+
+        $this->assertFailed($result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+        $this->assertHasIssueContaining('database write operations', $result);
+    }
+
+    /**
+     * A collection whereIn() followed by a per-row callback or a higher-order proxy keeps its
+     * complex-query grade: the callback is not analysed as a collection filter.
+     *
+     * @dataProvider perRowCallbackAfterACollectionWhereInProvider
+     */
+    #[DataProvider('perRowCallbackAfterACollectionWhereInProvider')]
+    public function test_a_per_row_callback_after_a_collection_where_in_keeps_the_complex_query_grade(string $routes): void
+    {
+        $result = $this->analyzeRouteFile($routes);
+
+        $this->assertNotSame('passed', $result->getStatus()->value);
+        $this->assertHasIssueContaining('complex database queries', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function perRowCallbackAfterACollectionWhereInProvider(): array
+    {
+        return [
+            'higher-order each proxy on a model collection' => ["Route::post('/a', fn () => Article::all()->whereIn('type', ['news'])->each->archive());"],
+            'map callback on a collect() collection' => ["Route::post('/a', fn () => collect(request('ids'))->whereIn('type', ['news'])->map(fn (\$id) => \\App\\Services\\Billing::refund(\$id)));"],
+        ];
+    }
+
+    /**
+     * A collection method named like a callback method but called without a callable, such as
+     * sortBy('name') or filter(), keeps the chain a collection.
+     *
+     * @dataProvider collectionMethodWithoutACallableProvider
+     */
+    #[DataProvider('collectionMethodWithoutACallableProvider')]
+    public function test_a_collection_method_without_a_callable_keeps_the_collection(string $routes): void
+    {
+        $this->assertPassed($this->analyzeRouteFile($routes));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function collectionMethodWithoutACallableProvider(): array
+    {
+        return [
+            'sortBy key then values' => ["Route::get('/k', fn () => Article::all()->sortBy('x')->values());"],
+            'whereIn then sortBy key' => ["Route::get('/k', fn () => Article::all()->whereIn('type', [1])->sortBy('name'));"],
+            'collect whereIn sortBy values' => ["Route::get('/k', fn () => collect(config('shelf.items'))->whereIn('type', ['book'])->sortBy('name')->values());"],
+            'whereIn then argument-less filter' => ["Route::get('/k', fn () => Article::all()->whereIn('t', [1])->filter());"],
+        ];
     }
 }

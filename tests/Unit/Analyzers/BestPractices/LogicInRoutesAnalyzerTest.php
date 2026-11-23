@@ -4131,4 +4131,394 @@ PHP;
 
         return $analyzer->analyze();
     }
+
+    public function test_passes_view_model_suffix_class_that_extends_nothing(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\ViewModels\ReportPageViewModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/reports', fn () => view('reports.index', ReportPageViewModel::make()));
+PHP,
+            'app/ViewModels/ReportPageViewModel.php' => <<<'PHP'
+<?php
+
+namespace App\ViewModels;
+
+class ReportPageViewModel
+{
+    public static function make(): array
+    {
+        return [];
+    }
+}
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_view_model_extending_vendor_base_class(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\ViewModels\ReportPageViewModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/reports', fn () => view('reports.index', ReportPageViewModel::make()));
+PHP,
+            'app/ViewModels/ReportPageViewModel.php' => <<<'PHP'
+<?php
+
+namespace App\ViewModels;
+
+use Acme\Presenters\ViewModel;
+
+class ReportPageViewModel extends ViewModel
+{
+}
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_passes_unimported_fully_qualified_view_model(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use Illuminate\Support\Facades\Route;
+
+Route::get('/reports', fn () => view('reports.index', \App\ViewModels\ReportPageViewModel::make()));
+PHP,
+            'app/ViewModels/ReportPageViewModel.php' => <<<'PHP'
+<?php
+
+namespace App\ViewModels;
+
+class ReportPageViewModel
+{
+}
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_write_on_model_suffix_class_whose_declaration_is_absent(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Entities\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', fn () => InvoiceModel::create(request()->all()));
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations, complex business logic', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    public function test_flags_write_on_unreadable_module_model_with_unchanged_message(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use Modules\Billing\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', fn () => InvoiceModel::create(request()->all()));
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations, complex business logic', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @dataProvider writeLaterInChainProvider
+     */
+    #[DataProvider('writeLaterInChainProvider')]
+    public function test_flags_write_later_in_chain_on_unreadable_module_model_with_unchanged_message(string $closure): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<PHP
+<?php
+
+use Modules\\Billing\\InvoiceModel;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::post('/invoices', {$closure});
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains database write operations, complex business logic', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function writeLaterInChainProvider(): array
+    {
+        return [
+            'factory then create' => ['fn () => InvoiceModel::factory()->create()'],
+            'read then delete' => ['fn () => InvoiceModel::latest()->first()->delete()'],
+            'trashed read then restore' => ['fn () => InvoiceModel::withTrashed()->find(1)->restore()'],
+            'make then save' => ['fn () => InvoiceModel::make()->save()'],
+        ];
+    }
+
+    /**
+     * @dataProvider rawQueryBesideUnknownModelProvider
+     */
+    #[DataProvider('rawQueryBesideUnknownModelProvider')]
+    public function test_flags_raw_query_beside_non_query_call_on_undeclared_model_suffix_class_with_unchanged_message(string $closure): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<PHP
+<?php
+
+use App\\Entities\\InvoiceModel;
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::post('/invoices', {$closure});
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains raw database queries, complex business logic', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function rawQueryBesideUnknownModelProvider(): array
+    {
+        return [
+            'query builder insert' => ['function () { $invoice = InvoiceModel::fromRequest(request()); DB::table(\'ledger\')->insert([]); return $invoice; }'],
+            'raw insert' => ['function () { DB::insert(\'insert into ledger values (1)\'); return InvoiceModel::make(); }'],
+            'raw statement' => ['function () { DB::statement(\'truncate ledger\'); return InvoiceModel::make(); }'],
+            'transaction' => ['fn () => DB::transaction(function () { $invoice = InvoiceModel::make(request()->all()); $invoice->save(); })'],
+        ];
+    }
+
+    public function test_does_not_grade_read_chain_on_declared_non_eloquent_model_suffix_class_as_business_logic(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Support\ArchiveModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/archive', fn () => ArchiveModel::with('entries')->where('year', 1)->orderBy('month')->get());
+PHP,
+            'app/Support/ArchiveModel.php' => $this->nonEloquentArchiveModel(),
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_grades_builder_chain_on_declared_non_eloquent_model_suffix_class_as_complex_query(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Support\ArchiveModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/archive', fn () => ArchiveModel::where('year', 1)->whereIn('month', [1, 2])->orderBy('day')->get());
+PHP,
+            'app/Support/ArchiveModel.php' => $this->nonEloquentArchiveModel(),
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains complex database queries', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    private function nonEloquentArchiveModel(): string
+    {
+        return <<<'PHP'
+<?php
+
+namespace App\Support;
+
+class ArchiveModel
+{
+    public static function __callStatic(string $method, array $arguments): static
+    {
+        return new static;
+    }
+}
+PHP;
+    }
+
+    public function test_grades_read_chain_on_unreadable_module_model_as_complex_query(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use Modules\Billing\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/invoices', function () {
+    return InvoiceModel::with('lines')->where('paid', 1)->orderBy('due_at')->get();
+});
+PHP,
+            'modules/Billing/InvoiceModel.php' => <<<'PHP'
+<?php
+
+namespace Modules\Billing;
+
+class InvoiceModel extends \Illuminate\Database\Eloquent\Model
+{
+}
+PHP,
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains complex database queries', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_grades_read_chain_on_undeclared_model_suffix_class_as_complex_query(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Entities\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/invoices', function () {
+    return InvoiceModel::with('lines')->where('paid', 1)->orderBy('due_at')->get();
+});
+PHP,
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains complex database queries', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_grades_builder_chain_on_undeclared_model_suffix_class_as_complex_query(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Entities\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/invoices', function () {
+    return InvoiceModel::where('paid', 1)->whereIn('status', [1, 2])->orderBy('due_at')->join('lines', 'lines.invoice_id', '=', 'invoices.id')->get();
+});
+PHP,
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Route closure contains complex database queries', $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Medium, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_non_query_static_call_on_model_suffix_class_whose_declaration_is_absent(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Data\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', fn () => InvoiceModel::fromRequest(request()));
+PHP,
+        ]);
+
+        $this->assertPassed($result);
+    }
+
+    public function test_flags_write_on_model_suffix_class_declared_as_eloquent_outside_models_namespace(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Entities\InvoiceModel;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', fn () => InvoiceModel::create(request()->all()));
+PHP,
+            'app/Entities/InvoiceModel.php' => <<<'PHP'
+<?php
+
+namespace App\Entities;
+
+class InvoiceModel extends \Illuminate\Database\Eloquent\Model
+{
+}
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    public function test_flags_write_on_models_namespace_class_without_declaration(): void
+    {
+        $result = $this->analyzeProject([
+            'routes/web.php' => <<<'PHP'
+<?php
+
+use App\Models\Invoice;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/invoices', fn () => Invoice::create(request()->all()));
+PHP,
+        ]);
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('database write operations', $result);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @param  array<string, string>  $files
+     */
+    private function analyzeProject(array $files): ResultInterface
+    {
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($this->createTempDirectory($files));
+        $analyzer->setPaths(['routes']);
+
+        return $analyzer->analyze();
+    }
 }

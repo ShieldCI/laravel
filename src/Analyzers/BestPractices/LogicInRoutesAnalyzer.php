@@ -16,8 +16,10 @@ use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\Concerns\ReadsConfigArrays;
+use ShieldCI\Support\EloquentModelDetector;
 
 /**
  * Detects business logic in route files.
@@ -36,6 +38,8 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
     private int $maxClosureLines;
 
     private bool $allowSimpleReads;
+
+    private ?EloquentModelDetector $modelDetector = null;
 
     public function __construct(
         private ParserInterface $parser,
@@ -80,7 +84,7 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new LogicInRoutesVisitor($this->maxClosureLines, $this->allowSimpleReads);
+                $visitor = new LogicInRoutesVisitor($this->maxClosureLines, $this->allowSimpleReads, $this->declaresModel($ast));
                 $traverser = new NodeTraverser;
                 // replaceNodes stays off because parseFile() hands back a shared, cached AST;
                 // the visitor reads the resolvedName attribute instead. A colliding import is
@@ -114,6 +118,35 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
             sprintf('Found %d route(s) with business logic that should be moved to controllers', count($issues)),
             $issues
         );
+    }
+
+    /**
+     * The Eloquent verdict for a class referenced in the route file, read off its declaration
+     * under app/ and memoised per class name: true or false when the declaration settles it,
+     * null when it cannot be read (missing file, vendor parent, outside app/).
+     *
+     * The detector needs the concrete AstParser. The container binds ParserInterface to the
+     * shared AstParser singleton, so this reuses it and its cache; any other parser gets a
+     * private AstParser that only reads the declarations.
+     *
+     * @param  array<Node>  $ast  AST of the route file, whose imports resolve a short name
+     * @return \Closure(string): ?bool
+     */
+    private function declaresModel(array $ast): \Closure
+    {
+        $detector = $this->modelDetector ??= new EloquentModelDetector(
+            $this->parser instanceof AstParser ? $this->parser : new AstParser
+        );
+        $basePath = $this->getBasePath();
+        $verdicts = [];
+
+        return static function (string $className) use ($detector, $ast, $basePath, &$verdicts): ?bool {
+            if (! array_key_exists($className, $verdicts)) {
+                $verdicts[$className] = $detector->verdictForClassName($className, $ast, $basePath);
+            }
+
+            return $verdicts[$className];
+        };
     }
 }
 
@@ -288,9 +321,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var array<int, true> Track which positions already have issues to avoid duplicates */
     private array $reportedPositions = [];
 
+    /**
+     * @param  \Closure(string): ?bool  $declaresModel  Eloquent verdict of a class's declaration under app/, null when unreadable
+     */
     public function __construct(
         private int $maxClosureLines,
-        private bool $allowSimpleReads = true
+        private bool $allowSimpleReads,
+        private \Closure $declaresModel
     ) {}
 
     public function leaveNode(Node $node): ?Node
@@ -368,10 +405,12 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
      * This method is public static so anonymous visitor classes can call it.
      *
      * @param  list<string>  $utilityClasses
+     * @param  \Closure(string): ?bool  $declaresModel  Eloquent verdict of a class's declaration under app/, null when unreadable
+     * @param  bool  $unknownIsModel  what a Model-suffixed class whose declaration cannot be read counts as
      *
      * @internal
      */
-    public static function isLikelyModel(Node\Name $name, array $utilityClasses): bool
+    public static function isLikelyModel(Node\Name $name, array $utilityClasses, \Closure $declaresModel, bool $unknownIsModel = true): bool
     {
         // After NameResolver, get the resolved name if available
         $resolvedName = $name->getAttribute('resolvedName');
@@ -393,9 +432,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             return true;
         }
 
-        // Class name ends with Model suffix
+        // A Model suffix outside a models namespace is not a model when its declaration under
+        // app/ extends no Eloquent class, as an App\ViewModels view model does not
         if (str_ends_with($normalized, 'Model')) {
-            return true;
+            return $declaresModel($normalized) ?? $unknownIsModel;
         }
 
         // Cannot determine from namespace - assume NOT a model
@@ -410,12 +450,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
      * under Illuminate\Support\Facades, is still rejected.
      *
      * @param  list<string>  $utilityClasses
+     * @param  \Closure(string): ?bool  $declaresModel
      *
      * @internal
      */
-    public static function isModelClass(Node\Name $name, array $utilityClasses): bool
+    public static function isModelClass(Node\Name $name, array $utilityClasses, \Closure $declaresModel): bool
     {
-        return self::isInModelsNamespace($name) || self::isLikelyModel($name, $utilityClasses);
+        return self::isInModelsNamespace($name) || self::isLikelyModel($name, $utilityClasses, $declaresModel);
     }
 
     /**
@@ -515,7 +556,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         // Note: simple reads with allowSimpleReads=true are not flagged
 
         // Check for complex business logic
-        if ($this->hasComplexBusinessLogic($closure)) {
+        if ($this->hasComplexBusinessLogic($closure, $queryInfo['has_writes'] || $queryInfo['has_raw_queries'])) {
             $problems[] = 'complex business logic';
             if ($maxSeverity->level() < Severity::High->level()) {
                 $maxSeverity = Severity::High;
@@ -645,7 +686,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         }
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables) extends NodeVisitorAbstract
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
@@ -661,6 +702,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $argumentlessWriteMethods
              * @param  list<string>  $attachmentExtensions
              * @param  list<string>  $requestVariables
+             * @param  \Closure(string): ?bool  $declaresModel
              */
             public function __construct(
                 private array &$result,
@@ -672,7 +714,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $readResultTailMethods,
                 private array $argumentlessWriteMethods,
                 private array $attachmentExtensions,
-                private array $requestVariables
+                private array $requestVariables,
+                private \Closure $declaresModel
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -837,7 +880,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              */
             private function isLikelyModel(Node\Name $name): bool
             {
-                return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
+                return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses, $this->declaresModel);
             }
 
             /**
@@ -845,7 +888,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              */
             private function isModelClass(Node\Name $name): bool
             {
-                return LogicInRoutesVisitor::isModelClass($name, $this->utilityClasses);
+                return LogicInRoutesVisitor::isModelClass($name, $this->utilityClasses, $this->declaresModel);
             }
 
             /**
@@ -1146,7 +1189,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return $result;
     }
 
-    private function hasComplexBusinessLogic(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): bool
+    /**
+     * @param  bool  $closureHasWrites  whether analyzeDbQueries() found a database write or a DB facade query in the closure
+     */
+    private function hasComplexBusinessLogic(Node\Expr\Closure|Node\Expr\ArrowFunction $closure, bool $closureHasWrites): bool
     {
         $hasComplexLogic = false;
         $ifDepth = 0;
@@ -1156,7 +1202,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         // its calls are skipped by the model-method and heavy-chain checks below
         $readChainCalls = $this->singleReadChainCalls($closure);
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS)) extends NodeVisitorAbstract
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS), $this->declaresModel, $closureHasWrites) extends NodeVisitorAbstract
         {
             /** @var list<string> Container methods that resolve, beyond SERVICE_CONTAINER_METHODS */
             private const EXTRA_RESOLUTION_METHODS = ['offsetGet', 'build', 'factory'];
@@ -1174,6 +1220,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  array<int, true>  $readChainCalls
              * @param  list<string>  $dispatchableStaticMethods  lowercased, since PHP method names are case-insensitive
              * @param  list<string>  $notifyMethods  lowercased, since PHP method names are case-insensitive
+             * @param  \Closure(string): ?bool  $declaresModel
+             * @param  bool  $closureHasWrites  whether the closure writes to the database
              */
             public function __construct(
                 private bool &$hasComplexLogic,
@@ -1187,7 +1235,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $safeFluentHelperFunctions,
                 private array $readChainCalls,
                 private array $dispatchableStaticMethods,
-                private array $notifyMethods
+                private array $notifyMethods,
+                private \Closure $declaresModel,
+                private bool $closureHasWrites
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -1349,11 +1399,19 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
 
             /**
-             * Determine if a class name likely represents an Eloquent model.
+             * Determine if a class name likely represents an Eloquent model. A Model-suffixed
+             * class whose declaration cannot be read counts only when the closure writes to the
+             * database or queries it through the DB facade, so a read-only non-query static call (DashboardViewModel::make()) is not
+             * business logic.
              */
             private function isLikelyModel(Node\Name $name): bool
             {
-                return LogicInRoutesVisitor::isLikelyModel($name, $this->utilityClasses);
+                return LogicInRoutesVisitor::isLikelyModel(
+                    $name,
+                    $this->utilityClasses,
+                    $this->declaresModel,
+                    unknownIsModel: $this->closureHasWrites
+                );
             }
 
             /**
@@ -1515,8 +1573,10 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 return $calls;
             }
 
+            // The root is matched on its name alone, without reading its declaration: a
+            // Model-suffixed class that is not Eloquent still roots a plain read chain
             if ($current instanceof Node\Expr\StaticCall) {
-                return $current->class instanceof Node\Name && self::isLikelyModel($current->class, self::UTILITY_CLASSES)
+                return $current->class instanceof Node\Name && self::isLikelyModel($current->class, self::UTILITY_CLASSES, static fn (): ?bool => null)
                     ? $calls
                     : [];
             }

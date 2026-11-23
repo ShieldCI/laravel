@@ -185,6 +185,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var list<string> Write methods that save only when called without arguments: Model::push() saves, Collection::push($value) does not */
     private const ARGUMENTLESS_WRITE_METHODS = ['push'];
 
+    /** @var list<string> File extensions that make a string argument to attach() a mail attachment path */
+    private const ATTACHMENT_EXTENSIONS = [
+        'pdf', 'csv', 'tsv', 'txt', 'md', 'rtf', 'doc', 'docx', 'xls', 'xlsx', 'ods', 'odt',
+        'ppt', 'pptx', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'zip', 'gz', 'tar', 'ics',
+        'vcf', 'xml', 'json', 'html', 'htm', 'eml', 'mp3', 'mp4', 'wav',
+    ];
+
     /** @var list<string> Eloquent static query methods (entry points) */
     private const STATIC_QUERY_METHODS = [
         'where', 'find', 'all', 'first', 'query',
@@ -626,7 +633,19 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             'chain_length' => 0,
         ];
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS) extends NodeVisitorAbstract
+        // Route closure parameters type-hinted Illuminate\Http\Request, whose file() is an upload
+        $requestVariables = [];
+        foreach ($closure->params as $param) {
+            $type = $param->type instanceof Node\Name ? $param->type->getAttribute('resolvedName') : null;
+            if ($type instanceof Node\Name\FullyQualified
+                && $type->toString() === 'Illuminate\\Http\\Request'
+                && $param->var instanceof Node\Expr\Variable
+                && is_string($param->var->name)) {
+                $requestVariables[] = $param->var->name;
+            }
+        }
+
+        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
@@ -640,6 +659,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $sqlBuilderMethods
              * @param  list<string>  $readResultTailMethods
              * @param  list<string>  $argumentlessWriteMethods
+             * @param  list<string>  $attachmentExtensions
+             * @param  list<string>  $requestVariables
              */
             public function __construct(
                 private array &$result,
@@ -649,7 +670,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $terminalReadMethods,
                 private array $sqlBuilderMethods,
                 private array $readResultTailMethods,
-                private array $argumentlessWriteMethods
+                private array $argumentlessWriteMethods,
+                private array $attachmentExtensions,
+                private array $requestVariables
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -841,8 +864,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
 
             /**
-             * Check whether a call is a write; push() writes only without arguments, and a
-             * first-class callable (delete(...)) only builds a Closure.
+             * Check whether a call is a write; push() writes only without arguments, attach()
+             * with a file-shaped first argument is a mail attachment, and a first-class
+             * callable (delete(...)) only builds a Closure.
              */
             private function isWriteCall(string $method, Node\Expr\CallLike $call): bool
             {
@@ -850,7 +874,152 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     return false;
                 }
 
+                if ($method === 'attach' && $this->isMailAttachment($call)) {
+                    return false;
+                }
+
                 return $call->getRawArgs() === [] || ! in_array($method, $this->argumentlessWriteMethods, true);
+            }
+
+            /**
+             * Whether attach() is Mailable::attach() or MailMessage::attach(): it has a named file
+             * argument, or its first argument is file-shaped. Anything else, a bare variable or a
+             * string key such as a UUID included, may be a pivot id and stays a write.
+             */
+            private function isMailAttachment(Node\Expr\CallLike $call): bool
+            {
+                $args = $call->getRawArgs();
+
+                foreach ($args as $arg) {
+                    if ($arg instanceof Node\Arg && $arg->name !== null && $arg->name->toString() === 'file') {
+                        return true;
+                    }
+                }
+
+                $first = $args[0] ?? null;
+
+                return $first instanceof Node\Arg
+                    && $first->name === null
+                    && ! $first->unpack
+                    && $this->isFileShaped($first->value);
+            }
+
+            /**
+             * Whether an expression is a file: a path-like string, a string that starts at an
+             * absolute path or __DIR__ or ends in an attachment extension, a Laravel path helper,
+             * a Storage path(), an uploaded file from file(), an Attachment with or without a
+             * fluent tail, or a ternary whose branches all are.
+             */
+            private function isFileShaped(Node\Expr $expr): bool
+            {
+                if ($expr instanceof Node\Scalar\String_) {
+                    return $this->isPathLikeString($expr->value);
+                }
+
+                if ($expr instanceof Node\Scalar\InterpolatedString) {
+                    $first = $expr->parts[0] ?? null;
+                    $last = $expr->parts[count($expr->parts) - 1] ?? null;
+
+                    return ($first instanceof Node\InterpolatedStringPart && str_starts_with($first->value, '/'))
+                        || ($last instanceof Node\InterpolatedStringPart && $this->hasAttachmentExtension($last->value));
+                }
+
+                if ($expr instanceof Node\Expr\BinaryOp\Concat) {
+                    if ($expr->right instanceof Node\Scalar\String_ && $this->hasAttachmentExtension($expr->right->value)) {
+                        return true;
+                    }
+
+                    $leftmost = $expr->left;
+                    while ($leftmost instanceof Node\Expr\BinaryOp\Concat) {
+                        $leftmost = $leftmost->left;
+                    }
+
+                    if ($leftmost instanceof Node\Scalar\MagicConst\Dir) {
+                        return true;
+                    }
+
+                    return $leftmost instanceof Node\Scalar\String_
+                        ? str_starts_with($leftmost->value, '/')
+                        : $this->isFileShaped($leftmost);
+                }
+
+                if ($expr instanceof Node\Expr\Ternary) {
+                    return $this->isFileShaped($expr->if ?? $expr->cond) && $this->isFileShaped($expr->else);
+                }
+
+                if ($expr instanceof Node\Expr\FuncCall) {
+                    return in_array($this->globalFunctionName($expr), [
+                        'storage_path', 'public_path', 'base_path', 'resource_path',
+                        'app_path', 'database_path', 'lang_path', 'config_path',
+                    ], true);
+                }
+
+                // file() on request() or a Request-typed route closure parameter is an UploadedFile
+                if ($expr instanceof Node\Expr\MethodCall
+                    && $expr->name instanceof Node\Identifier
+                    && $expr->name->toLowerString() === 'file'
+                    && (($expr->var instanceof Node\Expr\Variable
+                            && is_string($expr->var->name)
+                            && in_array($expr->var->name, $this->requestVariables, true))
+                        || ($expr->var instanceof Node\Expr\FuncCall && $this->globalFunctionName($expr->var) === 'request'))) {
+                    return true;
+                }
+
+                $isPathCall = ($expr instanceof Node\Expr\MethodCall || $expr instanceof Node\Expr\StaticCall)
+                    && $expr->name instanceof Node\Identifier
+                    && $expr->name->toLowerString() === 'path';
+
+                $root = $expr;
+                while ($root instanceof Node\Expr\MethodCall) {
+                    $root = $root->var;
+                }
+
+                if (! ($root instanceof Node\Expr\StaticCall || $root instanceof Node\Expr\New_)
+                    || ! $root->class instanceof Node\Name) {
+                    return false;
+                }
+
+                $className = ltrim($this->resolvedClassName($root->class), '\\');
+
+                if (in_array($className, ['Illuminate\\Mail\\Mailables\\Attachment', 'Illuminate\\Mail\\Attachment'], true)) {
+                    return true;
+                }
+
+                return $isPathCall && in_array($className, ['Illuminate\\Support\\Facades\\Storage', 'Storage'], true);
+            }
+
+            /**
+             * A string reads as a path when it is absolute or ends in an attachment extension;
+             * a dotted key such as vue.js, example.com or v1.2 does not.
+             */
+            private function isPathLikeString(string $value): bool
+            {
+                return str_starts_with($value, '/') || $this->hasAttachmentExtension($value);
+            }
+
+            private function hasAttachmentExtension(string $value): bool
+            {
+                return preg_match('/\.([A-Za-z0-9]+)$/', $value, $matches) === 1
+                    && in_array(strtolower($matches[1]), $this->attachmentExtensions, true);
+            }
+
+            /**
+             * The lowercased global function a call reaches, or '' for a namespaced function or a
+             * dynamic name; an unqualified name without a resolvedName falls back to the global one.
+             */
+            private function globalFunctionName(Node\Expr\FuncCall $call): string
+            {
+                if (! $call->name instanceof Node\Name) {
+                    return '';
+                }
+
+                $resolvedName = $call->name->getAttribute('resolvedName');
+
+                if ($resolvedName instanceof Node\Name\FullyQualified) {
+                    return $resolvedName->toLowerString();
+                }
+
+                return $call->name->isUnqualified() ? $call->name->toLowerString() : '';
             }
 
             /**

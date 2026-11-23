@@ -790,7 +790,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         }
 
-        $visitor = new class($result, self::WRITE_METHODS, self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, self::ARGUMENTLESS_WRITE_METHODS, self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel, $rootVariables, $continuations, $continuedCalls) extends NodeVisitorAbstract
+        $visitor = new class($result, array_map('strtolower', self::WRITE_METHODS), self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, array_map('strtolower', self::ARGUMENTLESS_WRITE_METHODS), self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel, $rootVariables, $continuations, $continuedCalls) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
@@ -812,13 +812,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
             /**
              * @param  array{has_writes: bool, has_raw_queries: bool, has_complex_reads: bool, has_simple_reads: bool, chain_length: int}  $result
-             * @param  list<string>  $writeMethods
+             * @param  list<string>  $writeMethods  lowercased, since PHP method names are case-insensitive
              * @param  list<string>  $staticQueryMethods
              * @param  list<string>  $utilityClasses
              * @param  list<string>  $terminalReadMethods
              * @param  list<string>  $sqlBuilderMethods
              * @param  list<string>  $readResultTailMethods
-             * @param  list<string>  $argumentlessWriteMethods
+             * @param  list<string>  $argumentlessWriteMethods  lowercased, since PHP method names are case-insensitive
              * @param  list<string>  $attachmentExtensions
              * @param  list<string>  $requestVariables
              * @param  \Closure(string): ?bool  $declaresModel
@@ -1186,6 +1186,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              */
             private function isWriteCall(string $method, Node\Expr\CallLike $call): bool
             {
+                $method = strtolower($method);
+
                 if ($call->isFirstClassCallable() || ! in_array($method, $this->writeMethods, true)) {
                     return false;
                 }

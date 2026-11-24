@@ -89,6 +89,58 @@ class BaselineCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_creates_missing_parent_directories_for_the_baseline(): void
+    {
+        $this->registerMockAnalyzerManager([$this->highSeverityIssue()]);
+
+        $baselinePath = $this->makeTempDirectory().'/missing/nested/baseline.json';
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+
+        $this->assertSame(0, $exitCode);
+        $this->assertFileExists($baselinePath);
+        $this->assertIsArray(json_decode((string) file_get_contents($baselinePath), true));
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_the_baseline_directory_cannot_be_created(): void
+    {
+        $this->registerMockAnalyzerManager([$this->highSeverityIssue()]);
+
+        // A regular file occupies the parent path, so mkdir() fails and is_dir() stays false.
+        $blocker = $this->makeTempDirectory().'/not-a-directory';
+        touch($blocker);
+        config(['shieldci.baseline_file' => $blocker.'/baseline.json']);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not create the baseline directory', $output);
+        $this->assertStringNotContainsString('Baseline file generated successfully', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_fails_when_the_baseline_file_cannot_be_written(): void
+    {
+        $this->registerMockAnalyzerManager([$this->highSeverityIssue()]);
+
+        // The configured path is an existing directory: the parent exists, the write fails.
+        config(['shieldci.baseline_file' => $this->makeTempDirectory()]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Could not write the baseline', $output);
+        $this->assertStringNotContainsString('Baseline file generated successfully', $output);
+    }
+
+    /** @test */
+    #[Test]
     public function it_writes_a_baseline_for_issues_holding_invalid_utf8(): void
     {
         $this->registerMockAnalyzerManager([
@@ -592,6 +644,16 @@ class BaselineCommandTest extends TestCase
 
         $content = json_decode(file_get_contents($this->baselinePath), true);
         $this->assertContains('unnamed-analyzer', $content['dont_report']);
+    }
+
+    private function highSeverityIssue(): Issue
+    {
+        return new Issue(
+            message: 'Test issue',
+            location: new Location('/app/Test.php', 10),
+            severity: Severity::High,
+            recommendation: 'Fix this issue',
+        );
     }
 
     /**

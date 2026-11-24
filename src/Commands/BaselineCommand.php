@@ -159,7 +159,21 @@ class BaselineCommand extends Command
             $baselineData,
             JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
         );
-        file_put_contents($outputPath, $json);
+
+        // Same handling as AnalyzeCommand::saveReport(): a failed write must not report success.
+        $directory = dirname($outputPath);
+
+        if (! is_dir($directory) && ! @mkdir($directory, 0755, true) && ! is_dir($directory)) {
+            $this->error("❌ Could not create the baseline directory: {$directory}");
+
+            return self::FAILURE;
+        }
+
+        if (@file_put_contents($outputPath, $json) === false) {
+            $this->error("❌ Could not write the baseline to: {$outputPath}");
+
+            return self::FAILURE;
+        }
 
         $this->newLine();
         $this->info('✅ Baseline file generated successfully!');

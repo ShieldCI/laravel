@@ -1,0 +1,48 @@
+name: Signed commits
+
+# The "Require signed commits" ruleset only checks branches in this repository. A fork's
+# commits never land on one: a squash merge replaces them with a commit GitHub signs itself,
+# so an unsigned contributor commit would pass unnoticed. This job checks every commit in
+# the pull request instead.
+#
+# pull_request_target rather than pull_request, for two reasons:
+# - it runs without maintainer approval on a first-time contributor's pull request, so the
+#   result is there when the review starts;
+# - it ignores [skip ci], which would otherwise leave this required check pending forever.
+# It is safe here because the job never checks out or runs pull request code: it only reads
+# commit metadata through the API, with a read-only token.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  signed-commits:
+    name: Signed commits
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check that every commit is signed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          unsigned=$(gh api --paginate "repos/${REPO}/pulls/${PR_NUMBER}/commits" \
+            --jq '.[] | select(.commit.verification.verified | not) | "\(.sha[0:7]) \(.commit.verification.reason)"')
+
+          if [ -n "$unsigned" ]; then
+            echo "::error::Every commit must be signed. Unsigned commits (sha and reason):"
+            echo "$unsigned"
+            echo "See https://docs.github.com/authentication/managing-commit-signature-verification"
+            exit 1
+          fi
+
+          echo "All commits are signed."

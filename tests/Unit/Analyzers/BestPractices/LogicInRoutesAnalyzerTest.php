@@ -4092,6 +4092,49 @@ Route::get('/receipts/{id}/mail', {$closure});
 PHP;
     }
 
+    /**
+     * @dataProvider writeMethodCaseProvider
+     */
+    #[DataProvider('writeMethodCaseProvider')]
+    public function test_a_write_method_is_matched_case_insensitively(string $import, string $closure, string $lowercaseClosure, string $expectedMessage, Severity $expectedSeverity): void
+    {
+        $issues = $this->writeCaseIssueSummary($this->analyzeRouteCode($this->routeFile($import, $closure)));
+
+        $this->assertSame([[$expectedMessage, $expectedSeverity]], $issues);
+        $this->assertSame($this->writeCaseIssueSummary($this->analyzeRouteCode($this->routeFile($import, $lowercaseClosure))), $issues);
+    }
+
+    /**
+     * @return array<string, array{string, string, string, string, Severity}>
+     */
+    public static function writeMethodCaseProvider(): array
+    {
+        $write = 'Route closure contains database write operations';
+
+        return [
+            'static Create()' => ['App\Models\Ledger', 'fn () => Ledger::Create(request()->all())', 'fn () => Ledger::create(request()->all())', 'Route closure contains database write operations, complex business logic', Severity::High],
+            'chained Delete()' => ['App\Models\Ledger', 'fn ($id) => Ledger::findOrFail($id)->Delete()', 'fn ($id) => Ledger::findOrFail($id)->delete()', $write, Severity::High],
+            'chained UPDATE()' => ['App\Models\Ledger', "fn (\$id) => Ledger::findOrFail(\$id)->UPDATE(['a' => 1])", "fn (\$id) => Ledger::findOrFail(\$id)->update(['a' => 1])", $write, Severity::High],
+            'relation SYNC()' => ['App\Models\Ledger', 'fn ($id) => Ledger::findOrFail($id)->labels()->SYNC([1])', 'fn ($id) => Ledger::findOrFail($id)->labels()->sync([1])', $write, Severity::High],
+            'relation Attach()' => ['App\Models\Ledger', 'fn ($id) => Ledger::findOrFail($id)->labels()->Attach(1)', 'fn ($id) => Ledger::findOrFail($id)->labels()->attach(1)', $write, Severity::High],
+            'mail Attach() with a file' => ['App\Models\Ledger', "fn (\$id) => Ledger::findOrFail(\$id)->toMailable()->Attach('/tmp/ledger.pdf')", "fn (\$id) => Ledger::findOrFail(\$id)->toMailable()->attach('/tmp/ledger.pdf')", 'Route closure contains complex database queries', Severity::Medium],
+            'nullsafe ?->Delete()' => ['App\Models\Ledger', 'fn ($id) => Ledger::find($id)?->Delete()', 'fn ($id) => Ledger::find($id)?->delete()', $write, Severity::High],
+            'argumentless PUSH()' => ['App\Models\Ledger', 'fn () => Ledger::find(1)->PUSH()', 'fn () => Ledger::find(1)->push()', $write, Severity::High],
+            'signed-in user Update()' => ['App\Models\Ledger', "fn () => auth()->user()->Update(['name' => 'a'])", "fn () => auth()->user()->update(['name' => 'a'])", $write, Severity::High],
+            'collection Push() after pluck()' => ['App\Models\Ledger', "fn () => Ledger::where('a', 1)->pluck('a')->Push('x')", "fn () => Ledger::where('a', 1)->pluck('a')->push('x')", 'Route closure contains complex database queries', Severity::Medium],
+            'static FirstOrCreate() under a read tail' => ['App\\Models\\Ledger', "fn () => Ledger::FirstOrCreate(['a' => 1])->labels()->get()", "fn () => Ledger::firstOrCreate(['a' => 1])->labels()->get()", 'Route closure contains database write operations, complex business logic', Severity::High],
+            'lowercase delete() control' => ['App\Models\Ledger', 'fn ($id) => Ledger::findOrFail($id)->delete()', 'fn ($id) => Ledger::findOrFail($id)->delete()', $write, Severity::High],
+        ];
+    }
+
+    /**
+     * @return list<array{string, Severity}>
+     */
+    private function writeCaseIssueSummary(ResultInterface $result): array
+    {
+        return array_map(static fn ($issue): array => [$issue->message, $issue->severity], array_values($result->getIssues()));
+    }
+
     private function routeFile(string $import, string $closure): string
     {
         return <<<PHP

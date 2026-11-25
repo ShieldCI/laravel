@@ -1344,15 +1344,17 @@ class AnalyzeCommandTest extends TestCase
         $original = ini_get('memory_limit');
         $this->assertNotFalse($original);
 
+        $higher = $this->memoryLimitAboveCurrentUsage(2048);
+
         try {
-            ini_set('memory_limit', '4G');
-            config(['shieldci.memory_limit' => '1G']);
+            $this->assertNotFalse(ini_set('memory_limit', $higher));
+            config(['shieldci.memory_limit' => $this->memoryLimitAboveCurrentUsage(1024)]);
             $this->registerTestAnalyzers();
 
             $this->artisan('shield:analyze', ['--format' => 'json'])
                 ->assertSuccessful();
 
-            $this->assertSame('4G', ini_get('memory_limit'));
+            $this->assertSame($higher, ini_get('memory_limit'));
         } finally {
             ini_set('memory_limit', $original);
         }
@@ -1365,18 +1367,30 @@ class AnalyzeCommandTest extends TestCase
         $original = ini_get('memory_limit');
         $this->assertNotFalse($original);
 
+        $raised = $this->memoryLimitAboveCurrentUsage(2048);
+
         try {
-            ini_set('memory_limit', '2G');
-            config(['shieldci.memory_limit' => '3G']);
+            $this->assertNotFalse(ini_set('memory_limit', $this->memoryLimitAboveCurrentUsage(1024)));
+            config(['shieldci.memory_limit' => $raised]);
             $this->registerTestAnalyzers();
 
             $this->artisan('shield:analyze', ['--format' => 'json'])
                 ->assertSuccessful();
 
-            $this->assertSame('3G', ini_get('memory_limit'));
+            $this->assertSame($raised, ini_get('memory_limit'));
         } finally {
             ini_set('memory_limit', $original);
         }
+    }
+
+    /**
+     * A memory limit the given number of megabytes above what the process holds now.
+     * A fixed size fails once the suite itself grows past it: ini_set() refuses a
+     * limit below the current usage.
+     */
+    private function memoryLimitAboveCurrentUsage(int $headroomMegabytes): string
+    {
+        return ((int) ceil(memory_get_usage(true) / 1048576) + $headroomMegabytes).'M';
     }
 
     /** @test */

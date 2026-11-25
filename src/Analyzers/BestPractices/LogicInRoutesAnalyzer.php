@@ -84,13 +84,22 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                $visitor = new LogicInRoutesVisitor($this->maxClosureLines, $this->allowSimpleReads, $this->declaresModel($ast));
-                $traverser = new NodeTraverser;
                 // replaceNodes stays off because parseFile() hands back a shared, cached AST;
                 // the visitor reads the resolvedName attribute instead. A colliding import is
                 // recorded and ignored rather than thrown, so the file is not dropped by the
-                // catch below.
-                $traverser->addVisitor(new NameResolver(new ErrorHandler\Collecting, ['replaceNodes' => false]));
+                // catch below. Names are resolved first, so the whole file can be scanned for a
+                // macro replacing DB::table() or DB::query() before any route is graded.
+                $resolver = new NodeTraverser;
+                $resolver->addVisitor(new NameResolver(new ErrorHandler\Collecting, ['replaceNodes' => false]));
+                $resolver->traverse($ast);
+
+                $visitor = new LogicInRoutesVisitor(
+                    $this->maxClosureLines,
+                    $this->allowSimpleReads,
+                    $this->declaresModel($ast),
+                    LogicInRoutesVisitor::replacesQueryBuilderRoots($ast)
+                );
+                $traverser = new NodeTraverser;
                 $traverser->addVisitor($visitor);
                 $traverser->traverse($ast);
 
@@ -288,6 +297,77 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         'lockForUpdate', 'sharedLock',
     ];
 
+    /**
+     * The Illuminate\Database\Query\Builder reads a route closure may chain on a DB::table()
+     * root and still be graded like the same chain on a model, keyed by lowercased name, with
+     * the argument positions that must be written as they are: the most arguments taken, the
+     * column positions (a string literal), column list positions (a string literal or an array
+     * of them), the operator position (one of OPERATORS, when at least three arguments are
+     * passed) and the boolean positions ('and' or 'or'). Every other argument must be a value,
+     * see isQueryBuilderValue(). Each method is on the builder from Laravel 9.0 on, so none is
+     * a macro on a supported version.
+     *
+     * @var array<string, array{max: int, columns?: list<int>, columnLists?: list<int>, operator?: int, booleans?: list<int>}>
+     */
+    private const QUERY_BUILDER_READS = [
+        // Filters
+        'where' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        'orwhere' => ['max' => 3, 'columns' => [0], 'operator' => 1],
+        'wherein' => ['max' => 3, 'columns' => [0], 'booleans' => [2]],
+        'wherenotin' => ['max' => 3, 'columns' => [0], 'booleans' => [2]],
+        'orwherein' => ['max' => 2, 'columns' => [0]],
+        'wherenull' => ['max' => 2, 'columns' => [0], 'booleans' => [1]],
+        'wherenotnull' => ['max' => 2, 'columns' => [0], 'booleans' => [1]],
+        'wherebetween' => ['max' => 3, 'columns' => [0], 'booleans' => [2]],
+        'wherenotbetween' => ['max' => 3, 'columns' => [0], 'booleans' => [2]],
+        'wheredate' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        'whereyear' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        'wheremonth' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        'whereday' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        'wheretime' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        // The second column moves to the third position when an operator is passed, see queryBuilderArgumentsAreWritten()
+        'wherecolumn' => ['max' => 4, 'columns' => [0], 'operator' => 1, 'booleans' => [3]],
+        // Ordering, selection and paging
+        'orderby' => ['max' => 2, 'columns' => [0]],
+        'orderbydesc' => ['max' => 1, 'columns' => [0]],
+        'latest' => ['max' => 1, 'columns' => [0]],
+        'oldest' => ['max' => 1, 'columns' => [0]],
+        'select' => ['max' => 8, 'columnLists' => [0, 1, 2, 3, 4, 5, 6, 7]],
+        'addselect' => ['max' => 8, 'columnLists' => [0, 1, 2, 3, 4, 5, 6, 7]],
+        'distinct' => ['max' => 0],
+        'limit' => ['max' => 1],
+        'take' => ['max' => 1],
+        'offset' => ['max' => 1],
+        'skip' => ['max' => 1],
+        'forpage' => ['max' => 2],
+        // Terminals
+        'get' => ['max' => 1, 'columnLists' => [0]],
+        'first' => ['max' => 1, 'columnLists' => [0]],
+        'find' => ['max' => 2, 'columnLists' => [1]],
+        'value' => ['max' => 1, 'columns' => [0]],
+        'pluck' => ['max' => 2, 'columns' => [0, 1]],
+        'count' => ['max' => 1, 'columns' => [0]],
+        'exists' => ['max' => 0],
+        'doesntexist' => ['max' => 0],
+        'paginate' => ['max' => 4, 'columnLists' => [1], 'columns' => [2]],
+        'simplepaginate' => ['max' => 4, 'columnLists' => [1], 'columns' => [2]],
+        'cursorpaginate' => ['max' => 4, 'columnLists' => [1], 'columns' => [2]],
+        'min' => ['max' => 1, 'columns' => [0]],
+        'max' => ['max' => 1, 'columns' => [0]],
+        'sum' => ['max' => 1, 'columns' => [0]],
+        'avg' => ['max' => 1, 'columns' => [0]],
+    ];
+
+    /** @var list<string> Illuminate\Database\Query\Builder::$operators */
+    private const OPERATORS = [
+        '=', '<', '>', '<=', '>=', '<>', '!=', '<=>',
+        'like', 'like binary', 'not like', 'ilike',
+        '&', '|', '^', '<<', '>>', '&~', 'is', 'is not',
+        'rlike', 'not rlike', 'regexp', 'not regexp',
+        '~', '~*', '!~', '!~*', 'similar to',
+        'not similar to', 'not ilike', '~~*', '!~~*',
+    ];
+
     /** @var list<string> Utility classes that are NOT business logic */
     private const UTILITY_CLASSES = [
         'Carbon', 'Collection', 'Validator', 'Cache', 'Log',
@@ -419,13 +499,18 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
     /** @var array<int, true> Assigned read chains, by spl_object_id, that a later chain continues */
     private array $continuedChains = [];
 
+    /** The DB::table() root of the closure being analysed when the closure is only a read on it, see queryBuilderReadRoot() */
+    private Node\Expr\StaticCall|Node\Expr\MethodCall|null $queryBuilderRoot = null;
+
     /**
      * @param  \Closure(string): ?bool  $declaresModel  Eloquent verdict of a class's declaration under app/, null when unreadable
+     * @param  bool  $rootsReplaced  whether the route file may replace DB::table() or DB::query() with a macro, see replacesQueryBuilderRoots()
      */
     public function __construct(
         private int $maxClosureLines,
         private bool $allowSimpleReads,
-        private \Closure $declaresModel
+        private \Closure $declaresModel,
+        private bool $rootsReplaced = false
     ) {}
 
     public function leaveNode(Node $node): ?Node
@@ -594,6 +679,341 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         return end($parts) ?: $normalized;
     }
 
+    /**
+     * The DB::table() root of a closure that is only a read on it, or null. A closure qualifies
+     * only when it is exactly `fn (...) => <chain>` or `function (...) { return <chain>; }`, the
+     * chain being the whole returned expression: a root of DB::table('<literal>'),
+     * DB::query()->from('<literal>') or DB::connection('<literal>')->table('<literal>'), then
+     * plain calls, each a QUERY_BUILDER_READS method whose arguments are written as its
+     * positions require. Such a chain is graded like the same chain on a model; any other
+     * closure keeps the DB facade's raw grade.
+     */
+    private function queryBuilderReadRoot(Node\Expr\Closure|Node\Expr\ArrowFunction $closure): Node\Expr\StaticCall|Node\Expr\MethodCall|null
+    {
+        if ($closure instanceof Node\Expr\ArrowFunction) {
+            $chain = $closure->expr;
+        } else {
+            $statements = array_values(array_filter($closure->stmts, static fn (Node\Stmt $stmt): bool => ! $stmt instanceof Node\Stmt\Nop));
+            if ($closure->uses !== [] || count($statements) !== 1 || ! $statements[0] instanceof Node\Stmt\Return_ || $statements[0]->expr === null) {
+                return null;
+            }
+            $chain = $statements[0]->expr;
+        }
+
+        // Route parameters that hold a scalar: typed int, string, float or bool, with no default.
+        // An untyped one holds whatever Route::bind() returns, and a default may be an Expression.
+        $parameters = [];
+        foreach ($closure->params as $param) {
+            $type = $param->type instanceof Node\NullableType ? $param->type->type : $param->type;
+            if ($param->var instanceof Node\Expr\Variable && is_string($param->var->name) && ! $param->byRef && ! $param->variadic
+                && $param->default === null
+                && $type instanceof Node\Identifier && in_array($type->toLowerString(), ['int', 'string', 'float', 'bool'], true)) {
+                $parameters[] = $param->var->name;
+            }
+        }
+
+        $links = [];
+        while (! self::isLiteralQueryBuilderRoot($chain)) {
+            if (! $chain instanceof Node\Expr\MethodCall || ! $chain->name instanceof Node\Identifier) {
+                return null;
+            }
+            $links[] = $chain;
+            $chain = $chain->var;
+        }
+
+        if ($links === [] || ! ($chain instanceof Node\Expr\StaticCall || $chain instanceof Node\Expr\MethodCall)) {
+            return null;
+        }
+
+        foreach ($links as $link) {
+            if (! $this->queryBuilderArgumentsAreWritten($link, $parameters)) {
+                return null;
+            }
+        }
+
+        return $chain;
+    }
+
+    /**
+     * Whether a route file, its names already resolved, may replace DB::table() or DB::query():
+     * the database manager has neither as a real method, so from Laravel 9.8 a macro of that name
+     * on it answers them. A macro() named table or query, or by anything but a string literal,
+     * on the DB facade or Illuminate\Database\DatabaseManager, or as a method call on any object
+     * (DB::getFacadeRoot(), app('db')), counts, as does any mixin(). DB::connection()->table()
+     * is safe: Connection::table() is a real method, which PHP calls before any macro.
+     *
+     * @param  array<Node>  $ast
+     *
+     * @internal
+     */
+    public static function replacesQueryBuilderRoots(array $ast): bool
+    {
+        return (new NodeFinder)->findFirst($ast, static function (Node $node): bool {
+            if (! ($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall)
+                || ! $node->name instanceof Node\Identifier
+                || ! in_array($node->name->toLowerString(), ['macro', 'mixin'], true)) {
+                return false;
+            }
+
+            if ($node instanceof Node\Expr\StaticCall
+                && ! ($node->class instanceof Node\Name && in_array(strtolower(ltrim(self::resolvedName($node->class), '\\')), [
+                    'illuminate\\support\\facades\\db', 'db', 'illuminate\\database\\databasemanager',
+                ], true))) {
+                return false;
+            }
+
+            if ($node->name->toLowerString() === 'mixin') {
+                return true;
+            }
+
+            $name = $node->getRawArgs()[0] ?? null;
+
+            return ! $name instanceof Node\Arg
+                || ! $name->value instanceof Node\Scalar\String_
+                || in_array(strtolower($name->value->value), ['table', 'query'], true);
+        }) !== null;
+    }
+
+    /**
+     * Whether the expression is DB::table('<literal>'), DB::query()->from('<literal>') or
+     * DB::connection('<literal>')->table('<literal>').
+     */
+    private static function isLiteralQueryBuilderRoot(Node\Expr $expr): bool
+    {
+        if ($expr instanceof Node\Expr\MethodCall) {
+            if (! $expr->name instanceof Node\Identifier || ! self::hasOnlyStringArgument($expr)) {
+                return false;
+            }
+
+            return match ($expr->name->toLowerString()) {
+                'from' => self::isDbFacadeCall($expr->var, 'query') && $expr->var instanceof Node\Expr\StaticCall && $expr->var->getRawArgs() === [],
+                'table' => self::isDbFacadeCall($expr->var, 'connection') && $expr->var instanceof Node\Expr\StaticCall && self::hasOnlyStringArgument($expr->var),
+                default => false,
+            };
+        }
+
+        return $expr instanceof Node\Expr\StaticCall && self::isDbFacadeCall($expr, 'table') && self::hasOnlyStringArgument($expr);
+    }
+
+    /**
+     * Whether the expression is a static call of the method on the DB facade, imported under any
+     * alias, fully qualified or the unimported global alias, written in any case.
+     */
+    private static function isDbFacadeCall(Node\Expr $expr, string $method): bool
+    {
+        return $expr instanceof Node\Expr\StaticCall
+            && $expr->class instanceof Node\Name
+            && $expr->name instanceof Node\Identifier
+            && $expr->name->toLowerString() === $method
+            && in_array(strtolower(ltrim(self::resolvedName($expr->class), '\\')), ['illuminate\\support\\facades\\db', 'db'], true);
+    }
+
+    /**
+     * The DB facade calls a query builder root is made of: DB::table(), DB::query() under its
+     * ->from(), or DB::connection() under its ->table().
+     *
+     * @return list<Node\Expr\StaticCall|Node\Expr\MethodCall>
+     *
+     * @internal
+     */
+    public static function queryBuilderRootCalls(Node\Expr\StaticCall|Node\Expr\MethodCall $root): array
+    {
+        return $root instanceof Node\Expr\MethodCall && $root->var instanceof Node\Expr\StaticCall
+            ? [$root, $root->var]
+            : [$root];
+    }
+
+    private static function hasOnlyStringArgument(Node\Expr\CallLike $call): bool
+    {
+        $args = $call->getRawArgs();
+
+        return count($args) === 1
+            && $args[0] instanceof Node\Arg
+            && $args[0]->name === null
+            && ! $args[0]->unpack
+            && ! $args[0]->byRef
+            && $args[0]->value instanceof Node\Scalar\String_;
+    }
+
+    /**
+     * Whether a call is a QUERY_BUILDER_READS method whose arguments are written as its
+     * positions require: positional, unpacked nothing, at most its maximum, a string literal for
+     * each column, a string literal or an array of them for each column list, an OPERATORS
+     * literal for the operator when at least three arguments are passed, 'and' or 'or' for each
+     * boolean, and a value (see isQueryBuilderValue()) for the rest.
+     *
+     * @param  list<string>  $parameters  route parameters that may be passed as values
+     */
+    private function queryBuilderArgumentsAreWritten(Node\Expr\MethodCall $call, array $parameters): bool
+    {
+        if (! $call->name instanceof Node\Identifier) {
+            return false;
+        }
+
+        $method = $call->name->toLowerString();
+        $rule = self::QUERY_BUILDER_READS[$method] ?? null;
+        $args = $call->getRawArgs();
+        if ($rule === null || count($args) > $rule['max']) {
+            return false;
+        }
+
+        $columns = $rule['columns'] ?? [];
+        $operator = count($args) >= 3 ? ($rule['operator'] ?? null) : null;
+        // whereColumn('a', 'b') compares two columns; whereColumn('a', '>', 'b') moves the second
+        if ($method === 'wherecolumn') {
+            $columns[] = $operator !== null ? 2 : 1;
+        }
+
+        foreach ($args as $index => $arg) {
+            if (! $arg instanceof Node\Arg || $arg->name !== null || $arg->unpack || $arg->byRef) {
+                return false;
+            }
+
+            $value = $arg->value;
+            $isWritten = match (true) {
+                in_array($index, $columns, true) => $value instanceof Node\Scalar\String_,
+                in_array($index, $rule['columnLists'] ?? [], true) => self::isColumnList($value),
+                $index === $operator => $value instanceof Node\Scalar\String_
+                    && in_array(strtolower($value->value), self::OPERATORS, true),
+                in_array($index, $rule['booleans'] ?? [], true) => $value instanceof Node\Scalar\String_
+                    && in_array($value->value, ['and', 'or'], true),
+                default => $this->isQueryBuilderValue($value, $parameters, allowArray: true),
+            };
+
+            if (! $isWritten) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function isColumnList(Node\Expr $value): bool
+    {
+        if ($value instanceof Node\Scalar\String_) {
+            return true;
+        }
+
+        if (! $value instanceof Node\Expr\Array_) {
+            return false;
+        }
+
+        foreach ($value->items as $item) {
+            if ($item->key !== null || $item->byRef || $item->unpack || ! $item->value instanceof Node\Scalar\String_) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Whether a query builder argument is a value written in the closure or read from the
+     * request input or the clock, none of which can be an Expression:
+     * - a string, int, float, true, false or null literal (a number may be negated);
+     * - input(), query() or boolean() on request(), with a string literal key and an optional
+     *   literal default; these read the input and query string only, where request('key') falls
+     *   back to a route parameter, which Route::bind() may make anything. integer() and string()
+     *   are left out: Laravel 9.0 lacks them, so there they may be macros returning anything;
+     * - now() or today();
+     * - a route parameter typed int, string, float or bool, with no default;
+     * - when $allowArray, an array of those, unkeyed or with string literal keys.
+     *
+     * request(), now() and today() count only as the global helpers, see isGlobalFunctionCall().
+     *
+     * @param  list<string>  $parameters
+     */
+    private function isQueryBuilderValue(Node\Expr $value, array $parameters, bool $allowArray = false): bool
+    {
+        if (self::isLiteral($value)) {
+            return true;
+        }
+
+        if ($value instanceof Node\Expr\Variable) {
+            return is_string($value->name) && in_array($value->name, $parameters, true);
+        }
+
+        if ($value instanceof Node\Expr\Array_) {
+            if (! $allowArray) {
+                return false;
+            }
+
+            foreach ($value->items as $item) {
+                if ($item->byRef || $item->unpack
+                    || ($item->key !== null && ! $item->key instanceof Node\Scalar\String_)
+                    || ! $this->isQueryBuilderValue($item->value, $parameters)) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        if ($value instanceof Node\Expr\FuncCall) {
+            return (self::isGlobalFunctionCall($value, 'now') || self::isGlobalFunctionCall($value, 'today'))
+                && $value->getRawArgs() === [];
+        }
+
+        return $value instanceof Node\Expr\MethodCall
+            && $value->name instanceof Node\Identifier
+            && in_array($value->name->toLowerString(), ['input', 'query', 'boolean'], true)
+            && $value->var instanceof Node\Expr\FuncCall
+            && self::isGlobalFunctionCall($value->var, 'request')
+            && $value->var->getRawArgs() === []
+            && self::hasLiteralInputArguments($value);
+    }
+
+    /**
+     * Whether a call reaches the global function of that name. NameResolver gives a fully
+     * qualified name, an imported one, and an unqualified one outside any namespace a
+     * resolvedName; an unqualified name inside a namespace gets none, since PHP picks a
+     * function of that namespace first, so a routes file declaring its own now() is not now().
+     */
+    private static function isGlobalFunctionCall(Node\Expr\FuncCall $call, string $function): bool
+    {
+        if (! $call->name instanceof Node\Name) {
+            return false;
+        }
+
+        $resolvedName = $call->name->getAttribute('resolvedName');
+        $name = $resolvedName instanceof Node\Name\FullyQualified
+            ? $resolvedName->toLowerString()
+            : ($call->name->isFullyQualified() ? $call->name->toLowerString() : null);
+
+        return $name === $function;
+    }
+
+    /**
+     * Whether the expression is a string, int, float, true, false or null literal; a number may be negated.
+     */
+    private static function isLiteral(Node\Expr $value): bool
+    {
+        return $value instanceof Node\Scalar\String_ || $value instanceof Node\Scalar\Int_ || $value instanceof Node\Scalar\Float_
+            || ($value instanceof Node\Expr\UnaryMinus && ($value->expr instanceof Node\Scalar\Int_ || $value->expr instanceof Node\Scalar\Float_))
+            || ($value instanceof Node\Expr\ConstFetch && in_array($value->name->toLowerString(), ['true', 'false', 'null'], true));
+    }
+
+    /**
+     * Whether a request input read takes a string literal key and, optionally, a literal default.
+     */
+    private static function hasLiteralInputArguments(Node\Expr\CallLike $call): bool
+    {
+        $args = $call->getRawArgs();
+        if ($args === [] || count($args) > 2) {
+            return false;
+        }
+
+        foreach ($args as $index => $arg) {
+            if (! $arg instanceof Node\Arg || $arg->name !== null || $arg->unpack || $arg->byRef
+                || ($index === 0 && ! $arg->value instanceof Node\Scalar\String_)
+                || ($index === 1 && ! self::isLiteral($arg->value))) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     private function analyzeRouteCall(Node\Expr\StaticCall|Node\Expr\MethodCall $node): void
     {
         if (empty($node->args)) {
@@ -632,6 +1052,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         // Collect all problems with this closure
         $problems = [];
         $maxSeverity = Severity::Low;
+
+        $this->queryBuilderRoot = $this->rootsReplaced ? null : $this->queryBuilderReadRoot($closure);
 
         $boundModels = $this->modelParameterUses($closure) + $this->signedInUserVariableUses($closure);
         $readBody = $this->readBody($closure, $boundModels);
@@ -790,10 +1212,13 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             }
         }
 
-        $visitor = new class($result, array_map('strtolower', self::WRITE_METHODS), self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, array_map('strtolower', self::ARGUMENTLESS_WRITE_METHODS), self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel, $rootVariables, $continuations, $continuedCalls) extends NodeVisitorAbstract
+        $visitor = new class($result, array_map('strtolower', self::WRITE_METHODS), self::STATIC_QUERY_METHODS, self::UTILITY_CLASSES, self::TERMINAL_READ_METHODS, self::SQL_BUILDER_METHODS, self::READ_RESULT_TAIL_METHODS, array_map('strtolower', self::ARGUMENTLESS_WRITE_METHODS), self::ATTACHMENT_EXTENSIONS, $requestVariables, $this->declaresModel, $rootVariables, $continuations, $continuedCalls, $this->queryBuilderRoot) extends NodeVisitorAbstract
         {
             /** @var array<int, true> Track StaticCalls that are roots of method chains */
             private array $processedChainRoots = [];
+
+            /** @var array<int, true> Calls, by spl_object_id, that another call in a chain is made on */
+            private array $innerChainCalls = [];
 
             /** @var array<int, true> Variable uses that hold a model: bound route parameters, then the parameters of callbacks passed along a rooted chain */
             private array $rootVariables;
@@ -825,6 +1250,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  array<int, true>  $boundVariables  uses of route parameters bound to a model
              * @param  array<int, Node\Expr>  $continuations
              * @param  array<int, true>  $continuedCalls
+             * @param  Node\Expr\StaticCall|Node\Expr\MethodCall|null  $queryBuilderRoot  the DB::table() root graded like a model static call, see queryBuilderReadRoot()
              */
             public function __construct(
                 private array &$result,
@@ -840,7 +1266,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private \Closure $declaresModel,
                 private array $boundVariables,
                 private array $continuations,
-                private array $continuedCalls
+                private array $continuedCalls,
+                private Node\Expr\StaticCall|Node\Expr\MethodCall|null $queryBuilderRoot
             ) {
                 $this->rootVariables = $boundVariables;
             }
@@ -871,8 +1298,9 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                     $this->markPerRowChain($node->var);
                 }
 
-                // Check for DB facade calls (raw queries - always flagged)
-                if ($node instanceof Node\Expr\StaticCall) {
+                // Check for DB facade calls (raw queries - always flagged), other than the root of a
+                // read graded like a model's
+                if ($node instanceof Node\Expr\StaticCall && ! isset($this->processedChainRoots[$node->getStartFilePos()])) {
                     if ($node->class instanceof Node\Name && $this->isDbFacade($node->class)) {
                         $this->result['has_raw_queries'] = true;
 
@@ -882,6 +1310,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
                 // Process MethodCalls (nullsafe included) - walk DOWN via ->var to analyze Eloquent chains
                 if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall) {
+                    $this->innerChainCalls[spl_object_id($node->var)] = true;
+
                     // A call of an assigned read chain is graded where a later chain continues it,
                     // as the single chain it stands for
                     $chainInfo = isset($this->continuedCalls[spl_object_id($node)])
@@ -936,6 +1366,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             // A direct read followed only by result calls,
                             // e.g. User::paginate(15)->withQueryString()
                             $this->result['has_simple_reads'] = true;
+                        } elseif ($chainInfo['chain_length'] === 1
+                            && $this->queryBuilderRoot !== null
+                            && $node->var === $this->queryBuilderRoot
+                            && ! isset($this->innerChainCalls[spl_object_id($node)])
+                            && in_array($chainInfo['methods'][0], $this->staticQueryMethods, true)) {
+                            // The lone call on a DB::table() root is graded like the same model static
+                            // call: ->where(...) only builds a query, as Post::where(...) does
+                            $this->result['has_complex_reads'] = true;
                         }
 
                         // The root StaticCall is skipped below, so its own method is checked
@@ -1363,6 +1801,11 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 // hops (->author->, higher-order ->each->) as well, and through a variable
                 // that stands for the read chain assigned to it
                 while (true) {
+                    // The DB::table() root of a read stands where a model static call would
+                    if ($this->queryBuilderRoot !== null && $current === $this->queryBuilderRoot) {
+                        break;
+                    }
+
                     if ($current instanceof Node\Expr\Variable && isset($this->continuations[spl_object_id($current)])) {
                         $current = $this->continuations[spl_object_id($current)];
 
@@ -1415,6 +1858,21 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 // A route parameter bound to a model, or the parameter of a callback passed along
                 // a rooted chain, holds a model
                 $isVariableRoot = $current instanceof Node\Expr\Variable && isset($this->rootVariables[spl_object_id($current)]);
+
+                // The DB::table() root of a read: its first call stands for the model static call
+                if ($this->queryBuilderRoot !== null && $current === $this->queryBuilderRoot) {
+                    $rootCalls = LogicInRoutesVisitor::queryBuilderRootCalls($current);
+
+                    return [
+                        'is_eloquent_chain' => true,
+                        'is_write_only_chain' => false,
+                        'is_root_read' => false,
+                        'chain_length' => count($methods),
+                        'has_writes' => $hasWrites,
+                        'methods' => $methods,
+                        'root_position' => $rootCalls[count($rootCalls) - 1]->getStartFilePos(),
+                    ];
+                }
 
                 // Check if root is a StaticCall on a model
                 $isEloquentChain = false;
@@ -1534,7 +1992,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
         $ifDepth = 0;
         $hasLoops = false;
 
-        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS), $this->declaresModel, $closureHasWrites) extends NodeVisitorAbstract
+        $visitor = new class($hasComplexLogic, $ifDepth, $hasLoops, self::BUSINESS_LOGIC_FUNCTIONS, self::BUSINESS_LOGIC_FACADES, self::SERVICE_CONTAINER_METHODS, self::QUERY_METHODS, self::UTILITY_CLASSES, self::SAFE_FLUENT_HELPER_FUNCTIONS, $readChainCalls, array_map('strtolower', self::DISPATCHABLE_STATIC_METHODS), array_map('strtolower', self::NOTIFY_METHODS), $this->declaresModel, $closureHasWrites, $this->queryBuilderRoot) extends NodeVisitorAbstract
         {
             /** @var list<string> Container methods that resolve, beyond SERVICE_CONTAINER_METHODS */
             private const EXTRA_RESOLUTION_METHODS = ['offsetGet', 'build', 'factory'];
@@ -1554,6 +2012,7 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
              * @param  list<string>  $notifyMethods  lowercased, since PHP method names are case-insensitive
              * @param  \Closure(string): ?bool  $declaresModel
              * @param  bool  $closureHasWrites  whether the closure writes to the database
+             * @param  Node\Expr\StaticCall|Node\Expr\MethodCall|null  $queryBuilderRoot  the DB::table() root graded like a model static call, see queryBuilderReadRoot()
              */
             public function __construct(
                 private bool &$hasComplexLogic,
@@ -1569,7 +2028,8 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                 private array $dispatchableStaticMethods,
                 private array $notifyMethods,
                 private \Closure $declaresModel,
-                private bool $closureHasWrites
+                private bool $closureHasWrites,
+                private Node\Expr\StaticCall|Node\Expr\MethodCall|null $queryBuilderRoot
             ) {}
 
             public function enterNode(Node $node): ?Node
@@ -1653,6 +2113,19 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
                             return null;
                         }
                     }
+                }
+
+                // The first call on a DB::table() root is graded like the same model static call:
+                // DB::table('posts')->orderBy('title') like Post::orderBy('title')
+                if ($this->queryBuilderRoot !== null
+                    && $node instanceof Node\Expr\MethodCall
+                    && $node->var === $this->queryBuilderRoot
+                    && $node->name instanceof Node\Identifier
+                    && ! in_array($node->name->toString(), $this->queryMethods, true)
+                    && ! isset($this->readChainCalls[spl_object_id($node)])) {
+                    $this->hasComplexLogic = true;
+
+                    return null;
                 }
 
                 // 3. Notifications sent through the Notifiable trait: $user->notify(...)
@@ -1794,9 +2267,14 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
             {
                 $count = 1;
                 $current = $node->var;
-                while ($current instanceof Node\Expr\MethodCall) {
+                while ($current instanceof Node\Expr\MethodCall && $current !== $this->queryBuilderRoot) {
                     $count++;
                     $current = $current->var;
+                }
+
+                // The first call on a DB::table() root stands for a model static call, which is not counted
+                if ($this->queryBuilderRoot !== null && $current === $this->queryBuilderRoot) {
+                    $count--;
                 }
 
                 return $count;
@@ -2048,6 +2526,11 @@ class LogicInRoutesVisitor extends NodeVisitorAbstract
 
             if ($current instanceof Node\Expr\Variable && isset($this->readRootVariables[spl_object_id($current)])) {
                 return $this->spineCalls($spine);
+            }
+
+            // The DB::table() root of a closure that is only a read on it roots it like a model static call
+            if ($this->queryBuilderRoot !== null && $current === $this->queryBuilderRoot) {
+                return $this->spineCalls([...$spine, ...self::queryBuilderRootCalls($current)]);
             }
 
             if (! ($current instanceof Node\Expr\MethodCall || $current instanceof Node\Expr\StaticCall)

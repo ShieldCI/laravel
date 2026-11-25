@@ -92,7 +92,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 
 Route::get('/users', function () {
-    return DB::table('users')->where('active', true)->get();
+    return DB::table('users')->whereRaw('active = 1')->get();
 });
 PHP;
 
@@ -1704,7 +1704,7 @@ PHP;
         $this->assertEquals('medium', $issues[0]->severity->value);
     }
 
-    public function test_db_facade_always_flagged_as_high(): void
+    public function test_raw_db_facade_query_flagged_as_high(): void
     {
         $code = <<<'PHP'
 <?php
@@ -1713,7 +1713,7 @@ use Illuminate\Support\Facades\Route;
 use Illuminate\Support\Facades\DB;
 
 Route::get('/users', function () {
-    return DB::table('users')->get();
+    return DB::selectOne('SELECT * FROM users LIMIT 1');
 });
 PHP;
 
@@ -5002,8 +5002,8 @@ PHP,
             ],
             'DB table whereIn' => [
                 "Route::get('/k', fn () => DB::table('kinds')->whereIn('id', [1])->get());",
-                'Route closure contains raw database queries',
-                Severity::High,
+                'Route closure contains complex database queries',
+                Severity::Medium,
             ],
         ];
     }
@@ -5456,5 +5456,542 @@ PHP,
             'collect whereIn sortBy values' => ["Route::get('/k', fn () => collect(config('shelf.items'))->whereIn('type', ['book'])->sortBy('name')->values());"],
             'whereIn then argument-less filter' => ["Route::get('/k', fn () => Article::all()->whereIn('t', [1])->filter());"],
         ];
+    }
+
+    /**
+     * A closure that is exactly a read on DB::table(), DB::query()->from() or
+     * DB::connection()->table(), every call a listed builder read with written arguments, is
+     * graded like the same chain on a model.
+     *
+     * @dataProvider queryBuilderReadProvider
+     *
+     * @param  list<array{string, Severity}>  $grade
+     * @param  list<array{string, Severity}>  $strictGrade
+     */
+    #[DataProvider('queryBuilderReadProvider')]
+    public function test_a_closure_that_is_only_a_query_builder_read_is_graded_like_the_model_read(string $routes, array $grade, array $strictGrade): void
+    {
+        $this->assertSame($grade, $this->dbRouteGrade($routes, allowSimpleReads: true));
+        $this->assertSame($strictGrade, $this->dbRouteGrade($routes, allowSimpleReads: false));
+    }
+
+    /**
+     * @return array<string, array{string, list<array{string, Severity}>, list<array{string, Severity}>}>
+     */
+    public static function queryBuilderReadProvider(): array
+    {
+        $strict = [['Route closure contains database queries (strict mode)', Severity::Low]];
+        $complex = [['Route closure contains complex database queries', Severity::Medium]];
+
+        return [
+            'table()->latest()->get()' => ["Route::get('/articles', fn () => DB::table('articles')->latest()->get());", [], $strict],
+            'closure returning the read' => ["Route::get('/articles', function () { return DB::table('articles')->latest()->get(); });", [], $strict],
+            'query()->from()->latest()->get()' => ["Route::get('/articles', fn () => DB::query()->from('articles')->latest()->get());", [], $strict],
+            'connection()->table()->latest()->get()' => ["Route::get('/articles', fn () => DB::connection('replica')->table('articles')->latest()->get());", [], $strict],
+            'paginate()' => ["Route::get('/articles', fn () => DB::table('articles')->paginate(15));", [], $strict],
+            'find() of a scalar route parameter' => ["Route::get('/articles/{id}', fn (int \$id) => DB::table('articles')->find(\$id));", [], $strict],
+            'where() of request()->query() then first()' => ["Route::get('/articles', fn () => DB::table('articles')->where('slug', request()->query('slug'))->first());", [], $strict],
+            'where() of request()->input() then first()' => ["Route::get('/articles', fn () => DB::table('articles')->where('views', '>', request()->input('min'))->first());", [], $strict],
+            'a macro of another name on the facade' => ["DB::macro('ledgerTotals', fn () => 1);\nRoute::get('/articles', fn () => DB::table('articles')->latest()->get());", [], $strict],
+            'fully qualified now()' => ["Route::get('/articles', fn () => DB::table('articles')->whereDate('published_at', \\now())->get());", [], $strict],
+            'where() of request()->input() with a default' => ["Route::get('/articles', fn () => DB::table('articles')->where('status', request()->input('status', 'live'))->first());", [], $strict],
+            'where() with an operator then get()' => ["Route::get('/articles', fn () => DB::table('articles')->where('views', '>=', 10)->get());", [], $strict],
+            'whereDate() of now()' => ["Route::get('/articles', fn () => DB::table('articles')->whereDate('published_at', now())->get());", [], $strict],
+            'whereIn() is complex' => ["Route::get('/articles', fn () => DB::table('articles')->whereIn('id', [1, 2])->get());", $complex, $complex],
+            'three calls are complex' => ["Route::get('/articles', fn () => DB::table('articles')->where('status', 'live')->latest()->get());", $complex, $complex],
+            'method names in another case' => ["Route::get('/articles', fn () => DB::table('articles')->LATEST()->get());", [], $strict],
+            'facade imported under an alias' => ["use Illuminate\\Support\\Facades\\DB as Database;\nRoute::get('/articles', fn () => Database::table('articles')->latest()->get());", [], $strict],
+            'facade written in another case' => ["Route::get('/articles', fn () => Db::TABLE('articles')->latest()->get());", [], $strict],
+            'fully qualified facade' => ["Route::get('/articles', fn () => \\Illuminate\\Support\\Facades\\DB::table('articles')->latest()->get());", [], $strict],
+        ];
+    }
+
+    /**
+     * @dataProvider queryBuilderReadAndModelReadProvider
+     */
+    #[DataProvider('queryBuilderReadAndModelReadProvider')]
+    public function test_a_query_builder_read_is_graded_like_the_same_read_on_a_model(string $chain): void
+    {
+        foreach ([true, false] as $allowSimpleReads) {
+            $model = $this->dbRouteGrade("use App\\Models\\Article;\nRoute::get('/articles/{id}', fn (int \$id) => Article::{$chain});", $allowSimpleReads);
+            $builder = $this->dbRouteGrade("Route::get('/articles/{id}', fn (int \$id) => DB::table('articles')->{$chain});", $allowSimpleReads);
+
+            $this->assertSame($model, $builder);
+        }
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function queryBuilderReadAndModelReadProvider(): array
+    {
+        return [
+            'get()' => ['get()'],
+            'latest()->get()' => ['latest()->get()'],
+            'where()->first()' => ["where('id', \$id)->first()"],
+            'find()' => ['find($id)'],
+            'paginate()' => ['paginate(15)'],
+            'whereIn()->get()' => ["whereIn('id', [1, 2])->get()"],
+            'whereNull()->whereNotNull()->orderBy()->get()' => ["whereNull('deleted_at')->whereNotNull('published_at')->orderBy('title')->get()"],
+            'orderBy() alone' => ["orderBy('title')"],
+            'where() alone' => ["where('id', \$id)"],
+            'select()->limit()->pluck()' => ["select(['id', 'title'])->limit(5)->pluck('title')"],
+            'count()' => ['count()'],
+        ];
+    }
+
+    /**
+     * Anything outside the closure shape, the listed reads or their written arguments keeps
+     * master's grade exactly, including every input the reviews of #776 found a broader design
+     * mishandling.
+     *
+     * @dataProvider queryBuilderClosureKeepsMastersGradeProvider
+     */
+    #[DataProvider('queryBuilderClosureKeepsMastersGradeProvider')]
+    public function test_a_closure_outside_the_query_builder_read_shape_keeps_masters_grade(string $routes, string $message): void
+    {
+        foreach ([true, false] as $allowSimpleReads) {
+            $this->assertSame([[$message, Severity::High]], $this->dbRouteGrade($routes, $allowSimpleReads));
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function queryBuilderClosureKeepsMastersGradeProvider(): array
+    {
+        return [
+            'control: a second statement before the return' => ['Route::get(\'/a\', function () { $status = request(\'status\'); return DB::table(\'articles\')->where(\'status\', $status)->get(); });', 'Route closure contains raw database queries'],
+            'control: a wrapped return' => ['Route::get(\'/a\', fn () => response()->json(DB::table(\'articles\')->get()));', 'Route closure contains raw database queries'],
+            'control: a callback argument' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(fn ($query) => $query->where(\'a\', 1))->get());', 'Route closure contains raw database queries'],
+            'control: a table name from input' => ['Route::get(\'/a\', fn () => DB::table(request(\'t\'))->get());', 'Route closure contains raw database queries'],
+            'control: a table name from a route parameter' => ['Route::get(\'/a/{t}\', fn ($t) => DB::table($t)->get());', 'Route closure contains raw database queries'],
+            'control: a ?-> link' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(\'a\', 1)?->get());', 'Route closure contains raw database queries'],
+            'control: groupBy()' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->groupBy(\'author_id\')->get());', 'Route closure contains raw database queries'],
+            'control: join()' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->join(\'authors\', \'authors.id\', \'=\', \'articles.author_id\')->get());', 'Route closure contains raw database queries'],
+            'control: when()' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->when(request(\'q\'), fn ($query) => $query->where(\'a\', 1))->get());', 'Route closure contains raw database queries'],
+            'control: an operator from input' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(\'views\', request(\'op\'), 1)->get());', 'Route closure contains raw database queries'],
+            'control: a boolean other than and or or' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(\'views\', \'=\', 1, \'xor\')->get());', 'Route closure contains raw database queries'],
+            'control: a boolean from input' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->whereNull(\'deleted_at\', request(\'b\'))->get());', 'Route closure contains raw database queries'],
+            'control: a typed object route parameter as a value' => ['Route::get(\'/a\', fn (\\App\\Services\\Clock $clock) => DB::table(\'articles\')->where(\'published_at\', $clock)->get());', 'Route closure contains raw database queries'],
+            'control: an array first argument to where()' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where([\'status\' => \'live\'])->get());', 'Route closure contains raw database queries'],
+            'control: a named argument' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(column: \'status\', operator: \'live\')->get());', 'Route closure contains raw database queries'],
+            'control: a request default that is not a literal' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->where(\'status\', request(\'status\', now()))->get());', 'Route closure contains raw database queries'],
+            'control: a closure capturing a variable' => ['$status = \'live\';
+Route::get(\'/a\', function () use ($status) { return DB::table(\'articles\')->where(\'status\', $status)->get(); });', 'Route closure contains raw database queries'],
+            'control: a write' => ['Route::post(\'/a/{id}\', fn ($id) => DB::table(\'articles\')->where(\'id\', $id)->delete());', 'Route closure contains raw database queries'],
+            'control: a bare root' => ['Route::get(\'/a\', fn () => DB::table(\'articles\'));', 'Route closure contains raw database queries'],
+            'control: a column from input' => ['Route::get(\'/a\', fn () => DB::table(\'articles\')->orderBy(request(\'sort\'))->get());', 'Route closure contains raw database queries'],
+            'round 1: write on a builder variable' => ['Route::post(\'/l/{id}\', function ($id) { $query = DB::table(\'ledgers\')->where(\'id\', $id); $query->update([\'closed\' => true]); return $query->first(); });', 'Route closure contains raw database queries'],
+            'round 1: write continuing a builder variable' => ['Route::post(\'/l/{id}\', function ($id) { $query = DB::table(\'ledgers\')->where(\'id\', $id); return $query->where(\'open\', 1)->delete(); });', 'Route closure contains raw database queries'],
+            'round 1: write on clone()' => ['Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'open\', 1); return $query->clone()->delete(); });', 'Route closure contains raw database queries'],
+            'round 1: write on a clone expression' => ['Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'open\', 1); return (clone $query)->delete(); });', 'Route closure contains raw database queries'],
+            'round 1: write on a captured builder' => ['Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'open\', 1); collect([1])->each(function () use ($query) { $query->delete(); }); return 1; });', 'Route closure contains raw database queries'],
+            'round 1: write through tap()' => ['Route::post(\'/l/{id}\', fn ($id) => tap(DB::table(\'ledgers\')->where(\'id\', $id))->delete());', 'Route closure contains raw database queries'],
+            'round 1: builder handed to a function' => ['function purgeLedgers($query) { return $query->delete(); }
+Route::post(\'/l\', fn () => purgeLedgers(DB::table(\'ledgers\')->where(\'open\', 1)));', 'Route closure contains raw database queries'],
+            'round 1: write on a latest() builder variable' => ['Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->latest(); return $query->update([\'closed\' => true]); });', 'Route closure contains raw database queries'],
+            'round 1: insert on a query() builder variable' => ['Route::post(\'/l\', function () { $query = DB::query()->from(\'ledgers\'); return $query->insert([\'name\' => \'Draft\']); });', 'Route closure contains raw database queries'],
+            'round 1: write on a reassigned builder variable' => ['Route::post(\'/l\', function () { $query = DB::table(\'ledgers\'); $query = $query->where(\'open\', 1); return $query->delete(); });', 'Route closure contains raw database queries'],
+            'round 1: write in a when() callback' => ['Route::post(\'/l/{id}\', fn ($id) => DB::table(\'ledgers\')->when($id, fn ($query) => $query->where(\'id\', $id)->delete()));', 'Route closure contains raw database queries'],
+            'round 1: macro in a where() callback' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'openOnly\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => $query->openOnly())->get());', 'Route closure contains raw database queries'],
+            'round 1: macro on a typed callback parameter' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'openOnly\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn (\\Illuminate\\Database\\Query\\Builder $query) => $query->openOnly())->get());', 'Route closure contains raw database queries'],
+            'round 1: macro on a builder variable' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'openOnly\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'a\', 1); $query->openOnly(); return $query->get(); });', 'Route closure contains raw database queries'],
+            'round 1: callback parameter handed to a function' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => applyLedgerFilter($query))->get());', 'Route closure contains raw database queries'],
+            'round 1: callback parameter handed to a static method' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => \\App\\Filters\\LedgerFilter::apply($query))->get());', 'Route closure contains raw database queries'],
+            'round 1: callback parameter handed to an object' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => (new \\App\\Filters\\LedgerFilter)->apply($query))->get());', 'Route closure contains raw database queries'],
+            'round 1: function call argument' => ['function ledgerTotal() { return DB::raw(\'count(*) as total\'); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->select(ledgerTotal())->first());', 'Route closure contains raw database queries'],
+            'round 1: global constant argument' => ['const LEDGER_TOTAL = new \\Illuminate\\Database\\Query\\Expression(\'count(*) as total\');
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->select(LEDGER_TOTAL)->first());', 'Route closure contains raw database queries'],
+            'round 1: global constant held in a variable' => ['const LEDGER_TOTAL = new \\Illuminate\\Database\\Query\\Expression(\'count(*) as total\');
+Route::get(\'/l\', function () { $total = LEDGER_TOTAL; return DB::table(\'ledgers\')->select($total)->first(); });', 'Route closure contains raw database queries'],
+            'round 1: global constant as a parameter default' => ['const LEDGER_TOTAL = new \\Illuminate\\Database\\Query\\Expression(\'count(*) as total\');
+Route::get(\'/l\', fn ($total = LEDGER_TOTAL) => DB::table(\'ledgers\')->select($total)->first());', 'Route closure contains raw database queries'],
+            'round 1: defined constant argument' => ['define(\'LEDGER_TOTAL\', DB::raw(\'count(*) as total\'));
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->select(LEDGER_TOTAL)->first());', 'Route closure contains raw database queries'],
+            'round 1: static call argument' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->select(\\App\\Reports\\Columns::total())->first());', 'Route closure contains raw database queries'],
+            'round 1: static property argument' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->select(\\App\\Reports\\Columns::$total)->first());', 'Route closure contains raw database queries'],
+            'round 1: whereRowValues() operator' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->whereRowValues([\'a\', \'b\'], request(\'op\'), [1, 2])->get());', 'Route closure contains raw database queries'],
+            'round 1: orWhereRowValues() operator' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->orWhereRowValues([\'a\', \'b\'], request(\'op\'), [1, 2])->get());', 'Route closure contains raw database queries'],
+            'round 1: join() type' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->join(\'owners\', \'owners.id\', \'=\', \'ledgers.owner_id\', request(\'type\'))->get());', 'Route closure contains raw database queries'],
+            'round 1: joinSub() type' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->joinSub(DB::table(\'owners\'), \'o\', \'o.id\', \'=\', \'ledgers.owner_id\', request(\'type\'))->get());', 'Route closure contains raw database queries'],
+            'round 1: aggregate() function' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->aggregate(request(\'fn\'), [\'id\']));', 'Route closure contains raw database queries'],
+            'round 1: lock property' => ['Route::get(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'a\', 1); $query->lock = request(\'mode\'); return $query->get(); });', 'Route closure contains raw database queries'],
+            'round 1: wheres property in a beforeQuery() callback' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->beforeQuery(function ($query) { $query->wheres[] = [\'type\' => \'raw\', \'sql\' => request(\'filter\'), \'boolean\' => \'and\']; })->get());', 'Route closure contains raw database queries'],
+            'round 1: array callable invoked' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => [$query, \'whereRaw\'](request(\'filter\')))->get());', 'Route closure contains raw database queries'],
+            'round 1: call_user_func()' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(fn ($query) => call_user_func([$query, \'whereRaw\'], request(\'filter\')))->get());', 'Route closure contains raw database queries'],
+            'outside marker: arrow function capturing a DB::raw() expression' => ['$total = DB::raw(\'count(*) as total\');
+Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->select($total)->first());', 'Route closure contains raw database queries'],
+            'outside marker: closure using a DB::raw() expression' => ['$total = DB::raw(\'count(*) as total\');
+Route::get(\'/ledgers\', function () use ($total) { return DB::table(\'ledgers\')->select($total)->first(); });', 'Route closure contains raw database queries'],
+            'outside marker: filter closure from the file scope' => ['$filter = fn ($query) => $query->whereRaw(request(\'filter\'));
+Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->where($filter)->get());', 'Route closure contains raw database queries'],
+            'outside marker: string callable' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->tap(\'applyLedgerFilter\')->get());', 'Route closure contains raw database queries'],
+            'outside marker: array callable' => ['Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->tap([\\App\\Filters\\LedgerFilter::class, \'apply\'])->get());', 'Route closure contains raw database queries'],
+            'outside marker: first-class callable' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->tap(applyLedgerFilter(...))->get());', 'Route closure contains raw database queries'],
+            'outside marker: invokable object' => ['Route::get(\'/ledgers\', fn () => DB::table(\'ledgers\')->tap(new \\App\\Filters\\LedgerFilter)->get());', 'Route closure contains raw database queries'],
+            'outside marker: value from a service parameter' => ['Route::get(\'/ledgers\', fn (\\App\\Reports\\Columns $columns) => DB::table(\'ledgers\')->select($columns->total())->first());', 'Route closure contains raw database queries'],
+            'outside marker: value from an unknown static call' => ['Route::get(\'/ledgers\', function () { $total = \\App\\Reports\\Columns::total(); return DB::table(\'ledgers\')->select($total)->first(); });', 'Route closure contains raw database queries'],
+            'marker: whereRaw()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->whereRaw(\'entries > 10\')->get());', 'Route closure contains raw database queries'],
+            'marker: WhereRaw() in another case' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->WhereRaw(\'entries > 10\')->get());', 'Route closure contains raw database queries'],
+            'marker: selectRaw()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->selectRaw(\'count(*) as total\')->first());', 'Route closure contains raw database queries'],
+            'marker: orderByRaw()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->orderByRaw(\'entries desc\')->get());', 'Route closure contains raw database queries'],
+            'marker: havingRaw()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->groupBy(\'owner_id\')->havingRaw(\'count(*) > 1\')->get());', 'Route closure contains raw database queries, complex business logic'],
+            'marker: selectExpression()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->selectExpression(\'max(id)\', \'top\')->get());', 'Route closure contains raw database queries'],
+            'marker: rawValue()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->rawValue(\'max(id)\'));', 'Route closure contains raw database queries'],
+            'marker: RawValue() in another case' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->RawValue(\'max(id)\'));', 'Route closure contains raw database queries'],
+            'marker: builder raw()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->orderBy(DB::query()->raw(\'rand()\'))->get());', 'Route closure contains raw database queries'],
+            'marker: DB::raw() argument' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->select(DB::raw(\'count(*) as total\'))->first());', 'Route closure contains raw database queries'],
+            'marker: lock() with a string' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->lock(\'for update nowait\')->get());', 'Route closure contains raw database queries'],
+            'marker: lock() with request input' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->lock(request(\'mode\'))->get());', 'Route closure contains raw database queries'],
+            'marker: inRandomOrder() with request input' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->inRandomOrder(request(\'seed\'))->get());', 'Route closure contains raw database queries'],
+            'marker: forceIndex()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->forceIndex(\'ledgers_owner_index\')->get());', 'Route closure contains raw database queries'],
+            'marker: selectSub() string' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->selectSub(\'select max(id) from owners\', \'m\')->get());', 'Route closure contains raw database queries'],
+            'marker: selectSub() named query argument' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->selectSub(as: \'m\', query: \'select max(id) from owners\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() string' => ['Route::post(\'/tickets/{id}\', fn () => DB::query()->fromSub(\'select * from ledgers\', \'l\')->get());', 'Route closure contains raw database queries'],
+            'marker: joinSub() string' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->joinSub(\'select 1 as id\', \'s\', \'s.id\', \'=\', \'ledgers.id\')->get());', 'Route closure contains raw database queries'],
+            'marker: leftJoinLateral() string' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->leftJoinLateral(\'select 1 as id\', \'s\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() of a model attribute' => ['use App\\Models\\Ledger;
+Route::post(\'/tickets/{id}\', fn ($id) => DB::query()->fromSub(Ledger::findOrFail($id)->getAttribute(\'body\'), \'r\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() of plucked rows joined into a string' => ['Route::post(\'/tickets/{id}\', fn () => DB::query()->fromSub(DB::table(\'snippets\')->pluck(\'sql\')->join(\' union \'), \'r\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() of value()' => ['use App\\Models\\Ledger;
+Route::post(\'/tickets/{id}\', fn () => DB::query()->fromSub(Ledger::where(\'key\', \'q\')->value(\'sql\'), \'r\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() of a closure parameter' => ['Route::post(\'/tickets/{id}\', fn ($sql) => DB::query()->fromSub($sql, \'r\')->get());', 'Route closure contains raw database queries'],
+            'marker: fromSub() of a variable holding a string' => ['Route::post(\'/tickets/{id}\', function () { $sql = \'select 1 as id\'; return DB::query()->fromSub($sql, \'r\')->get(); });', 'Route closure contains raw database queries'],
+            'marker: fromSub() of sprintf()' => ['Route::post(\'/tickets/{id}\', fn () => DB::query()->fromSub(sprintf(\'select * from %s\', request(\'t\')), \'r\')->get());', 'Route closure contains raw database queries'],
+            'marker: fully qualified Expression argument' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->where(new \\Illuminate\\Database\\Query\\Expression(\'1=1\'))->get());', 'Route closure contains raw database queries'],
+            'marker: imported Expression argument' => ['use Illuminate\\Database\\Query\\Expression as SqlExpression;
+Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->where(new SqlExpression(\'1=1\'))->get());', 'Route closure contains raw database queries'],
+            'marker: Expression held in a variable' => ['use Illuminate\\Database\\Query\\Expression;
+Route::post(\'/tickets/{id}\', function () { $sum = new Expression(\'sum(entries) as total\'); return DB::table(\'ledgers\')->select($sum)->get(); });', 'Route closure contains raw database queries'],
+            'marker: Expression as the table' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(new \\Illuminate\\Database\\Query\\Expression(\'ledgers as l\'))->get());', 'Route closure contains raw database queries'],
+            'marker: getConnection()->select()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->getConnection()->select(\'select 1\'));', 'Route closure contains raw database queries'],
+            'marker: getPdo()->exec()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->getConnection()->getPdo()->exec(\'delete from ledgers\'));', 'Route closure contains raw database queries, complex business logic'],
+            'marker: connection property' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->where(fn ($query) => $query->connection->statement(\'select 1\'))->get());', 'Route closure contains raw database queries'],
+            'marker: dynamic method name' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->where(\'id\', 1)->{\'update\'}([\'closed\' => true]));', 'Route closure contains raw database queries'],
+            'marker: unknown builder method, a macro' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->openOnly()->get());', 'Route closure contains raw database queries'],
+            'nullsafe: where()?->get()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->where(\'closed\', 1)?->get());', 'Route closure contains raw database queries'],
+            'nullsafe: latest()?->get()' => ['Route::post(\'/tickets/{id}\', fn () => DB::table(\'ledgers\')->latest()?->get());', 'Route closure contains raw database queries'],
+            'round 2: array literal to a function' => ['function purgeAll($builders) { foreach ($builders as $query) { $query->delete(); } }
+Route::post(\'/l\', fn () => purgeAll([DB::table(\'ledgers\')->where(\'open\', 1)]));', 'Route closure contains raw database queries'],
+            'round 2: builder variable in an array to a function' => ['function purgeAll($builders) { foreach ($builders as $query) { $query->delete(); } }
+Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'open\', 1); return purgeAll([\'q\' => $query]); });', 'Route closure contains raw database queries'],
+            'round 2: spread array to a function' => ['function purgeAll($builders) { foreach ($builders as $query) { $query->delete(); } }
+Route::post(\'/l\', function () { $query = DB::table(\'ledgers\')->where(\'open\', 1); return purgeAll(...[[$query]]); });', 'Route closure contains raw database queries'],
+            'round 2: array to new' => ['Route::post(\'/l\', fn () => new \\App\\Purger([DB::table(\'ledgers\')->where(\'open\', 1)]));', 'Route closure contains raw database queries'],
+            'round 2: collect() higher-order delete' => ['Route::post(\'/l\', fn () => collect([DB::table(\'ledgers\')->where(\'open\', 1)])->each->delete());', 'Route closure contains raw database queries'],
+            'round 2: array_map() delete' => ['Route::post(\'/l\', fn () => array_map(fn ($query) => $query->delete(), [DB::table(\'ledgers\')->where(\'open\', 1)]));', 'Route closure contains raw database queries'],
+            'round 2: appended element' => ['Route::post(\'/l\', function () { $builders = []; $builders[] = DB::table(\'ledgers\')->where(\'open\', 1); return $builders[0]->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: keyed element' => ['Route::post(\'/l\', function () { $builders = []; $builders[\'q\'] = DB::table(\'ledgers\')->where(\'open\', 1); return $builders[\'q\']->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: indexed array literal' => ['Route::post(\'/l\', fn () => [DB::table(\'ledgers\')->where(\'open\', 1)][0]->delete());', 'Route closure contains raw database queries'],
+            'round 2: ternary of builders, write' => ['Route::post(\'/l\', function () { $query = request(\'drafts\') ? DB::table(\'drafts\')->where(\'k\', 1) : DB::table(\'ledgers\')->where(\'k\', 1); return $query->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: elvis of builders, write' => ['Route::post(\'/l\', function () { $query = DB::table(\'drafts\')->where(\'k\', 1) ?: DB::table(\'ledgers\')->where(\'k\', 1); return $query->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: coalesce of builders, write' => ['Route::post(\'/l\', function () { $query = DB::table(\'drafts\')->where(\'k\', 1) ?? DB::table(\'ledgers\')->where(\'k\', 1); return $query->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: ternary of builders, macro' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'openOnly\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', function () { $query = request(\'drafts\') ? DB::table(\'drafts\')->where(\'k\', 1) : DB::table(\'ledgers\')->where(\'k\', 1); return $query->openOnly()->get(); });', 'Route closure contains raw database queries'],
+            'round 2: value() closure' => ['Route::post(\'/l\', fn () => value(fn () => DB::table(\'ledgers\')->where(\'open\', 1))->delete());', 'Route closure contains raw database queries'],
+            'round 2: map() returning builders' => ['Route::post(\'/l\', fn () => collect([1])->map(fn () => DB::table(\'ledgers\')->where(\'open\', 1))->each->delete());', 'Route closure contains raw database queries'],
+            'round 2: ternary receiver' => ['Route::post(\'/l\', function () { $a = DB::table(\'ledgers\')->where(\'open\', 1); $b = DB::table(\'drafts\')->where(\'open\', 1); return (request(\'drafts\') ? $b : $a)->delete(); });', 'Route closure contains raw database queries'],
+            'round 2: assignment receiver' => ['Route::post(\'/l\', fn () => ($query = DB::table(\'ledgers\')->where(\'open\', 1))->delete());', 'Route closure contains raw database queries'],
+            'round 2: when() value parameter on a builder variable' => ['Route::post(\'/l\', function () { $drafts = DB::table(\'drafts\')->where(\'a\', 1); $ledgers = DB::table(\'ledgers\')->where(\'a\', 1); return $ledgers->when($drafts, fn ($query, $value) => $value->delete())->get(); });', 'Route closure contains raw database queries'],
+            'round 2: insertOrIgnoreReturning() after where()' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'a\', 1)->insertOrIgnoreReturning([[\'name\' => \'Draft\']], [\'id\']));', 'Route closure contains raw database queries'],
+            'round 2: insertOrIgnoreReturning() on table()' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->insertOrIgnoreReturning([[\'name\' => \'Draft\']], [\'id\']));', 'Route closure contains raw database queries'],
+            'round 2: write through a variable beside a builder read' => ['use App\\Models\\Ledger;
+Route::post(\'/l\', function () { $ledger = Ledger::where(\'a\', 1)->first(); $ledger->delete(); return DB::table(\'ledgers\')->get(); });', 'Route closure contains raw database queries'],
+            'round 2: domain model write beside a builder read' => ['Route::post(\'/l\', function () { \\App\\Domain\\Blog\\Post::create([]); return DB::table(\'ledgers\')->get(); });', 'Route closure contains raw database queries'],
+            'round 2: raw SQL in a called function beside a builder read' => ['function logVisit() { DB::insert(\'insert into visits (at) values (now())\'); }
+Route::get(\'/l\', function () { logVisit(); return DB::table(\'ledgers\')->get(); });', 'Route closure contains raw database queries'],
+            'round 3: arrow array beside a read' => ['function logVisit() { DB::insert(\'insert into visits (at) values (now())\'); }
+Route::get(\'/l\', fn () => [logVisit(), DB::table(\'ledgers\')->get()]);', 'Route closure contains raw database queries'],
+            'round 3: arrow coalesce' => ['function logVisit() { DB::insert(\'insert into visits (at) values (now())\'); }
+Route::get(\'/l\', fn () => logVisit() ?? DB::table(\'ledgers\')->get());', 'Route closure contains raw database queries'],
+            'round 3: returned array beside a read' => ['function logVisit() { DB::insert(\'insert into visits (at) values (now())\'); }
+Route::get(\'/l\', function () { return [logVisit(), DB::table(\'ledgers\')->get()]; });', 'Route closure contains raw database queries'],
+            'round 3: json response beside a read' => ['function logVisit() { DB::insert(\'insert into visits (at) values (now())\'); }
+Route::get(\'/l\', fn () => response()->json([\'rows\' => DB::table(\'ledgers\')->get(), \'v\' => logVisit()]));', 'Route closure contains raw database queries'],
+            'round 3: Schema DDL beside a read' => ['Route::get(\'/l\', fn () => [\\Illuminate\\Support\\Facades\\Schema::dropIfExists(\'ledgers_tmp\'), DB::table(\'ledgers\')->get()]);', 'Route closure contains raw database queries'],
+            'round 3: model save beside a read' => ['Route::post(\'/l\', fn () => [(new \\App\\Models\\Ledger)->forceFill([\'a\' => 1])->save(), DB::table(\'ledgers\')->get()]);', 'Route closure contains raw database queries'],
+            'round 3: string callable variable as when() default' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/l\', function () { $cb = \'applyLedgerFilter\'; return DB::table(\'ledgers\')->when(request(\'x\'), fn ($q) => $q, $cb)->get(); });', 'Route closure contains raw database queries'],
+            'round 3: string callable variable to tap()' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/l\', function () { $cb = \'applyLedgerFilter\'; return DB::table(\'ledgers\')->tap($cb)->get(); });', 'Route closure contains raw database queries'],
+            'round 3: string callable parameter default' => ['function applyLedgerFilter($query) { return $query->whereRaw(request(\'filter\')); }
+Route::get(\'/l\', fn ($cb = \'applyLedgerFilter\') => DB::table(\'ledgers\')->tap($cb)->get());', 'Route closure contains raw database queries'],
+            'round 3: writing callable variable to pipe()' => ['function purgeLedgers($query) { return $query->delete(); }
+Route::post(\'/l\', function () { $cb = \'purgeLedgers\'; return DB::table(\'ledgers\')->where(\'open\', 1)->pipe($cb); });', 'Route closure contains raw database queries'],
+            'round 3: writing callable variable as unless() default' => ['function purgeLedgers($query) { return $query->delete(); }
+Route::post(\'/l\', function () { $cb = \'purgeLedgers\'; return DB::table(\'ledgers\')->unless(request(\'keep\'), fn ($q) => $q, $cb)->get(); });', 'Route closure contains raw database queries'],
+            'round 3: config() callable' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->when(true, config(\'ledgers.purge\'))->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: class constant callable' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->tap(\\App\\Filters\\Ledger::PURGE)->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: func_get_args() write' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->tap(function () { func_get_args()[0]->delete(); })->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: func_get_arg() write' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->tap(fn () => func_get_arg(0)->delete())->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: compact() write' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->tap(fn ($query) => compact(\'query\')[\'query\']->delete())->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: get_defined_vars() write' => ['Route::post(\'/l\', fn () => DB::table(\'ledgers\')->where(\'open\', 1)->tap(function ($query) { get_defined_vars()[\'query\']->delete(); })->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: compact() handed to a function' => ['function purgeAll($builders) { foreach ($builders as $query) { $query->delete(); } }
+Route::post(\'/l\', function () { $q = DB::table(\'ledgers\')->where(\'open\', 1); return purgeAll(compact(\'q\')); });', 'Route closure contains raw database queries'],
+            'round 3: func_get_args() macro' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'openOnly\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(function () { func_get_args()[0]->openOnly(); })->get());', 'Route closure contains raw database queries'],
+            'round 3: where() boolean' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'a\', 1)->where(\'b\', \'=\', 2, request(\'bool\'))->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: whereNull() named boolean' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'a\', 1)->whereNull(\'b\', boolean: request(\'bool\'))->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: whereIn() boolean' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'a\', 1)->whereIn(\'id\', [1, 2], request(\'bool\'))->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: having() boolean' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->groupBy(\'a\')->having(\'a\', \'>\', 1)->having(\'b\', \'>\', 1, request(\'bool\'))->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: join on() boolean' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->join(\'o\', fn ($j) => $j->on(\'o.id\', \'=\', \'ledgers.o\')->on(\'o.t\', \'=\', \'ledgers.t\', request(\'bool\')))->get());', 'Route closure contains raw database queries'],
+            'round 3: where() of the whole request' => ['Route::get(\'/l\', fn (\\Illuminate\\Http\\Request $request) => DB::table(\'ledgers\')->where($request->all())->get());', 'Route closure contains raw database queries'],
+            'round 3: where() of request()->query()' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(request()->query())->get());', 'Route closure contains raw database queries'],
+            'round 3: where-prefixed macro' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'whereOpen\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->whereOpen()->get());', 'Route closure contains raw database queries'],
+            'round 3: orWhere-prefixed macro' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'orWhereOpen\', function () { return $this->orWhereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'a\', 1)->orWhereOpen()->get());', 'Route closure contains raw database queries, complex business logic'],
+            'round 3: where-prefixed macro on a builder variable' => ['\\Illuminate\\Database\\Query\\Builder::macro(\'whereOpen\', function () { return $this->whereRaw(\'closed_at is null\'); });
+Route::get(\'/l\', function () { $q = DB::table(\'ledgers\')->whereOpen(); return $q->get(); });', 'Route closure contains raw database queries'],
+        ];
+    }
+
+    /**
+     * A value that may carry an Expression, which the grammar writes as it is, keeps master's
+     * grade: an untyped route parameter (Route::bind() may return one) or one with a default,
+     * request('key') (it falls back to the route parameter), config(), a helper a namespaced
+     * routes file declares for itself, and a method Laravel 9.0 lacks, which may be a macro.
+     *
+     * @dataProvider queryBuilderValueKeepsMastersGradeProvider
+     *
+     * @param  list<array{string, Severity}>  $grade
+     */
+    #[DataProvider('queryBuilderValueKeepsMastersGradeProvider')]
+    public function test_a_value_that_may_carry_an_expression_keeps_masters_grade(string $code, array $grade): void
+    {
+        foreach ([true, false] as $allowSimpleReads) {
+            $issues = $this->analyzeRouteCode($code, $allowSimpleReads)->getIssues();
+
+            $this->assertSame($grade, array_values(array_map(static fn ($issue): array => [$issue->message, $issue->severity], $issues)));
+        }
+    }
+
+    /**
+     * @return array<string, array{string, list<array{string, Severity}>}>
+     */
+    public static function queryBuilderValueKeepsMastersGradeProvider(): array
+    {
+        return [
+            'review: F1a: parameter default constant Expression' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+const CUTOFF = new \\Illuminate\\Database\\Query\\Expression(\'1 or 1=1\');
+Route::get(\'/l\', fn ($v = CUTOFF) => DB::table(\'ledgers\')->where(\'closed_at\', \'<\', $v)->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F1b: parameter default new Expression' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/l\', fn ($v = new \\Illuminate\\Database\\Query\\Expression(\'1 or 1=1\')) => DB::table(\'ledgers\')->where(\'id\', $v)->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F1c: parameter default into find()' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+const CUTOFF = new \\Illuminate\\Database\\Query\\Expression(\'1 or 1=1\');
+Route::get(\'/l\', fn ($v = CUTOFF) => DB::table(\'ledgers\')->find($v));
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F1d: Route::bind() raw on an untyped parameter' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::bind(\'cutoff\', fn ($value) => DB::raw($value));
+Route::get(\'/l/{cutoff}\', fn ($cutoff) => DB::table(\'ledgers\')->where(\'closed_at\', \'<\', $cutoff)->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F2: request() falls back to the bound route parameter' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::bind(\'cutoff\', fn ($value) => DB::raw($value));
+Route::get(\'/l/{cutoff}\', fn () => DB::table(\'ledgers\')->where(\'closed_at\', \'<\', request(\'cutoff\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F3: config() holding an Expression' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+config([\'ledgers.cutoff\' => DB::raw(\'now() - interval 1 day\')]);
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'closed_at\', \'<\', config(\'ledgers.cutoff\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F4a: now() shadowed in a namespaced routes file' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+function now() { return DB::raw(request(\'t\')); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'closed_at\', \'<\', now())->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F4b: today() shadowed' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+function today() { return DB::raw(\'1 or 1=1\'); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->whereDate(\'d\', today())->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F4c: request() shadowed' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+function request($k) { return DB::raw(\\request($k)); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'id\', request(\'id\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F4d: config() shadowed' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+function config($k) { return DB::raw($k); }
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'id\', config(\'1 or 1=1\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'review: F5: whereLike() macro on Laravel 9/10' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+\\Illuminate\\Database\\Query\\Builder::macro(\'whereLike\', function ($column, $value) { return $this->whereRaw("{$column} like \'%{$value}%\'"); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->whereLike(\'name\', request(\'q\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: an untyped route parameter' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles/{id}\', fn ($id) => DB::table(\'articles\')->find($id));
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: a scalar route parameter with a default' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles/{id?}\', fn (int $id = 1) => DB::table(\'articles\')->find($id));
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: bare request()' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->where(\'slug\', request(\'q\'))->first());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: config()' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->where(\'status\', config(\'blog.status\'))->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: now() declared in a namespaced routes file' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+function now() { return \'2020-01-01\'; }
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->whereDate(\'published_at\', now())->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: whereLike()' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->whereLike(\'title\', \'%news%\')->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: whereNot()' => ['<?php
+
+use Illuminate\\Support\\Facades\\DB;
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->whereNot(\'status\', \'draft\')->get());
+', [['Route closure contains raw database queries', Severity::High]]],
+            'control: an unimported DB in a namespaced routes file' => ['<?php
+
+namespace App\\Routes;
+
+use Illuminate\\Support\\Facades\\Route;
+
+Route::get(\'/articles\', fn () => DB::table(\'articles\')->latest()->get());
+', []],
+        ];
+    }
+
+    /**
+     * A file that may replace DB::table() or DB::query() with a macro, or a request reader Laravel
+     * 9.0 lacks (so a macro there), keeps master's grade.
+     *
+     * @dataProvider queryBuilderMacroKeepsMastersGradeProvider
+     */
+    #[DataProvider('queryBuilderMacroKeepsMastersGradeProvider')]
+    public function test_a_macro_that_may_replace_a_root_or_a_value_keeps_masters_grade(string $routes, string $message): void
+    {
+        foreach ([true, false] as $allowSimpleReads) {
+            $this->assertSame([[$message, Severity::High]], $this->dbRouteGrade($routes, $allowSimpleReads));
+        }
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function queryBuilderMacroKeepsMastersGradeProvider(): array
+    {
+        return [
+            'F1a: request()->integer() macro' => ['\\Illuminate\\Http\\Request::macro(\'integer\', function ($key) { return DB::raw($this->input($key)); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'id\', request()->integer(\'id\'))->get());', 'Route closure contains raw database queries'],
+            'F1b: request()->string() macro' => ['\\Illuminate\\Http\\Request::macro(\'string\', function ($key) { return DB::raw($this->input($key)); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'name\', request()->string(\'name\'))->get());', 'Route closure contains raw database queries'],
+            'F2a: DB::macro(table)' => ['DB::macro(\'table\', function ($table) { return $this->connection()->table($table)->whereRaw(request(\'filter\')); });
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries'],
+            'F2b: DB::macro(query)' => ['DB::macro(\'query\', function () { return $this->connection()->query()->whereRaw(request(\'filter\')); });
+Route::get(\'/l\', fn () => DB::query()->from(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries, complex business logic'],
+            'control: request()->integer()' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'id\', request()->integer(\'id\'))->get());', 'Route closure contains raw database queries'],
+            'control: request()->string()' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->where(\'name\', request()->string(\'name\'))->get());', 'Route closure contains raw database queries'],
+            'control: DatabaseManager::macro(table)' => ['\\Illuminate\\Database\\DatabaseManager::macro(\'table\', fn ($table) => $this->connection()->table($table));
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries'],
+            'control: app(db)->macro(table)' => ['app(\'db\')->macro(\'table\', fn ($table) => $this->connection()->table($table));
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries'],
+            'control: DB::getFacadeRoot()->macro(query)' => ['DB::getFacadeRoot()->macro(\'query\', fn () => $this->connection()->query());
+Route::get(\'/l\', fn () => DB::query()->from(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries, complex business logic'],
+            'control: a TABLE macro registered after the route' => ['Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());
+DB::macro(\'TABLE\', fn ($table) => $this->connection()->table($table));', 'Route closure contains raw database queries'],
+            'control: a macro with a computed name' => ['DB::macro(strtolower(\'TABLE\'), fn ($table) => $this->connection()->table($table));
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries'],
+            'control: DB::mixin()' => ['DB::mixin(new \\App\\Database\\TableMixin);
+Route::get(\'/l\', fn () => DB::table(\'ledgers\')->latest()->get());', 'Route closure contains raw database queries'],
+        ];
+    }
+
+    /**
+     * The issues of a route file importing the DB and Route facades, as [message, severity].
+     *
+     * @return list<array{string, Severity}>
+     */
+    private function dbRouteGrade(string $routes, bool $allowSimpleReads): array
+    {
+        $result = $this->analyzeRouteCode("<?php\n\nuse Illuminate\\Support\\Facades\\DB;\nuse Illuminate\\Support\\Facades\\Route;\n\n{$routes}\n", $allowSimpleReads);
+
+        return array_values(array_map(static fn ($issue): array => [$issue->message, $issue->severity], $result->getIssues()));
     }
 }

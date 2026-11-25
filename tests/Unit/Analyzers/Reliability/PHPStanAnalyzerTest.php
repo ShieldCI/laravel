@@ -794,7 +794,7 @@ PHP;
             <<<'PHP'
             file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
 
-            echo '{"files":[]}';
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
 
             PHP,
             var_export($argsFile, true)
@@ -1254,6 +1254,16 @@ PHP;
         $this->assertError($result);
         $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
         $this->assertStringContainsString('exit code 0', $result->getMessage());
+    }
+
+    public function test_reports_an_error_when_phpstan_prints_json_that_is_not_its_report(): void
+    {
+        // Decodes cleanly but has no files to read, which used to pass as a clean run.
+        $result = $this->analyzeUnparseableOutput('{"tool":"analyser","result":"passed","errors":0}', '', 0);
+
+        $this->assertError($result);
+        $this->assertStringContainsString('not a PHPStan report', $result->getMessage());
+        $this->assertStringContainsString('"result":"passed"', $result->getMessage());
     }
 
     public function test_appends_the_phpstan_tip_to_the_recommendation(): void

@@ -173,11 +173,33 @@ class PHPStanRunner
         // per-file evidence of the failure. Record the reason in the report's own
         // non-file-specific "errors" list rather than handing back an empty report
         // that reads as clean.
-        $this->result = is_array($decoded)
-            ? $this->toStringKeyedArray($decoded)
-            : ['files' => [], 'errors' => [$this->describeAbortedRun($process)]];
+        if (! is_array($decoded)) {
+            $this->result = ['files' => [], 'errors' => [$this->describeAbortedRun($process)]];
+        } elseif (! self::isPhpstanReport($decoded)) {
+            // Valid JSON in some other shape has no findings to read either, and would
+            // otherwise pass as a run that found nothing.
+            $this->result = ['files' => [], 'errors' => [$this->describeUnrecognisedReport($process)]];
+        } else {
+            $this->result = $this->toStringKeyedArray($decoded);
+        }
 
         return $this;
+    }
+
+    /**
+     * Whether decoded output has the shape of PHPStan's JSON report.
+     *
+     * Every PHPStan release this package supports, 1.10 to 2.x, emits all three keys from
+     * JsonErrorFormatter, even for a clean run. An empty files map is a list on PHPStan 1
+     * and an object on PHPStan 2, which both decode to an array.
+     *
+     * @param  array<mixed>  $decoded
+     */
+    private static function isPhpstanReport(array $decoded): bool
+    {
+        return is_array($decoded['totals'] ?? null)
+            && is_array($decoded['files'] ?? null)
+            && is_array($decoded['errors'] ?? null);
     }
 
     /**
@@ -231,8 +253,13 @@ class PHPStanRunner
                 $command[] = $path;
             }
 
-            // Run PHPStan
-            $process = new Process($command, $this->basePath);
+            // laravel/pao is a Composer autoload.files entry, so it loads into PHPStan's
+            // own process with the project's autoloader. When it detects an AI agent it
+            // replaces the JSON report with a summary that holds no findings and swallows
+            // stderr, which read as a clean run. PAO_DISABLE is its documented opt-out.
+            // Symfony Process lays an explicit env over the inherited one, so nothing else
+            // the subprocess would have seen is lost.
+            $process = new Process($command, $this->basePath, ['PAO_DISABLE' => '1']);
             $process->setTimeout($timeout);
             $process->run();
 
@@ -305,7 +332,31 @@ class PHPStanRunner
             $process->getExitCode() ?? -1
         );
 
-        return $detail === '' ? $summary : $summary.': '.$detail;
+        return self::withExcerpt($summary, $detail);
+    }
+
+    /**
+     * Describe a run whose output was JSON but not PHPStan's report.
+     *
+     * Such output usually comes from something rewriting PHPStan's stdout rather than
+     * from PHPStan itself, so the excerpt quoted is the output that was not understood.
+     */
+    private function describeUnrecognisedReport(Process $process): string
+    {
+        $summary = sprintf(
+            'PHPStan printed JSON that is not a PHPStan report (exit code %d)',
+            $process->getExitCode() ?? -1
+        );
+
+        return self::withExcerpt($summary, $this->condenseOutput($process->getOutput()));
+    }
+
+    /**
+     * Append an output excerpt to a summary, when there is one to append.
+     */
+    private static function withExcerpt(string $summary, string $excerpt): string
+    {
+        return $excerpt === '' ? $summary : $summary.': '.$excerpt;
     }
 
     /**

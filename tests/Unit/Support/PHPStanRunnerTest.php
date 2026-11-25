@@ -1245,6 +1245,161 @@ class PHPStanRunnerTest extends TestCase
         $this->assertStringContainsString('This is not valid JSON', $errors[0]);
     }
 
+    /**
+     * A package autoloaded into PHPStan's own process can replace its report.
+     *
+     * laravel/pao is a Composer autoload.files entry, so it loads into vendor/bin/phpstan
+     * along with the project's autoloader. When it detects an AI agent, it rewrites stdout
+     * as a one-line summary of its own unless PAO_DISABLE is truthy. The stub stands in
+     * for that: it prints a summary without a single finding unless the variable reaches
+     * it, and the real report otherwise.
+     *
+     * The parent sets PAO_DISABLE to a falsy value first, so the runner has to override an
+     * inherited value rather than merely add a missing one.
+     */
+    public function test_disables_output_rewriting_by_laravel_pao_in_the_phpstan_process(): void
+    {
+        $report = (string) json_encode([
+            'totals' => ['errors' => 0, 'file_errors' => 1],
+            'files' => [
+                '/app/Rewritten.php' => [
+                    'errors' => 1,
+                    'messages' => [['message' => 'Undefined variable: $ghost', 'line' => 7, 'ignorable' => true]],
+                ],
+            ],
+            'errors' => [],
+        ]);
+
+        $summary = (string) json_encode(['tool' => 'phpstan', 'result' => 'passed', 'errors' => 0]);
+
+        $this->writePHPStanStub(sprintf(
+            <<<'PHP'
+            $disabled = $_SERVER['PAO_DISABLE'] ?? getenv('PAO_DISABLE');
+
+            echo filter_var($disabled, FILTER_VALIDATE_BOOLEAN) ? %s : %s;
+
+            PHP,
+            var_export($report, true),
+            var_export($summary, true)
+        ));
+
+        $saved = [getenv('PAO_DISABLE'), $_SERVER['PAO_DISABLE'] ?? null, $_ENV['PAO_DISABLE'] ?? null];
+        putenv('PAO_DISABLE=0');
+        $_SERVER['PAO_DISABLE'] = '0';
+        $_ENV['PAO_DISABLE'] = '0';
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        try {
+            $runner->analyze(['app']);
+        } finally {
+            putenv($saved[0] === false ? 'PAO_DISABLE' : 'PAO_DISABLE='.$saved[0]);
+
+            if ($saved[1] === null) {
+                unset($_SERVER['PAO_DISABLE']);
+            } else {
+                $_SERVER['PAO_DISABLE'] = $saved[1];
+            }
+
+            if ($saved[2] === null) {
+                unset($_ENV['PAO_DISABLE']);
+            } else {
+                $_ENV['PAO_DISABLE'] = $saved[2];
+            }
+        }
+
+        $this->assertSame([], $runner->getAnalysisErrors());
+        $this->assertSame(['Undefined variable: $ghost'], $runner->getIssues()->pluck('message')->all());
+    }
+
+    /**
+     * JSON that is not PHPStan's report is a run whose result is unknown, not a clean one.
+     *
+     * PHPStan's JSON formatter emits totals, files and errors on every version this
+     * package supports. Anything else decodes fine but carries no findings, so before this
+     * was checked it read as a run that found nothing.
+     *
+     * @dataProvider nonReportJsonProvider
+     */
+    #[DataProvider('nonReportJsonProvider')]
+    public function test_records_json_that_is_not_a_phpstan_report_as_an_analysis_error(string $json): void
+    {
+        $this->writePHPStanStub(sprintf("echo %s;\n", var_export($json, true)));
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertTrue($runner->getIssues()->isEmpty());
+
+        $errors = $runner->getAnalysisErrors();
+        $this->assertCount(1, $errors);
+        $this->assertStringContainsString('not a PHPStan report', $errors[0]);
+        $this->assertStringContainsString('exit code 0', $errors[0]);
+        $this->assertStringContainsString($json, $errors[0]);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nonReportJsonProvider(): array
+    {
+        return [
+            'summary with an integer error count' => ['{"tool":"analyser","result":"passed","errors":0}'],
+            'summary wrapping raw lines' => ['{"tool":"analyser","raw":["line one","line two"]}'],
+            'files without totals or errors' => ['{"files":[]}'],
+            'errors that is not a list' => ['{"totals":{"errors":0,"file_errors":0},"files":{},"errors":3}'],
+            'empty object' => ['{}'],
+            'empty list' => ['[]'],
+        ];
+    }
+
+    public function test_truncates_the_excerpt_of_json_that_is_not_a_phpstan_report(): void
+    {
+        $json = (string) json_encode(['tool' => 'analyser', 'raw' => [str_repeat('x', 2000).'TAIL_MARKER']]);
+
+        $this->writePHPStanStub(sprintf("echo %s;\n", var_export($json, true)));
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $errors = $runner->getAnalysisErrors();
+
+        $this->assertCount(1, $errors);
+        $this->assertStringNotContainsString('TAIL_MARKER', $errors[0]);
+        $this->assertLessThan(700, strlen($errors[0]));
+    }
+
+    /**
+     * A clean report parses exactly as before: no findings and no analysis errors.
+     *
+     * PHPStan 2 encodes an empty files map as an object and PHPStan 1 as a list, and both
+     * must read as clean.
+     *
+     * @dataProvider cleanReportProvider
+     */
+    #[DataProvider('cleanReportProvider')]
+    public function test_a_clean_report_with_no_files_is_not_an_analysis_error(string $json): void
+    {
+        $this->writePHPStanStub(sprintf("echo %s;\n", var_export($json, true)));
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertTrue($runner->getIssues()->isEmpty());
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function cleanReportProvider(): array
+    {
+        return [
+            'PHPStan 2 empty files object' => ['{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}'],
+            'PHPStan 1 empty files list' => ['{"totals":{"errors":0,"file_errors":0},"files":[],"errors":[]}'],
+        ];
+    }
+
     public function test_get_issues_skips_non_array_file_data(): void
     {
         $runner = new PHPStanRunner($this->tempDir);

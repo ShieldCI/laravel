@@ -247,6 +247,52 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertCount(5, $result->getMetadata()['analysis_errors']);
     }
 
+    public function test_bounds_an_oversized_analysis_error_in_the_message(): void
+    {
+        // A child process that floods stderr comes back as one top-level error the size of
+        // the flood, which would otherwise go whole into the message and the report.
+        $error = 'Child process error (exit code 255): '.str_repeat("Deprecated: noise\n", 20000);
+
+        $result = $this->analyzeIssues([], analysisErrors: [$error]);
+
+        $this->assertError($result);
+        $this->assertLessThan(2000, strlen($result->getMessage()));
+        $this->assertStringContainsString(
+            'PHPStan reported 1 analysis error(s): Child process error (exit code 255): Deprecated: noise Deprecated: noise',
+            $result->getMessage()
+        );
+        $this->assertStringNotContainsString("\n", $result->getMessage());
+        $excerpt = rtrim(substr('Child process error (exit code 255): '.str_repeat('Deprecated: noise ', 40), 0, 500)).'...';
+        $this->assertSame('PHPStan reported 1 analysis error(s): '.$excerpt, $result->getMessage());
+        $this->assertSame([$excerpt], $result->getMetadata()['analysis_errors']);
+        $this->assertLessThan(10000, strlen((string) json_encode($result->toArray())));
+    }
+
+    public function test_bounds_an_oversized_analysis_error_noted_next_to_findings(): void
+    {
+        $error = 'Internal error: '.str_repeat('Deprecated: noise ', 20000);
+
+        $result = $this->analyzeIssues(
+            [['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER]],
+            analysisErrors: [$error]
+        );
+
+        $this->assertWarning($result);
+        $this->assertLessThan(2000, strlen($result->getMessage()));
+        $this->assertStringContainsString('these findings may be incomplete: Internal error: Deprecated: noise', $result->getMessage());
+        $this->assertLessThan(10000, strlen((string) json_encode($result->toArray())));
+    }
+
+    public function test_quotes_a_short_analysis_error_unchanged(): void
+    {
+        $error = "Internal error: child process died.\nRun PHPStan with -v option and post the stack trace.";
+
+        $result = $this->analyzeIssues([], analysisErrors: [$error]);
+
+        $this->assertError($result);
+        $this->assertSame('PHPStan reported 1 analysis error(s): '.$error, $result->getMessage());
+    }
+
     public function test_a_non_zero_exit_with_valid_json_is_not_an_error(): void
     {
         // PHPStan exits 1 whenever it reports anything at all, ordinary type errors

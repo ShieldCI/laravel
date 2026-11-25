@@ -180,7 +180,7 @@ class PHPStanRunner
             // otherwise pass as a run that found nothing.
             $this->result = ['files' => [], 'errors' => [$this->describeUnrecognisedReport($process)]];
         } else {
-            $this->result = $this->toStringKeyedArray($decoded);
+            $this->result = $this->withBoundedReportedErrors($this->toStringKeyedArray($decoded));
         }
 
         return $this;
@@ -371,6 +371,45 @@ class PHPStanRunner
         }
 
         return Str::limit(trim($collapsed), self::MAX_OUTPUT_SNIPPET);
+    }
+
+    /**
+     * Bound each error in the report's own top-level "errors" list.
+     *
+     * A child process that floods stderr comes back from PHPStan as one error of hundreds
+     * of kilobytes, which would otherwise reach the result message and the uploaded report
+     * whole. Bounded here, once, so the message and the metadata quote the same excerpt.
+     *
+     * @param  array<string, mixed>  $report
+     * @return array<string, mixed>
+     */
+    private function withBoundedReportedErrors(array $report): array
+    {
+        if (isset($report['errors']) && is_array($report['errors'])) {
+            $report['errors'] = array_map(
+                fn (mixed $error): mixed => is_string($error) ? $this->boundReportedError($error) : $error,
+                $report['errors']
+            );
+        }
+
+        return $report;
+    }
+
+    /**
+     * Condense an error PHPStan reported, leaving one within the bound byte for byte.
+     *
+     * An error that fits keeps its line breaks, so output stays stable for every run that
+     * was not flooded. When PCRE gives up, the error is still bounded, just not flattened.
+     */
+    private function boundReportedError(string $error): string
+    {
+        if (mb_strwidth(trim($error), 'UTF-8') <= self::MAX_OUTPUT_SNIPPET) {
+            return $error;
+        }
+
+        $condensed = $this->condenseOutput($error);
+
+        return $condensed !== '' ? $condensed : Str::limit(trim($error), self::MAX_OUTPUT_SNIPPET);
     }
 
     /**

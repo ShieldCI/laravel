@@ -1180,6 +1180,119 @@ PHP;
         $this->assertCount(5, $result->getMetadata()['analysis_errors']);
     }
 
+    public function test_bounds_an_oversized_analysis_error_in_the_message(): void
+    {
+        // A child process that floods stderr comes back as one top-level error the size of
+        // the flood, which would otherwise go whole into the message and the report.
+        $error = 'Child process error (exit code 255): '.str_repeat("Deprecated: noise\n", 20000);
+        $tempDir = $this->createTempDirectory(['app/A.php' => "<?php\n"]);
+        $this->writePHPStanStub($tempDir, sprintf(
+            "echo %s;\nexit(1);\n",
+            var_export((string) json_encode([
+                'totals' => ['errors' => 1, 'file_errors' => 0],
+                'files' => [],
+                'errors' => [$error],
+            ]), true)
+        ));
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertError($result);
+        $this->assertLessThan(2000, strlen($result->getMessage()));
+        $this->assertStringContainsString(
+            'PHPStan reported 1 analysis error(s): Child process error (exit code 255): Deprecated: noise Deprecated: noise',
+            $result->getMessage()
+        );
+        $this->assertStringNotContainsString("\n", $result->getMessage());
+
+        // The error is bounded once, where the runner reads it, so the message, the
+        // metadata and the uploaded report all quote the same excerpt.
+        $excerpt = rtrim(substr('Child process error (exit code 255): '.str_repeat('Deprecated: noise ', 40), 0, 500)).'...';
+        $this->assertSame('PHPStan reported 1 analysis error(s): '.$excerpt, $result->getMessage());
+        $this->assertSame([$excerpt], $result->getMetadata()['analysis_errors']);
+        $this->assertLessThan(10000, strlen((string) json_encode($result->toArray())));
+    }
+
+    public function test_aborted_run_excerpt_is_not_truncated_twice(): void
+    {
+        // The runner's own description of an aborted run is already bounded and longer
+        // than the bound, since it leads with the exit code.
+        $tempDir = $this->createTempDirectory(['app/A.php' => "<?php\n"]);
+        $this->writePHPStanStub($tempDir, "fwrite(STDERR, str_repeat('E', 2000).'TAIL');\nexit(255);\n");
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertSame(
+            'PHPStan reported 1 analysis error(s): PHPStan produced no analysable output (exit code 255): '.str_repeat('E', 500).'...',
+            $analyzer->analyze()->getMessage()
+        );
+    }
+
+    public function test_bounds_an_oversized_analysis_error_noted_next_to_findings(): void
+    {
+        $error = 'Internal error: '.str_repeat('Deprecated: noise ', 20000);
+
+        $result = $this->analyzeIssues(
+            [['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $missing']],
+            [],
+            [$error, 'Internal error: child process ran out of memory.']
+        );
+
+        $this->assertFailed($result);
+        $this->assertLessThan(2000, strlen($result->getMessage()));
+        $this->assertStringContainsString('these findings may be incomplete: Internal error: Deprecated: noise', $result->getMessage());
+        $this->assertStringEndsWith(' | Internal error: child process ran out of memory.', $result->getMessage());
+        $this->assertSame('Internal error: child process ran out of memory.', $result->getMetadata()['analysis_errors'][1]);
+        $this->assertLessThan(10000, strlen((string) json_encode($result->toArray())));
+    }
+
+    /**
+     * An error within the bound is quoted byte for byte as PHPStan gave it, line breaks
+     * included, so the output stays stable for every run that was not flooded.
+     *
+     * @dataProvider analysisErrorsWithinTheBoundProvider
+     *
+     * @param  list<string>  $errors
+     */
+    #[DataProvider('analysisErrorsWithinTheBoundProvider')]
+    public function test_quotes_an_analysis_error_within_the_bound_unchanged(array $errors, string $expected): void
+    {
+        $result = $this->analyzeIssues([], [], $errors);
+
+        $this->assertError($result);
+        $this->assertSame($expected, $result->getMessage());
+    }
+
+    /**
+     * @return array<string, array{list<string>, string}>
+     */
+    public static function analysisErrorsWithinTheBoundProvider(): array
+    {
+        $atTheBound = 'Internal error: '.str_repeat('x', 500 - strlen('Internal error: '));
+        $multiLine = "Internal error: child process died.\nRun PHPStan with -v option and post the stack trace.";
+
+        return [
+            'short' => [
+                ['Internal error: child process ran out of memory.'],
+                'PHPStan reported 1 analysis error(s): Internal error: child process ran out of memory.',
+            ],
+            'multi-line' => [
+                [$multiLine],
+                'PHPStan reported 1 analysis error(s): '.$multiLine,
+            ],
+            'exactly at the bound' => [
+                [$atTheBound],
+                'PHPStan reported 1 analysis error(s): '.$atTheBound,
+            ],
+        ];
+    }
+
     public function test_keeps_the_severity_result_when_analysis_errors_accompany_file_issues(): void
     {
         $result = $this->analyzeIssues(

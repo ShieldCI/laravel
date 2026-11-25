@@ -1122,6 +1122,61 @@ class PHPStanRunnerTest extends TestCase
         $this->assertSame('PHPStan produced no analysable output (exit code 3)', $message);
     }
 
+    public function test_bounds_an_oversized_reported_error_to_one_line(): void
+    {
+        // A child process that floods stderr comes back from PHPStan as one top-level error
+        // the size of the flood.
+        $this->createMockPHPStan([], ['Internal error: '.str_repeat("Deprecated: noise\n", 20000)], 1);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame(
+            [rtrim(substr('Internal error: '.str_repeat('Deprecated: noise ', 40), 0, 500)).'...'],
+            $runner->getAnalysisErrors()
+        );
+    }
+
+    public function test_leaves_a_reported_error_within_the_bound_byte_for_byte(): void
+    {
+        $atTheBound = "Internal error: child process died.\n".str_repeat('x', 500 - 36);
+        $multiLine = "Internal error: child process died.\nRun PHPStan with -v option and post the stack trace.";
+        $this->createMockPHPStan([], [$atTheBound, $multiLine], 1);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app']);
+
+        $this->assertSame(500, strlen($atTheBound));
+        $this->assertSame([$atTheBound, $multiLine], $runner->getAnalysisErrors());
+    }
+
+    public function test_bounding_a_reported_error_survives_a_regex_engine_failure(): void
+    {
+        $error = "Internal error:\n".str_repeat('Deprecated: noise ', 100);
+
+        $runner = new PHPStanRunner($this->tempDir);
+
+        $reflection = new ReflectionClass($runner);
+        $method = $reflection->getMethod('boundReportedError');
+        $method->setAccessible(true);
+
+        $original = ini_get('pcre.backtrack_limit');
+        ini_set('pcre.backtrack_limit', '0');
+
+        try {
+            if (preg_replace('/\s+/', ' ', 'a b') !== null) {
+                $this->markTestSkipped('This PCRE build does not honour a zero match limit.');
+            }
+
+            $bounded = $method->invoke($runner, $error);
+        } finally {
+            ini_set('pcre.backtrack_limit', $original === false ? '1000000' : $original);
+        }
+
+        // The whitespace stays as it was, but the error is still bounded rather than lost.
+        $this->assertSame(rtrim(substr($error, 0, 500)).'...', $bounded);
+    }
+
     public function test_analyze_clears_a_recorded_failure_from_a_previous_run(): void
     {
         $this->createFailingMockPHPStan('Internal error.');

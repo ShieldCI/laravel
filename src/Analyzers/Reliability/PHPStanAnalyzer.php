@@ -610,6 +610,17 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
 
         $paths = $this->resolvePaths();
 
+        // Applied before the run rather than only to its report: from PHPStan 1.11.6 an
+        // unparseable excluded file would otherwise stop the run and drop every other finding.
+        // Blade templates are left out too, by extension, wherever they live.
+        $exclusions = $this->phpstanExclusions($paths, $this->explicitPaths() ?? []);
+
+        // Skipped rather than passed: nothing was analysed, so there is no clean run to report,
+        // and PHPStan left with no file to analyse aborts instead.
+        if (! $exclusions['analysable']) {
+            return $this->skipped('Every analysed path is excluded by shieldci.excluded_paths, so static analysis was not run');
+        }
+
         $enabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.categories', array_keys(self::ISSUE_CATEGORIES)), 'is_string'));
         $disabledCategories = array_values(array_filter((array) $this->config->get('shieldci.analyzers.reliability.phpstan.disabled_categories', []), 'is_string'));
 
@@ -636,7 +647,21 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
 
         try {
             // Run PHPStan once on all paths
-            $runner->analyze($paths, $level, $timeout, $memoryLimit);
+            $runner->analyze($paths, $level, $timeout, $memoryLimit, [], $exclusions['excludePaths']);
+
+            // Whether anything is left after the exclusions depends on the project's own
+            // fileExtensions and excludePaths, so only PHPStan can say. A run that found nothing
+            // because of what was left out analysed nothing, which is not a clean run; one that
+            // found nothing with nothing left out stays the error it was before.
+            if ($runner->foundNoFiles()) {
+                if ($exclusions['excludesConfigured']) {
+                    return $this->skipped('PHPStan found no file to analyse once shieldci.excluded_paths and Blade templates were left out, so static analysis was not run');
+                }
+
+                if ($this->holdsBladeTemplate($paths)) {
+                    return $this->skipped('The analysed paths hold only Blade templates, which PHPStan is not given, so static analysis was not run');
+                }
+            }
 
             // An error PHPStan could not attach to a file is still a failed analysis
             $analysisErrors = $runner->getAnalysisErrors();

@@ -32,6 +32,13 @@ class PHPStanAnalyzerTest extends AnalyzerTestCase
     private const RELATION_MESSAGE = "Relation 'widgets' is not found in App\Models\Team model.";
 
     /**
+     * The generated config and base path of the last analyzeWithRecordedPhpstanArguments() run.
+     */
+    private string $recordedConfig = '';
+
+    private string $recordedBasePath = '';
+
+    /**
      * @param  array<string, mixed>  $config
      */
     protected function createAnalyzer(array $config = []): AnalyzerInterface
@@ -1932,12 +1939,373 @@ PHP;
 
     public function test_the_project_root_as_an_explicit_path_waives_no_exclude_pattern(): void
     {
-        // '.' names the whole project; a pattern that covers it is not waived for every file.
+        // '.' names the whole project; a pattern that covers it is not waived for every file,
+        // so nothing is left for PHPStan to analyse.
         $result = $this->analyzeWithExcludePatterns(['*'], [
             ['file' => 'tests/Feature/ExampleTest.php', 'identifier' => 'variable.undefined', 'message' => 'Undefined variable: $response'],
         ], ['paths' => ['.']]);
 
-        $this->assertPassed($result);
+        $this->assertSkipped($result);
+    }
+
+    public function test_an_unparseable_file_in_an_excluded_directory_does_not_stop_the_run(): void
+    {
+        // #659: PHPStan stops at a file it cannot parse and drops every other file's
+        // findings, so an excluded file has to be kept out of the run, not just the report.
+        $result = $this->analyzeRealProjectWithArchive(
+            ['app/Archive/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app/Archive/*']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(['undefined-variable' => 1], $result->getMetadata()['issues_by_category']);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_an_unparseable_file_in_an_excluded_subdirectory_does_not_stop_the_run(): void
+    {
+        $result = $this->analyzeRealProjectWithArchive(
+            [
+                'app/Archive/Imports/Damaged.php' => "<?php\n\nclass Damaged {\n",
+                'app/Archive/Kept.php' => "<?php\n\nnamespace App\\Archive;\n\nclass Kept\n{\n    public function total(): int\n    {\n        return \$sum;\n    }\n}\n",
+            ],
+            ['app/Archive/Imports/*']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_reports_the_finding_from_a_real_run_with_an_exclude_pattern_and_nothing_to_exclude(): void
+    {
+        // Control for the two above: the true positive they assert, without the damaged file.
+        $result = $this->analyzeRealProjectWithArchive([], ['app/Archive/*']);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(['undefined-variable' => 1], $result->getMetadata()['issues_by_category']);
+    }
+
+    public function test_an_unparseable_file_that_is_not_excluded_still_stops_the_run(): void
+    {
+        // Control: narrowing must not hide a damaged file the project still analyses.
+        $result = $this->analyzeRealProjectWithArchive(
+            ['app/Archive/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app/Elsewhere/*']
+        );
+
+        $this->assertFailed($result);
+        // PHPStan names the file by its real path, and the temp directory sits behind a symlink on macOS.
+        $stoppedAt = $result->getMetadata()['stopped_at'][0];
+        $this->assertIsString($stoppedAt);
+        $this->assertStringEndsWith('app/Archive/Damaged.php:4', $stoppedAt);
+    }
+
+    public function test_an_explicit_phpstan_path_is_analysed_under_an_exclude_pattern_covering_it(): void
+    {
+        $result = $this->analyzeRealProjectWithArchive(
+            ['tests/Feature/LedgerTest.php' => "<?php\n\nnamespace Tests\\Feature;\n\nclass LedgerTest\n{\n    public function total(): int\n    {\n        return \$balance;\n    }\n}\n"],
+            ['tests/*'],
+            ['tests']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Undefined variable: $balance', $result->getIssues()[0]->metadata['phpstan_message']);
+    }
+
+    public function test_skips_without_running_phpstan_when_every_analysed_path_is_excluded(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Services/ExampleService.php' => "<?php\n\nnamespace App\\Services;\n\nclass ExampleService {}\n",
+        ]);
+        $ranMarker = $tempDir.'/phpstan-ran.txt';
+        $this->writePHPStanStub($tempDir, sprintf(
+            "file_put_contents(%s, 'ran');\necho '{\"totals\":{\"errors\":0,\"file_errors\":0},\"files\":{},\"errors\":[]}';\n",
+            var_export($ranMarker, true)
+        ));
+
+        $analyzer = $this->createAnalyzer(['paths' => []]);
+        $this->assertInstanceOf(PHPStanAnalyzer::class, $analyzer);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setExcludePatterns(['app/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('excluded_paths', $result->getMessage());
+        $this->assertFileDoesNotExist($ranMarker);
+    }
+
+    public function test_hands_phpstan_the_configured_paths_and_excludes_beneath_them_in_its_config(): void
+    {
+        // R3: argv carries the configured paths as master did, however many files are
+        // excluded, so a large directory cannot overflow the command line.
+        $files = ['app/Archive/Damaged.php' => "<?php\n"];
+
+        for ($i = 0; $i < 300; $i++) {
+            $files[sprintf('app/Ledgers/Ledger%03d.php', $i)] = "<?php\n";
+        }
+
+        $files['app/Ledgers/Draft.php'] = "<?php\n";
+
+        $arguments = $this->analyzeWithRecordedPhpstanArguments(
+            ['analyzers' => ['reliability' => ['phpstan' => ['paths' => ['app']]]]],
+            $files,
+            ['app/Archive/*', 'app/Ledgers/Draft.php']
+        );
+
+        $paths = array_values(array_filter($arguments, static fn (string $argument): bool => ! str_starts_with($argument, '-') && $argument !== 'analyse'));
+        $realBase = (string) realpath($this->recordedBasePath);
+
+        $this->assertSame(['app'], $paths);
+        $this->assertStringContainsString(
+            "    excludePaths:\n        analyse:\n            - '{$realBase}/app/Archive/*'\n            - '{$realBase}/app/Ledgers/Draft.php'",
+            $this->recordedConfig
+        );
+    }
+
+    public function test_excludes_only_blade_templates_when_nothing_else_is_excluded(): void
+    {
+        $this->analyzeWithRecordedPhpstanArguments(
+            ['analyzers' => ['reliability' => ['phpstan' => ['paths' => ['app']]]]],
+            [],
+            ['app/Archive/*']
+        );
+
+        $this->assertStringEndsWith("    excludePaths:\n        analyse:\n            - '*.blade.php'", $this->recordedConfig);
+    }
+
+    public function test_analyses_a_projects_extra_file_extensions_beside_an_excluded_directory(): void
+    {
+        // Only the project's fileExtensions say what PHPStan will find, so a directory holding
+        // no .php file outside its excludes is still analysed.
+        $result = $this->analyzeRealProjectWithArchive([
+            'phpstan.neon' => "parameters:\n    fileExtensions:\n        - php\n        - inc\n",
+            'lib/report.inc' => "<?php\n\nfunction ledger_report(): int\n{\n    return \$missing;\n}\n",
+            'lib/Archive/Dormant.php' => "<?php\n\nnamespace Lib\\Archive;\n\nclass Dormant {}\n",
+        ], ['lib/Archive/*'], ['lib']);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Undefined variable: $missing', $result->getIssues()[0]->metadata['phpstan_message']);
+    }
+
+    public function test_skips_when_the_projects_own_excludes_leave_phpstan_nothing(): void
+    {
+        // Ours and the project's excludePaths together can leave no file, and PHPStan then
+        // aborts with "No files found to analyse" rather than reporting a clean run.
+        $result = $this->analyzeRealProjectWithArchive([
+            'phpstan.neon' => "parameters:\n    excludePaths:\n        - app/Services\n",
+            'app/Archive/Dormant.php' => "<?php\n\nnamespace App\\Archive;\n\nclass Dormant {}\n",
+        ], ['app/Archive/*'], ['app'], true);
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('excluded_paths', $result->getMessage());
+    }
+
+    public function test_excludes_a_directory_whose_name_phpstan_would_read_as_a_pattern(): void
+    {
+        $result = $this->analyzeRealProjectWithArchive(
+            ['app/Legacy[1]/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app/Legacy[1]/*']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_keeps_the_findings_of_files_sharing_an_excluded_directorys_name(): void
+    {
+        // PHPStan 1.x matches a literal entry as a string prefix, so a directory entry without
+        // a trailing separator also left out app/Models/User.php and app/Models/UserProfile/.
+        $result = $this->analyzeRealProjectWithArchive([
+            'app/Models/User/Legacy.php' => "<?php\n\nclass Damaged {\n",
+            'app/Models/User.php' => "<?php\n\nfunction user_total(): int\n{\n    return \$gone;\n}\n",
+            'app/Models/UserProfile/Profile.php' => "<?php\n\nfunction profile_total(): int\n{\n    return \$profile;\n}\n",
+        ], ['app/Models/User/*']);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(3, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_excludes_a_directory_whose_name_ends_with_a_closing_bracket(): void
+    {
+        $result = $this->analyzeRealProjectWithArchive(
+            ['app/v2]/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app/v2]/*']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_reports_an_error_when_phpstan_finds_no_file_and_nothing_was_excluded(): void
+    {
+        // Only an exclusion taken from shieldci.excluded_paths, or a Blade template left out,
+        // turns PHPStan's "No files found to analyse" into a skip.
+        $result = $this->inRealPHPStanProject(['app/notes.txt' => "notes\n"], function (string $tempDir): ResultInterface {
+            $analyzer = $this->createAnalyzer(['paths' => ['app']]);
+            $analyzer->setBasePath($tempDir);
+
+            return $analyzer->analyze();
+        });
+
+        // PHPStan's own wording is not asserted: on 1.12 an "old version" banner fills the
+        // quoted excerpt before it.
+        $this->assertError($result);
+        $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
+    }
+
+    public function test_skips_when_every_analysed_file_is_a_blade_template(): void
+    {
+        $result = $this->inRealPHPStanProject(['resources/views/ledger.blade.php' => "<?php if ( ?>\n"], function (string $tempDir): ResultInterface {
+            $analyzer = $this->createAnalyzer(['paths' => ['resources']]);
+            $analyzer->setBasePath($tempDir);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('Blade templates', $result->getMessage());
+        $this->assertStringNotContainsString('excluded_paths', $result->getMessage());
+    }
+
+    public function test_excludes_a_path_whose_name_neon_would_read_as_a_parameter(): void
+    {
+        $result = $this->analyzeRealProjectWithArchive(
+            ['app/%legacy%/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app/%legacy%/*']
+        );
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_excludes_a_shared_path_that_is_itself_an_excluded_file(): void
+    {
+        $result = $this->inRealPHPStanProject([
+            'app/Services/LedgerService.php' => "<?php\n\nnamespace App\\Services;\n\nclass LedgerService\n{\n    public function total(): int\n    {\n        return \$sum;\n    }\n}\n",
+            'app/legacy.php' => "<?php\n\nclass Damaged {\n",
+        ], function (string $tempDir): ResultInterface {
+            $analyzer = new PHPStanAnalyzer(new Repository(['shieldci' => [
+                'paths' => ['analyze' => ['app/Services', 'app/legacy.php']],
+            ]]));
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setExcludePatterns(['app/legacy.php']);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_keeps_a_projects_extra_file_extensions_under_an_exclude_pattern(): void
+    {
+        // R1: PHPStan walks the configured paths itself, so the project's fileExtensions apply.
+        $result = $this->analyzeRealProjectWithArchive([
+            'phpstan.neon' => "parameters:\n    fileExtensions:\n        - php\n        - inc\n",
+            'app/report.inc' => "<?php\n\nfunction ledger_report(): int\n{\n    return \$missing;\n}\n",
+            'app/Archive/Dormant.php' => "<?php\n\nnamespace App\\Archive;\n\nclass Dormant {}\n",
+        ], ['app/Archive/*']);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+    }
+
+    public function test_still_discovers_a_class_declared_in_an_excluded_file(): void
+    {
+        // R2: an excluded file is left out of the analysis, not out of discovery, so a class
+        // declared there is still found without an autoloader.
+        $result = $this->analyzeRealProjectWithArchive([
+            'app/Archive/ArchivedRates.php' => "<?php\n\nnamespace App\\Archive;\n\nclass ArchivedRates\n{\n    public static function rate(): int\n    {\n        return 3;\n    }\n}\n",
+            'app/Services/Billing.php' => "<?php\n\nnamespace App\\Services;\n\nuse App\\Archive\\ArchivedRates;\n\nclass Billing\n{\n    public function rate(): int\n    {\n        return ArchivedRates::rate();\n    }\n}\n",
+        ], ['app/Archive/*']);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(['undefined-variable' => 1], $result->getMetadata()['issues_by_category']);
+    }
+
+    public function test_an_unparseable_blade_template_does_not_stop_the_run_on_the_stock_paths(): void
+    {
+        // R4: shieldci.paths.analyze ships with resources/views, which holds Blade templates
+        // rather than PHP classes; one whose PHP does not parse used to stop the whole run.
+        $result = $this->inRealPHPStanProject([
+            'app/Services/LedgerService.php' => "<?php\n\nnamespace App\\Services;\n\nclass LedgerService\n{\n    public function total(): int\n    {\n        return \$sum;\n    }\n}\n",
+            'resources/views/ledger.blade.php' => "<?php if ( ?>\n",
+            'config/ledger.php' => "<?php\n\nreturn [];\n",
+            'database/seeders/LedgerSeeder.php' => "<?php\n\nnamespace Database\\Seeders;\n\nclass LedgerSeeder {}\n",
+            'routes/web.php' => "<?php\n",
+        ], function (string $tempDir): ResultInterface {
+            $analyzer = new PHPStanAnalyzer(new Repository(['shieldci' => [
+                'paths' => ['analyze' => AnalyzerManager::DEFAULT_ANALYZE_PATHS],
+            ]]));
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setExcludePatterns(['vendor/*', 'node_modules/*', 'storage/*', 'bootstrap/cache/*', 'tests/*']);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    /**
+     * @dataProvider projectExcludePathsProvider
+     */
+    #[DataProvider('projectExcludePathsProvider')]
+    public function test_merges_with_the_projects_own_exclude_paths(string $neon): void
+    {
+        // The project's excludePaths still apply alongside ours, in either of PHPStan's forms.
+        //
+        // Run from the resolved path: the project's config is included by the base path as
+        // given, so PHPStan anchors its relative entries there, while it finds files from the
+        // resolved working directory. Behind a symlink (macOS's temp directory) the project's
+        // own entries then match nothing, on master too, which is a separate defect from the
+        // merge this test is about.
+        $result = $this->analyzeRealProjectWithArchive([
+            'phpstan.neon' => $neon,
+            'app/Archive/Damaged.php' => "<?php\n\nclass Damaged {\n",
+            'app/Scratch/Sketch.php' => "<?php\n\nnamespace App\\Scratch;\n\nclass Sketch\n{\n    public function total(): int\n    {\n        return \$draft;\n    }\n}\n",
+        ], ['app/Archive/*'], ['app'], true);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('Undefined variable: $sum', $result->getIssues()[0]->metadata['phpstan_message']);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function projectExcludePathsProvider(): array
+    {
+        return [
+            'list form' => ["parameters:\n    excludePaths:\n        - app/Scratch\n"],
+            'structure form' => ["parameters:\n    excludePaths:\n        analyseAndScan:\n            - app/Scratch\n"],
+        ];
+    }
+
+    public function test_excludes_a_path_whose_name_needs_quoting_in_neon(): void
+    {
+        // A space, a # (a NEON comment) and a quote all have to survive the generated config.
+        $result = $this->analyzeRealProjectWithArchive([
+            "app/Old #2's files/Damaged.php" => "<?php\n\nclass Damaged {\n",
+        ], ["app/Old #2's files/*"]);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
     }
 
     public function test_issue_categories_declaration_is_internally_consistent(): void
@@ -1962,6 +2330,41 @@ PHP;
                 );
             }
         }
+    }
+
+    /**
+     * Run the analyzer through the real PHPStan over a project holding one undefined variable.
+     *
+     * @param  array<string, string>  $files  extra project files, path => contents
+     * @param  array<int, string>  $excludePatterns
+     * @param  array<int, string>  $paths  shieldci.analyzers.reliability.phpstan.paths
+     * @param  bool  $resolvedBasePath  run from the project's resolved path rather than the one
+     *                                  the system temp directory gives, which is a symlink on macOS
+     */
+    private function analyzeRealProjectWithArchive(array $files, array $excludePatterns, array $paths = ['app'], bool $resolvedBasePath = false): ResultInterface
+    {
+        return $this->inRealPHPStanProject(array_merge([
+            'app/Services/LedgerService.php' => <<<'PHP'
+            <?php
+
+            namespace App\Services;
+
+            class LedgerService
+            {
+                public function total(): int
+                {
+                    return $sum;
+                }
+            }
+            PHP,
+        ], $files), function (string $tempDir) use ($excludePatterns, $paths, $resolvedBasePath): ResultInterface {
+            $analyzer = $this->createAnalyzer(['paths' => $paths]);
+            $this->assertInstanceOf(PHPStanAnalyzer::class, $analyzer);
+            $analyzer->setBasePath($resolvedBasePath ? (string) realpath($tempDir) : $tempDir);
+            $analyzer->setExcludePatterns($excludePatterns);
+
+            return $analyzer->analyze();
+        });
     }
 
     /**
@@ -2202,13 +2605,15 @@ PHP;
      * Run the analyzer against a PHPStan binary that records the arguments it was handed.
      *
      * @param  array<string, mixed>  $shieldci
+     * @param  array<string, string>  $files  extra project files, path => contents
+     * @param  array<int, string>  $excludePatterns
      * @return list<string>
      */
-    private function analyzeWithRecordedPhpstanArguments(array $shieldci): array
+    private function analyzeWithRecordedPhpstanArguments(array $shieldci, array $files = [], array $excludePatterns = []): array
     {
-        $tempDir = $this->createTempDirectory([
+        $tempDir = $this->createTempDirectory(array_merge([
             'app/Services/AppService.php' => "<?php\n\nnamespace App\\Services;\n\nclass AppService {}\n",
-        ]);
+        ], $files));
 
         $argumentLog = $tempDir.'/phpstan-arguments.txt';
 
@@ -2216,17 +2621,29 @@ PHP;
             <<<'PHP'
             file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
 
+            foreach ($argv as $argument) {
+                if (str_starts_with($argument, '--configuration=')) {
+                    copy(substr($argument, strlen('--configuration=')), %s);
+                }
+            }
+
             echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
 
             PHP,
-            var_export($argumentLog, true)
+            var_export($argumentLog, true),
+            var_export($tempDir.'/phpstan-config.neon', true)
         ));
+
+        $this->recordedBasePath = $tempDir;
 
         $analyzer = new PHPStanAnalyzer(new Repository(['shieldci' => $shieldci]));
         $analyzer->setBasePath($tempDir);
+        $analyzer->setExcludePatterns($excludePatterns);
         $analyzer->analyze();
 
         $this->assertFileExists($argumentLog, 'PHPStan was never invoked');
+
+        $this->recordedConfig = (string) file_get_contents($tempDir.'/phpstan-config.neon');
 
         return array_values(array_filter(explode("\n", (string) file_get_contents($argumentLog))));
     }

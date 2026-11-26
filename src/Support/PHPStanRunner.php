@@ -59,6 +59,20 @@ class PHPStanRunner
     private const MAX_OUTPUT_SNIPPET = 500;
 
     /**
+     * The exclude entry that leaves every Blade template out of a run, by extension.
+     *
+     * A pattern rather than a path, so it need not exist, and PHPStan matches it against the
+     * absolute path, where * crosses directories. Templates declare no symbols, so it is the one
+     * entry that is safe under PHPStan 1.x's excludes_analyse, which also skips discovery.
+     */
+    public const BLADE_TEMPLATES_ENTRY = '*.blade.php';
+
+    /**
+     * PHPStan 1.x's refusal of a config that sets both its legacy and its current exclude key.
+     */
+    private const LEGACY_EXCLUDE_CONFLICT = 'excludes_analyse and excludePaths cannot be used at the same time';
+
+    /**
      * Project config names PHPStan discovers when run without --configuration, in its order.
      *
      * The generated config is passed with --configuration, which turns PHPStan's own
@@ -102,9 +116,38 @@ class PHPStanRunner
      */
     private ?string $tempConfigFile = null;
 
+    /**
+     * Absolute paths the current analyze() call leaves out of the analysis.
+     *
+     * @var array<int, string>
+     */
+    private array $excludePaths = [];
+
+    /**
+     * Whether the current run writes its exclusions under PHPStan 1.x's legacy excludes_analyse.
+     */
+    private bool $legacyExcludeKey = false;
+
+    /**
+     * Whether the last run aborted because it found no file to analyse.
+     */
+    private bool $foundNoFiles = false;
+
     public function __construct(
         private string $basePath
     ) {}
+
+    /**
+     * Whether the last run stopped because it found no file to analyse.
+     *
+     * PHPStan aborts that way, without a report, when every file under the paths is excluded
+     * or has an extension it does not read. Callers that passed exclusions read it as nothing
+     * left to analyse rather than as a failed run.
+     */
+    public function foundNoFiles(): bool
+    {
+        return $this->foundNoFiles;
+    }
 
     /**
      * Run PHPStan analysis on specified paths.
@@ -129,13 +172,26 @@ class PHPStanRunner
      * installed version does not have makes PHPStan abort, so callers check it against
      * highestLevel() first.
      *
+     * $excludePaths are entries left out of the analysis but still scanned for symbols. They
+     * are written under excludePaths.analyse, which merges with the project's own entries. A
+     * literal entry must exist, since PHPStan aborts on one that names nothing; a pattern
+     * entry need not. A project still on PHPStan 1.x's excludes_analyse cannot be given
+     * excludePaths as well, so its run is repeated with BLADE_TEMPLATES_ENTRY alone under
+     * that key. PHPStan 1.x also leaves those entries out of symbol discovery, which templates
+     * can afford and excluded classes cannot, so the other entries are dropped for that run
+     * and the caller's report filter is what applies them, as before entries were written.
+     *
      * @param  string|array<string>  $paths
      * @param  int|'max'  $level
      * @param  array<string, bool|array{}>  $parameters
+     * @param  array<int, string>  $excludePaths
      * @return $this
      */
-    public function analyze(string|array $paths, int|string $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = []): self
+    public function analyze(string|array $paths, int|string $level = 5, int $timeout = 300, ?string $memoryLimit = null, array $parameters = [], array $excludePaths = []): self
     {
+        $this->excludePaths = $excludePaths;
+        $this->legacyExcludeKey = false;
+
         // Written into the generated config verbatim, where any other string would reach
         // PHPStan as an invalid level or as extra NEON.
         if (is_string($level) && $level !== 'max') {
@@ -165,8 +221,23 @@ class PHPStanRunner
             );
         }
 
+        if ($this->excludePaths !== [] && str_contains($process->getErrorOutput(), self::LEGACY_EXCLUDE_CONFLICT)) {
+            $this->legacyExcludeKey = true;
+            $process = $this->runPhpstan(
+                array_values(array_diff($includes, $loadedElsewhere)),
+                $paths,
+                $level,
+                $timeout,
+                $memoryLimit,
+                $parameters
+            );
+        }
+
         // Parse JSON output
         $decoded = json_decode($process->getOutput(), true);
+
+        $this->foundNoFiles = ! is_array($decoded)
+            && str_contains($process->getErrorOutput().$process->getOutput(), 'No files found to analyse');
 
         // PathNotFoundException, "No files found to analyse." and fatal errors all
         // abort before the JSON formatter runs, so there is no report to read and no
@@ -522,6 +593,32 @@ class PHPStanRunner
             $lines[] = is_bool($value)
                 ? '    '.$name.': '.($value ? 'true' : 'false')
                 : '    '.$name.'!: []';
+        }
+
+        // Under PHPStan 1.x's excludes_analyse an entry is also left out of symbol discovery, so
+        // a class declared in an excluded file would be reported as not found where it is used.
+        // That run keeps only the template entry, and excluded_paths falls back to filtering
+        // the report, as it did before entries were written at all.
+        $excludePaths = $this->legacyExcludeKey
+            ? array_values(array_intersect($this->excludePaths, [self::BLADE_TEMPLATES_ENTRY]))
+            : $this->excludePaths;
+
+        if ($excludePaths !== []) {
+            if ($this->legacyExcludeKey) {
+                $lines[] = '    excludes_analyse:';
+                $indent = '        ';
+            } else {
+                $lines[] = '    excludePaths:';
+                $lines[] = '        analyse:';
+                $indent = '            ';
+            }
+
+            foreach ($excludePaths as $path) {
+                // A single-quoted NEON string takes a path as written, # and spaces included.
+                // Only the quote is escaped, by doubling it, and %, which NEON expands as a
+                // parameter even inside quotes, is doubled too.
+                $lines[] = $indent."- '".str_replace(["'", '%'], ["''", '%%'], $path)."'";
+            }
         }
 
         if (PlatformDetector::isServerless()) {

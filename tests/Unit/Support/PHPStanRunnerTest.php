@@ -436,6 +436,136 @@ class PHPStanRunnerTest extends TestCase
         $this->assertGreaterThan($includesAt, $resetAt);
     }
 
+    public function test_writes_exclude_paths_as_analyse_entries_without_replacing_the_users(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], ['/project/app/Archive', '/project/app/Ledger.php']);
+
+        $this->assertStringContainsString(
+            "    excludePaths:\n        analyse:\n            - '/project/app/Archive'\n            - '/project/app/Ledger.php'",
+            $this->getCapturedConfig()
+        );
+        $this->assertStringNotContainsString('excludePaths!', $this->getCapturedConfig());
+    }
+
+    /**
+     * @dataProvider neonQuotingProvider
+     */
+    #[DataProvider('neonQuotingProvider')]
+    public function test_quotes_an_exclude_path_as_a_neon_string(string $path, string $expected): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], [$path]);
+
+        $this->assertStringContainsString("\n            - ".$expected, $this->getCapturedConfig());
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function neonQuotingProvider(): array
+    {
+        return [
+            'a space' => ['/project/app/Old files', "'/project/app/Old files'"],
+            'a comment marker' => ['/project/app/#2', "'/project/app/#2'"],
+            'a quote' => ["/project/app/Ledger's", "'/project/app/Ledger''s'"],
+            'all three' => ["/project/app/Old #2's files", "'/project/app/Old #2''s files'"],
+            'a NEON parameter marker' => ['/project/app/%legacy%/Old.php', "'/project/app/%%legacy%%/Old.php'"],
+        ];
+    }
+
+    public function test_writes_exclude_paths_under_the_legacy_key_when_the_users_config_uses_it(): void
+    {
+        // PHPStan 1.x refuses a config that sets both excludes_analyse and excludePaths, so a
+        // project still on the legacy key gets our entries under that key instead.
+        $this->writePHPStanStub(sprintf(
+            <<<'PHP'
+            foreach (array_slice($argv, 1) as $arg) {
+                if (str_starts_with($arg, '--configuration=')) {
+                    $config = (string) file_get_contents(substr($arg, strlen('--configuration=')));
+
+                    if (str_contains($config, 'excludePaths')) {
+                        fwrite(STDERR, "Configuration parameters excludes_analyse and excludePaths cannot be used at the same time.\n");
+                        exit(1);
+                    }
+
+                    file_put_contents(%s, $config);
+                }
+            }
+
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($this->tempDir.'/captured_config.neon', true)
+        ));
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], ['/project/app/Archive', '/project/app/Legacy.php', PHPStanRunner::BLADE_TEMPLATES_ENTRY]);
+
+        // PHPStan 1.x also leaves excludes_analyse entries out of symbol discovery, so a class
+        // declared in an excluded file would turn up as not found wherever it is used. Only
+        // the template entry goes there: templates declare nothing.
+        $config = $this->getCapturedConfig();
+        $this->assertStringEndsWith("    excludes_analyse:\n        - '*.blade.php'", $config);
+        $this->assertStringNotContainsString('/project/app/', $config);
+        $this->assertSame([], $runner->getAnalysisErrors());
+    }
+
+    public function test_reports_a_run_that_found_no_files_after_the_legacy_key_retry(): void
+    {
+        $this->writePHPStanStub(<<<'PHP'
+            foreach (array_slice($argv, 1) as $arg) {
+                if (str_starts_with($arg, '--configuration=')
+                    && str_contains((string) file_get_contents(substr($arg, strlen('--configuration='))), 'excludePaths')) {
+                    fwrite(STDERR, "Configuration parameters excludes_analyse and excludePaths cannot be used at the same time.\n");
+                    exit(1);
+                }
+            }
+
+            fwrite(STDERR, " ! [NOTE] No files found to analyse.\n");
+
+            PHP);
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], ['/project/app/Archive', PHPStanRunner::BLADE_TEMPLATES_ENTRY]);
+
+        $this->assertTrue($runner->foundNoFiles());
+    }
+
+    public function test_reports_a_run_that_found_no_files_to_analyse(): void
+    {
+        $this->writePHPStanStub("fwrite(STDERR, \" [ERROR] No files found to analyse.\\n\");\nexit(1);\n");
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], ['*.blade.php']);
+
+        $this->assertTrue($runner->foundNoFiles());
+    }
+
+    public function test_a_run_with_a_report_did_not_find_no_files(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], ['*.blade.php']);
+
+        $this->assertFalse($runner->foundNoFiles());
+    }
+
+    public function test_writes_no_exclude_paths_key_without_exclude_paths(): void
+    {
+        $this->createMockPHPStanWithConfigCapture();
+
+        $runner = new PHPStanRunner($this->tempDir);
+        $runner->analyze(['app'], 5, 300, null, [], []);
+
+        $this->assertStringNotContainsString('excludePaths', $this->getCapturedConfig());
+    }
+
     public function test_generates_config_with_carbon_extension(): void
     {
         // Create mock Carbon extension

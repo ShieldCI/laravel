@@ -115,6 +115,16 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             return $this->skipped('Every analysed path is under resources/views, which holds Blade templates rather than PHP classes, so collection calls were not analysed');
         }
 
+        // shieldci.excluded_paths and Blade templates, by extension wherever they live, are
+        // applied before the run: from PHPStan 1.11.6 one unparseable file stops it and drops
+        // every finding.
+        $exclusions = $this->phpstanExclusions($paths);
+
+        // Skipped rather than passed, as above: nothing was analysed.
+        if (! $exclusions['analysable']) {
+            return $this->skipped('Every analysed path is excluded by shieldci.excluded_paths, so collection calls were not analysed');
+        }
+
         try {
             $runner->analyze(
                 $paths,
@@ -134,8 +144,23 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
                     'ignoreErrors' => [],
                     // reportUnmatchedIgnoredErrors is off for every run the runner generates,
                     // so it no longer needs pinning here.
-                ]
+                ],
+                $exclusions['excludePaths']
             );
+
+            // Whether anything is left after the exclusions depends on the project's own
+            // fileExtensions and excludePaths, so only PHPStan can say. A run that found nothing
+            // because of what was left out analysed nothing, which is not a clean run; one that
+            // found nothing with nothing left out stays the error it was before.
+            if ($runner->foundNoFiles()) {
+                if ($exclusions['excludesConfigured']) {
+                    return $this->skipped('PHPStan found no file to analyse once shieldci.excluded_paths and Blade templates were left out, so collection calls were not analysed');
+                }
+
+                if ($this->holdsBladeTemplate($paths)) {
+                    return $this->skipped('The analysed paths hold only Blade templates, which PHPStan is not given, so collection calls were not analysed');
+                }
+            }
 
             $analysisErrors = $runner->getAnalysisErrors();
             $stoppedAt = $this->stoppedAtFiles($runner->getRunStoppingErrors());
@@ -206,8 +231,9 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
      * PHP classes, so a run over it costs time and memory for code Larastan's rule is
      * not written for. An entry is dropped when it is that directory or one below it,
      * whether written relative, with ./ or a trailing slash, with backslashes, or as an
-     * absolute path under the base path. A broader entry such as resources or . is kept
-     * whole: narrowing it would mean listing its other subdirectories for PHPStan.
+     * absolute path under the base path. A broader entry such as resources or . is kept:
+     * phpstanExclusions() leaves every Blade template out of the run by extension, wherever
+     * it lives.
      *
      * No paths at all means the analyzer was built outside AnalyzerManager, and app/
      * stands in for the manager's list. An empty list is returned only when every path

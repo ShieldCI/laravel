@@ -13,11 +13,16 @@ use PhpParser\NodeVisitor\NameResolver;
 use PhpParser\NodeVisitorAbstract;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
+use ShieldCI\AnalyzersCore\Contracts\RecordingParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
+use ShieldCI\AnalyzersCore\Enums\ParseFailureCause;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\Support\PathHelper;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\AnalyzersCore\ValueObjects\ParseFailure;
 use ShieldCI\Concerns\ReadsConfigArrays;
 use ShieldCI\Support\EloquentModelDetector;
 
@@ -69,18 +74,27 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
 
         $issues = [];
 
-        // Only set default paths if not already set (allows tests to override)
-        if (empty($this->paths)) {
+        // No configured paths means the route files alone, under the application's base path
+        if ($this->paths === []) {
             $this->setBasePath(base_path());
-            $this->setPaths(['routes']);
         }
 
-        $routeFiles = $this->getPhpFiles();
-
-        foreach ($routeFiles as $file) {
+        $unparsedRouteFileIds = [];
+        foreach ($this->filesToAnalyze() as $file => $routeFileId) {
             try {
                 $ast = $this->parser->parseFile($file);
                 if (empty($ast)) {
+                    // A route file that does not parse gives no statements, as an empty one does,
+                    // so its routes would read as having no logic: report the failure, once per
+                    // file, as the configured paths can reach one route file under two names
+                    $failure = $routeFileId !== null && ! isset($unparsedRouteFileIds[$routeFileId])
+                        ? $this->parseFailure($file)
+                        : null;
+                    if ($failure !== null && $routeFileId !== null) {
+                        $unparsedRouteFileIds[$routeFileId] = true;
+                        $issues[] = $this->unanalysedRouteFileIssue($file, $failure);
+                    }
+
                     continue;
                 }
 
@@ -123,10 +137,188 @@ class LogicInRoutesAnalyzer extends AbstractFileAnalyzer
             return $this->passed('No business logic found in route files');
         }
 
-        return $this->resultBySeverity(
-            sprintf('Found %d route(s) with business logic that should be moved to controllers', count($issues)),
-            $issues
+        $unanalysedRouteFiles = count($unparsedRouteFileIds);
+        $routes = count($issues) - $unanalysedRouteFiles;
+        $summary = array_filter([
+            $routes > 0 ? sprintf('%d route(s) with business logic that should be moved to controllers', $routes) : null,
+            $unanalysedRouteFiles > 0 ? sprintf('%d route file(s) that could not be analysed', $unanalysedRouteFiles) : null,
+        ]);
+
+        return $this->resultBySeverity('Found '.implode(', and ', $summary), $issues);
+    }
+
+    /**
+     * The Low issue for a route file that never produced an AST, worded by why: a syntax
+     * error, syntax newer than the installed parser reads, or a file that cannot be read.
+     */
+    private function unanalysedRouteFileIssue(string $file, ParseFailure $failure): Issue
+    {
+        [$message, $recommendation, $code] = match ($failure->cause) {
+            ParseFailureCause::SyntaxError => [
+                'Route file could not be parsed: ',
+                'Fix the syntax error in this route file. Until it parses, no analyzer can check the routes it registers, so any business logic in them goes unreported.',
+                'route-file-parse-error',
+            ],
+            ParseFailureCause::UnsupportedSyntax => [
+                'Route file could not be parsed: ',
+                'The PHP parser could not read this route file, although PHP tokenises it: either the code does not compile, or it uses syntax newer than the installed nikic/php-parser supports. Check the file with php -l and fix any error it reports; if it compiles, update nikic/php-parser. Until the file is read, no analyzer can check the routes it registers.',
+                'route-file-parse-error',
+            ],
+            ParseFailureCause::Unreadable => [
+                'Route file could not be read: ',
+                'Check the permissions and ownership of this route file so the user running the analysis can read it. Until it can be read, no analyzer can check the routes it registers.',
+                'route-file-unreadable',
+            ],
+        };
+
+        return $this->createIssueWithSnippet(
+            message: $message.$failure->message,
+            filePath: $file,
+            lineNumber: $failure->line ?? 1,
+            severity: Severity::Low,
+            recommendation: $recommendation,
+            metadata: ['code' => $code]
         );
+    }
+
+    /**
+     * The files to analyse, each mapped to its identity when it is a route file (one under
+     * routes/) and to null otherwise.
+     *
+     * The configured paths are walked exactly as before, so every file they reach is analysed
+     * under the name it was reached by, both names of a linked file included. The route files
+     * are walked apart and only add a file the configured walk did not already reach under any
+     * name, matched by identity, and add none when a configured entry covers routes/ (see
+     * coversRoutes()), so excludes written against that entry keep applying. When the
+     * configured paths reach routes/, the files are therefore the ones they always were;
+     * otherwise the route files are added after them.
+     *
+     * @return array<string, string|null>
+     */
+    private function filesToAnalyze(): array
+    {
+        $configuredPaths = $this->paths;
+
+        try {
+            // No configured paths scans the base path; here it means the route files alone
+            $configuredFiles = $configuredPaths === [] ? [] : $this->getPhpFiles();
+            $this->paths = ['routes'];
+            $routeFiles = $this->getPhpFiles();
+        } finally {
+            $this->paths = $configuredPaths;
+        }
+
+        $routeFileIds = [];
+        foreach ($routeFiles as $file) {
+            $routeFileIds[self::fileIdentity($file)] = $file;
+        }
+
+        $files = [];
+        $reached = [];
+        foreach ($configuredFiles as $file) {
+            $id = self::fileIdentity($file);
+            $reached[$id] = true;
+            $files[$file] = isset($routeFileIds[$id]) ? $id : null;
+        }
+
+        if ($this->coversRoutes($configuredPaths)) {
+            return $files;
+        }
+
+        foreach ($routeFileIds as $id => $file) {
+            if (! isset($reached[$id])) {
+                $files[$file] = $id;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Whether a configured entry is routes/ or a directory holding it. Directories are compared
+     * by identity, so a link to one or a differently cased name on a case-insensitive
+     * filesystem counts, and a sibling such as routes2/ does not. One route file or a
+     * directory below routes/ does not cover it.
+     *
+     * @param  array<string>  $paths
+     */
+    private function coversRoutes(array $paths): bool
+    {
+        $basePath = $this->getBasePath();
+        $directory = realpath(PathHelper::join($basePath, 'routes'));
+        if ($directory === false) {
+            return false;
+        }
+
+        // routes/ and every directory above it
+        $holders = [];
+        do {
+            $holders[self::fileIdentity($directory)] = true;
+            $parent = dirname($directory);
+        } while ($parent !== $directory && ($directory = $parent) !== '');
+
+        $base = realpath($basePath);
+
+        foreach ($paths as $path) {
+            // Resolved as the walk resolves it: joined onto the base, or an absolute path as
+            // written when it lies inside the base
+            $entry = realpath(PathHelper::join($basePath, $path));
+            if ($entry === false && $base !== false && preg_match('#^([/\\\\]|[A-Za-z]:)#', $path) === 1) {
+                $absolute = realpath($path);
+                $entry = $absolute !== false && str_starts_with($absolute.DIRECTORY_SEPARATOR, rtrim($base, '/\\').DIRECTORY_SEPARATOR) ? $absolute : false;
+            }
+
+            if ($entry !== false && is_dir($entry) && isset($holders[self::fileIdentity($entry)])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * What makes two pathnames one file: its device and inode, which also match a symbolic or
+     * hard link and a differently cased name on a case-insensitive filesystem, or its resolved
+     * path where the filesystem reports no inode.
+     */
+    private static function fileIdentity(string $file): string
+    {
+        $stat = @stat($file);
+        if ($stat !== false && $stat['ino'] !== 0) {
+            return $stat['dev'].':'.$stat['ino'];
+        }
+
+        return realpath($file) ?: $file;
+    }
+
+    /**
+     * Why a file the parser returned no statements for did not parse, or null when it parsed
+     * and is empty.
+     *
+     * Read from the parser's own failure log when it keeps one. That log is run-scoped and
+     * shared, so it is consulted for this path only, and its first sighting of the path may
+     * come from an earlier analyzer. Any other parser keeps no log, so the file is parsed again
+     * by a private AstParser, whose log then holds this file alone.
+     */
+    private function parseFailure(string $file): ?ParseFailure
+    {
+        if ($this->parser instanceof RecordingParserInterface) {
+            $log = $this->parser;
+            if (! $log->hasFailure($file)) {
+                return null;
+            }
+        } else {
+            $log = new AstParser;
+            $log->parseFile($file);
+        }
+
+        foreach ($log->failures() as $failure) {
+            if ($failure->path === $file) {
+                return $failure;
+            }
+        }
+
+        return null;
     }
 
     /**

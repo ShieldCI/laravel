@@ -6,15 +6,61 @@ namespace ShieldCI\Tests\Unit\Analyzers\BestPractices;
 
 use Illuminate\Config\Repository;
 use PhpParser\Node;
+use PhpParser\ParserFactory;
+use PhpParser\PhpVersion;
 use PHPUnit\Framework\Attributes\DataProvider;
+use ShieldCI\AnalyzerManager;
 use ShieldCI\Analyzers\BestPractices\LogicInRoutesAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ParserInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Support\AstParser;
+use ShieldCI\AnalyzersCore\ValueObjects\Issue;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class LogicInRoutesAnalyzerTest extends AnalyzerTestCase
 {
+    private const UNPARSEABLE_ROUTES = <<<'PHP'
+<?php
+
+use App\Models\Article;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/articles', function () {
+    return Article::create(request()->all())
+});
+
+PHP;
+
+    private const WRITING_ROUTES = <<<'PHP'
+<?php
+
+use App\Models\Article;
+use Illuminate\Support\Facades\Route;
+
+Route::post('/articles', fn () => Article::create(request()->all()));
+
+PHP;
+
+    private const ARTICLE_MODEL = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Article extends Model
+{
+}
+
+PHP;
+
+    private const WRITING_PROJECT = [
+        'app/Models/Article.php' => self::ARTICLE_MODEL,
+        'routes/web.php' => self::WRITING_ROUTES,
+    ];
+
     protected function createAnalyzer(): AnalyzerInterface
     {
         $config = new Repository([
@@ -676,11 +722,13 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_ignores_files_with_parse_errors(): void
+    /**
+     * A route file that does not parse is reported, so the routes it registers are not read
+     * as clean: one Low issue at the parse error's line, a warning rather than a pass.
+     */
+    public function test_reports_an_unparseable_route_file(): void
     {
-        $code = '<?php this is invalid PHP code {{{';
-
-        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::UNPARSEABLE_ROUTES]);
 
         $analyzer = $this->createAnalyzer();
         $analyzer->setBasePath($tempDir);
@@ -688,7 +736,748 @@ PHP;
 
         $result = $analyzer->analyze();
 
-        $this->assertPassed($result);
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertUnparseableRouteIssue($result->getIssues()[0], 'routes/web.php', 8);
+    }
+
+    /**
+     * The message is the parser's own, without the line it names or any path, so it stays
+     * stable for a baseline.
+     */
+    public function test_reports_the_parser_message_for_an_unparseable_route_file(): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => '<?php this is invalid PHP code {{{']);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('Route file could not be parsed: Syntax error, unexpected T_STRING', $issue->message);
+        $this->assertUnparseableRouteIssue($issue, 'routes/web.php', 1);
+    }
+
+    public function test_reports_an_unparseable_route_file_beside_a_route_file_with_a_write(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => self::WRITING_ROUTES,
+            'routes/web.php' => self::UNPARSEABLE_ROUTES,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(2, $result);
+        $codes = array_map(static fn ($issue) => $issue->metadata['code'] ?? null, $result->getIssues());
+        sort($codes);
+        $this->assertSame(['route-file-parse-error', 'route-has-db-writes'], $codes);
+    }
+
+    /**
+     * The shared parser keeps the first sighting of a failure for the whole run, so a route
+     * file another analyzer already failed to parse is still reported once, and a failure the
+     * log holds for a file outside the analysed set is not reported here.
+     */
+    public function test_reports_an_unparseable_route_file_already_in_the_shared_failure_log_once(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => self::UNPARSEABLE_ROUTES,
+            'scripts/broken.php' => "<?php\n\nfunction (\n",
+        ]);
+
+        $this->parser->parseFile($tempDir.'/routes/web.php');
+        $this->parser->parseFile($tempDir.'/scripts/broken.php');
+        $this->assertCount(2, $this->parser->failures());
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertUnparseableRouteIssue($result->getIssues()[0], 'routes/web.php', 8);
+    }
+
+    /**
+     * Only route files get the parse-error issue: a broken class under another configured path
+     * is left to the report's parse-failure log, as for every other analyzer.
+     */
+    public function test_does_not_report_an_unparseable_file_outside_routes(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Broken.php' => "<?php\n\nclass Broken {\n",
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/', fn () => view('welcome'));\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * A route file that parses to no statements is empty, not broken.
+     *
+     * @dataProvider emptyRouteFileProvider
+     */
+    #[DataProvider('emptyRouteFileProvider')]
+    public function test_passes_an_empty_route_file(string $code): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function emptyRouteFileProvider(): array
+    {
+        return [
+            'open tag only' => ['<?php'],
+            'open tag and newline' => ["<?php\n"],
+            'comments only' => ["<?php\n\n// No routes yet.\n/* Nothing here either. */\n"],
+            'zero bytes' => [''],
+        ];
+    }
+
+    /**
+     * With a parser that keeps no failure log the analyzer still tells a broken route file
+     * from an empty one.
+     *
+     * @dataProvider nonRecordingParserRouteFileProvider
+     */
+    #[DataProvider('nonRecordingParserRouteFileProvider')]
+    public function test_tells_a_broken_route_file_from_an_empty_one_with_a_non_recording_parser(string $code, bool $broken): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => $code]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->nonRecordingParser(), new Repository([]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        if (! $broken) {
+            $this->assertPassed($result);
+
+            return;
+        }
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertUnparseableRouteIssue($result->getIssues()[0], 'routes/web.php', 8);
+    }
+
+    /**
+     * @return array<string, array{string, bool}>
+     */
+    public static function nonRecordingParserRouteFileProvider(): array
+    {
+        return [
+            'unparseable' => [self::UNPARSEABLE_ROUTES, true],
+            'open tag only' => ['<?php', false],
+            'comments only' => ["<?php\n\n// No routes yet.\n", false],
+        ];
+    }
+
+    public function test_detects_a_write_with_a_non_recording_parser(): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::WRITING_ROUTES]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->nonRecordingParser(), new Repository([]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('route-has-db-writes', $result->getIssues()[0]->metadata['code'] ?? null);
+    }
+
+    /**
+     * The route files are read whatever the configured paths are, so narrowing them to app/
+     * does not turn a route with a write into a pass.
+     */
+    public function test_analyzes_route_files_when_the_configured_paths_do_not_include_routes(): void
+    {
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('route-has-db-writes', $result->getIssues()[0]->metadata['code'] ?? null);
+        $this->assertSame('routes/web.php', $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_still_analyzes_files_under_the_configured_paths(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Article.php' => self::ARTICLE_MODEL,
+            'legacy/routes.php' => self::WRITING_ROUTES,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['legacy']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('legacy/routes.php', $result->getIssues()[0]->location?->file);
+    }
+
+    public function test_analyzes_route_files_through_the_manager_when_paths_analyze_omits_routes(): void
+    {
+        $app = $this->app;
+        $this->assertNotNull($app);
+
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        /** @var \Illuminate\Contracts\Config\Repository $config */
+        $config = $app->make('config');
+        $config->set('shieldci.paths.analyze', ['app']);
+        $config->set('shieldci.excluded_paths', []);
+
+        $result = $this->withBasePath($tempDir, function () use ($app, $config): ResultInterface {
+            $manager = new AnalyzerManager($config, [LogicInRoutesAnalyzer::class], $app);
+            $analyzer = $manager->getAnalyzers()->first();
+            $this->assertInstanceOf(LogicInRoutesAnalyzer::class, $analyzer);
+
+            return $analyzer->analyze();
+        });
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame('route-has-db-writes', $result->getIssues()[0]->metadata['code'] ?? null);
+    }
+
+    /**
+     * A route file reached through a configured path as well as through routes/ is analysed
+     * once, so its findings are not doubled.
+     *
+     * @dataProvider overlappingPathsProvider
+     *
+     * @param  list<string>  $paths
+     */
+    #[DataProvider('overlappingPathsProvider')]
+    public function test_analyzes_a_route_file_reached_twice_once(array $paths): void
+    {
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths($paths);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    /**
+     * @return array<string, array{list<string>}>
+     */
+    public static function overlappingPathsProvider(): array
+    {
+        return [
+            'routes' => [['routes']],
+            'routes twice' => [['routes', 'routes']],
+            'routes and the file' => [['routes', 'routes/web.php']],
+            'the file alone' => [['routes/web.php']],
+            'base path' => [['.']],
+            'base path and routes' => [['', 'routes']],
+            'trailing separator' => [['routes/']],
+        ];
+    }
+
+    public function test_reports_an_unparseable_route_file_reached_twice_once(): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::UNPARSEABLE_ROUTES]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    /**
+     * excluded_paths still applies to the route files the analyzer adds itself.
+     *
+     * @dataProvider excludedRoutesProvider
+     */
+    #[DataProvider('excludedRoutesProvider')]
+    public function test_honours_excluded_paths_for_the_route_files(string $pattern): void
+    {
+        $tempDir = $this->createTempDirectory([
+            ...self::WRITING_PROJECT,
+            'routes/broken.php' => self::UNPARSEABLE_ROUTES,
+        ]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+        $analyzer->setExcludePatterns([$pattern]);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function excludedRoutesProvider(): array
+    {
+        return [
+            'relative glob' => ['routes/*'],
+            'absolute glob' => ['*/routes/*'],
+        ];
+    }
+
+    /**
+     * On a case-insensitive filesystem routes/ spelled in another case is the same directory,
+     * so its files are analysed once whichever spelling reaches them first.
+     *
+     * @dataProvider differentlyCasedRoutesProvider
+     *
+     * @param  list<string>  $paths
+     */
+    #[DataProvider('differentlyCasedRoutesProvider')]
+    public function test_analyzes_a_route_file_reached_through_a_differently_cased_path_once(array $paths): void
+    {
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        if (! is_file($tempDir.'/Routes/web.php')) {
+            $this->markTestSkipped('The filesystem is case-sensitive, so Routes/ is not routes/');
+        }
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths($paths);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    /**
+     * @return array<string, array{list<string>}>
+     */
+    public static function differentlyCasedRoutesProvider(): array
+    {
+        return [
+            'Routes' => [['Routes']],
+            'app, ROUTES/web.php and routes' => [['app', 'ROUTES/web.php', 'routes']],
+        ];
+    }
+
+    /**
+     * A file reached through a symbolic link is the file itself.
+     */
+    public function test_analyzes_a_route_file_reached_through_a_link_once(): void
+    {
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        if (! @symlink($tempDir.'/routes', $tempDir.'/linked-routes')) {
+            $this->markTestSkipped('Symbolic links cannot be created here');
+        }
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['linked-routes']);
+
+        $this->assertIssueCount(1, $analyzer->analyze());
+    }
+
+    public function test_summarises_only_unparseable_route_files_without_counting_them_as_routes(): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::UNPARSEABLE_ROUTES]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertStringNotContainsString('business logic', $result->getMessage());
+        $this->assertSame('Found 1 route file(s) that could not be analysed', $result->getMessage());
+    }
+
+    public function test_summarises_routes_and_unparseable_route_files_separately(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/api.php' => self::WRITING_ROUTES,
+            'routes/web.php' => self::UNPARSEABLE_ROUTES,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertSame(
+            'Found 1 route(s) with business logic that should be moved to controllers, and 1 route file(s) that could not be analysed',
+            $result->getMessage()
+        );
+    }
+
+    public function test_summarises_routes_with_business_logic_as_before(): void
+    {
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::WRITING_ROUTES]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $this->assertSame(
+            'Found 1 route(s) with business logic that should be moved to controllers',
+            $analyzer->analyze()->getMessage()
+        );
+    }
+
+    public function test_reports_an_unreadable_route_file_as_unreadable(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('root reads a file whatever its mode');
+        }
+
+        $tempDir = $this->createTempDirectory(['routes/web.php' => self::WRITING_ROUTES]);
+        chmod($tempDir.'/routes/web.php', 0000);
+
+        try {
+            $analyzer = $this->createAnalyzer();
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths(['routes']);
+
+            $result = $analyzer->analyze();
+        } finally {
+            chmod($tempDir.'/routes/web.php', 0644);
+        }
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame(Severity::Low, $issue->severity);
+        $this->assertSame('route-file-unreadable', $issue->metadata['code'] ?? null);
+        $this->assertSame('Route file could not be read: File is not readable.', $issue->message);
+        $this->assertStringNotContainsString('syntax', $issue->recommendation);
+        $this->assertStringContainsString('permissions', $issue->recommendation);
+    }
+
+    /**
+     * Valid PHP the installed parser has not caught up with is not a syntax error.
+     */
+    public function test_reports_syntax_the_parser_does_not_support_without_calling_it_a_syntax_error(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::get('/', fn () => view('welcome'));\n",
+        ]);
+
+        $parser = new AstParser((new ParserFactory)->createForVersion(PhpVersion::fromString('7.0')));
+        $analyzer = new LogicInRoutesAnalyzer($parser, new Repository([]));
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('route-file-parse-error', $issue->metadata['code'] ?? null);
+        $this->assertStringStartsWith('Route file could not be parsed: ', $issue->message);
+        $this->assertStringNotContainsString('syntax error', strtolower($issue->recommendation));
+        $this->assertStringContainsString('nikic/php-parser', $issue->recommendation);
+    }
+
+    /**
+     * The configured paths are analysed exactly as before: a hard link to a route file under
+     * app/ keeps its own finding, and routes/web.php keeps its finding too.
+     */
+    public function test_default_config_keeps_routes_web_php_finding_when_a_hard_link_exists_under_app(): void
+    {
+        $dir = $this->createTempDirectory(self::WRITING_PROJECT);
+        $this->assertTrue(link($dir.'/routes/web.php', $dir.'/app/legacy-routes.php'));
+
+        $analyzer = new LogicInRoutesAnalyzer(new AstParser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(AnalyzerManager::DEFAULT_ANALYZE_PATHS);
+
+        $files = array_map(static fn ($issue) => $issue->location?->file, $analyzer->analyze()->getIssues());
+        sort($files);
+
+        $this->assertSame(['app/legacy-routes.php', 'routes/web.php'], $files);
+    }
+
+    /**
+     * Under a '.' entry a symbolic link to a route file keeps its own finding beside the route
+     * file's, whichever order the directory walk meets them in.
+     */
+    public function test_base_path_entry_keeps_both_spellings_of_a_linked_route_file(): void
+    {
+        $dir = $this->createTempDirectory(self::WRITING_PROJECT);
+        @mkdir($dir.'/other');
+        if (! @symlink($dir.'/routes/web.php', $dir.'/other/web.php')) {
+            $this->markTestSkipped('Symbolic links cannot be created here');
+        }
+
+        $analyzer = new LogicInRoutesAnalyzer(new AstParser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['.']);
+
+        $files = array_map(static fn ($issue) => $issue->location?->file, $analyzer->analyze()->getIssues());
+        sort($files);
+
+        $this->assertCount(2, $files);
+        $this->assertStringEndsWith('other/web.php', (string) $files[0]);
+        $this->assertStringEndsWith('routes/web.php', (string) $files[1]);
+    }
+
+    /**
+     * A broken route file reached under two names is one file that did not parse.
+     */
+    public function test_reports_an_unparseable_route_file_reached_under_two_names_once(): void
+    {
+        $dir = $this->createTempDirectory(['routes/web.php' => self::UNPARSEABLE_ROUTES]);
+        @mkdir($dir.'/app');
+        $this->assertTrue(link($dir.'/routes/web.php', $dir.'/app/legacy-routes.php'));
+
+        $analyzer = new LogicInRoutesAnalyzer(new AstParser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['app', 'routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    /**
+     * Code the running PHP tokenises but does not compile is classified like syntax newer than
+     * the parser, so the recommendation covers both rather than only blaming the parser.
+     */
+    public function test_recommendation_for_code_that_does_not_compile_covers_both_causes(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::middleware(['auth', , 'verified'])->group(function () {\n    Route::get('/home', fn () => view('home'));\n});\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['routes']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $issue = $result->getIssues()[0];
+        $this->assertSame('route-file-parse-error', $issue->metadata['code'] ?? null);
+        $this->assertStringStartsWith('Route file could not be parsed: ', $issue->message);
+        $this->assertStringContainsString('php -l', $issue->recommendation);
+        $this->assertStringContainsString('does not compile', $issue->recommendation);
+        $this->assertStringContainsString('nikic/php-parser', $issue->recommendation);
+    }
+
+    /**
+     * An entry that already covers routes/ (through a link here) is walked as before, so an
+     * exclude written against that entry still applies to the route files.
+     */
+    public function test_link_entry_exclude_is_honoured(): void
+    {
+        $dir = $this->createTempDirectory([
+            ...self::WRITING_PROJECT,
+            'routes/api.php' => self::WRITING_ROUTES,
+            'routes/admin/nested.php' => self::WRITING_ROUTES,
+        ]);
+        if (! @symlink($dir.'/routes', $dir.'/routeslink')) {
+            $this->markTestSkipped('Symbolic links cannot be created here');
+        }
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['routeslink']);
+        $analyzer->setExcludePatterns(['routeslink/*']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_absolute_link_entry_exclude_is_honoured(): void
+    {
+        $dir = $this->createTempDirectory(self::WRITING_PROJECT);
+        if (! @symlink($dir.'/routes', $dir.'/routeslink')) {
+            $this->markTestSkipped('Symbolic links cannot be created here');
+        }
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths([$dir.'/routeslink']);
+        $analyzer->setExcludePatterns(['routeslink/*']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_case_variant_entry_exclude_is_honoured(): void
+    {
+        $dir = $this->createTempDirectory([
+            ...self::WRITING_PROJECT,
+            'routes/api.php' => self::WRITING_ROUTES,
+        ]);
+
+        if (! is_file($dir.'/Routes/web.php')) {
+            $this->markTestSkipped('The filesystem is case-sensitive, so Routes/ is not routes/');
+        }
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths(['Routes']);
+        $analyzer->setExcludePatterns(['Routes/*']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * An entry naming one route file, or a directory below routes/, does not cover routes/,
+     * so the other route files are still added.
+     *
+     * @dataProvider entryInsideRoutesProvider
+     *
+     * @param  list<string>  $paths
+     */
+    #[DataProvider('entryInsideRoutesProvider')]
+    public function test_an_entry_inside_routes_still_adds_the_other_route_files(array $paths, string $exclude): void
+    {
+        $dir = $this->createTempDirectory([
+            ...self::WRITING_PROJECT,
+            'routes/api.php' => self::WRITING_ROUTES,
+            'routes/admin/nested.php' => self::WRITING_ROUTES,
+            'routes2/web.php' => self::WRITING_ROUTES,
+        ]);
+
+        $analyzer = new LogicInRoutesAnalyzer($this->parser, new Repository([]));
+        $analyzer->setBasePath($dir);
+        $analyzer->setPaths($paths);
+        $analyzer->setExcludePatterns([$exclude]);
+
+        $files = array_map(static fn ($issue) => $issue->location?->file, $analyzer->analyze()->getIssues());
+        sort($files);
+
+        $this->assertSame(['routes/admin/nested.php', 'routes/api.php', 'routes/web.php'], $files);
+    }
+
+    /**
+     * @return array<string, array{list<string>, string}>
+     */
+    public static function entryInsideRoutesProvider(): array
+    {
+        return [
+            'one route file' => [['routes/web.php'], 'routes2/*'],
+            'a directory below routes/' => [['routes/admin'], 'routes2/*'],
+            'a sibling sharing the prefix' => [['routes2'], 'routes2/*'],
+        ];
+    }
+
+    public function test_analyzes_each_analyze_call_the_same_way(): void
+    {
+        $tempDir = $this->createTempDirectory(self::WRITING_PROJECT);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertIssueCount(1, $analyzer->analyze());
+        $this->assertIssueCount(1, $analyzer->analyze());
+    }
+
+    private function assertUnparseableRouteIssue(Issue $issue, string $file, int $line): void
+    {
+        $this->assertSame(Severity::Low, $issue->severity);
+        $this->assertSame('route-file-parse-error', $issue->metadata['code'] ?? null);
+        $this->assertStringStartsWith('Route file could not be parsed: Syntax error', $issue->message);
+        $this->assertStringNotContainsString(DIRECTORY_SEPARATOR.'routes'.DIRECTORY_SEPARATOR, $issue->message);
+        $this->assertNotNull($issue->location);
+        $this->assertSame($file, $issue->location->file);
+        $this->assertSame($line, $issue->location->line);
+    }
+
+    /**
+     * A ParserInterface that is not a RecordingParserInterface: it parses as AstParser does
+     * but keeps no failure log.
+     */
+    private function nonRecordingParser(): ParserInterface
+    {
+        return new class implements ParserInterface
+        {
+            private AstParser $parser;
+
+            public function __construct()
+            {
+                $this->parser = new AstParser;
+            }
+
+            public function parseFile(string $filePath): array
+            {
+                return $this->parser->parseFile($filePath);
+            }
+
+            public function parseCode(string $code): array
+            {
+                return $this->parser->parseCode($code);
+            }
+
+            public function findNodes(array $ast, string $nodeType): array
+            {
+                return $this->parser->findNodes($ast, $nodeType);
+            }
+
+            public function findMethodCalls(array $ast, string $methodName): array
+            {
+                return $this->parser->findMethodCalls($ast, $methodName);
+            }
+
+            public function findStaticCalls(array $ast, string $className, string $methodName): array
+            {
+                return $this->parser->findStaticCalls($ast, $className, $methodName);
+            }
+
+            public function resolveNames(array $ast, array $options = []): array
+            {
+                return $this->parser->resolveNames($ast, $options);
+            }
+
+            public function collectStringLines(array $ast): array
+            {
+                return $this->parser->collectStringLines($ast);
+            }
+        };
     }
 
     public function test_empty_route_file(): void

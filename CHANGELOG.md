@@ -1,5 +1,56 @@
 # Changelog
 
+## v1.27.0
+
+### Changed
+- `maintenance-mode-status` asks Laravel whether the application is down, so cache-driver and relocated-storage outages are reported, which can fail a default `fail_on: high` build (#742)
+- `maintenance-mode-status` warns at Medium when the maintenance driver cannot answer, such as an unreachable cache store, instead of passing (#742)
+- `maintenance-mode-status` no longer runs under `--ci`, since a CI checkout is never in maintenance mode (#742)
+- `logic-in-routes` grades a complex read such as `Post::whereIn('id', $ids)->get()` Medium instead of High (#752)
+- `logic-in-routes` reports `restore()` as a database write, which can fail a default `fail_on: high` build (#752)
+- `logic-in-routes` analyses closures on routes registered through a chain such as `Route::middleware()`, `prefix()` or `name()`, which can fail a default `fail_on: high` build (#753)
+- `logic-in-routes` grades static job dispatch, `Artisan` facade calls and `notify()` as business logic, which can fail a default `fail_on: high` build (#756)
+- `logic-in-routes` counts writes through `?->`, relation methods such as `sync()`, the signed-in user and property hops, which can fail a default `fail_on: high` build (#757)
+- `logic-in-routes` counts further Eloquent writes, such as `createMany()`, `forceCreate()`, `updateOrFail()` and `saveQuietly()`, which can fail a default `fail_on: high` build (#757)
+- `logic-in-routes` counts writes on a models-namespace class named like a utility, such as `App\Models\File::create()`, which can fail a default `fail_on: high` build (#757)
+- `logic-in-routes` grades a collection `push($value)` or a first-class callable such as `->delete(...)` on a model chain Medium instead of High (#757)
+- `mass-assignment-vulnerabilities` reports `#[Unguarded]` and `#[Guarded([])]` Critical on a direct `Model` or `Authenticatable` subclass with no fillable columns, which can fail a default `fail_on: high` build (#762)
+- `logic-in-routes` matches Eloquent write methods regardless of case, such as `->Delete()`, which can fail a default `fail_on: high` build (#770)
+- `logic-in-routes` reports writes in query callbacks, on route-bound models, guarded users and model collections, which can fail a default `fail_on: high` build (#778)
+- `logic-in-routes` reports reads on route-bound models and `Request::user()`, such as `fn (Post $post) => $post->comments()->get()`, at Low when `allow_simple_reads` is off (#778)
+- `logic-in-routes` adds the newly detected write or business logic to an already-reported closure's message, which changes its fingerprint (#756, #757, #770, #778)
+- `logic-in-routes` reads route files under `routes/` that the configured paths leave out, which can fail a default `fail_on: high` build (#794)
+- `logic-in-routes` reports a route file that cannot be parsed or read as a Low issue instead of passing (#794)
+- `sql-injection` recognises `$request?->input()` and the other nullsafe `$request?->` reads as user input, which can fail a default `fail_on: high` build (#797)
+
+### Fixed
+- `logic-in-routes` grades a route closure that is one read chain, such as `fn () => Post::paginate(15)`, as a read instead of High business logic (#752)
+- `logic-in-routes` no longer grades a bare `app()` call that reads application information, such as `app()->getLocale()`, as business logic (#755)
+- `logic-in-routes` no longer grades a models-namespace class named like a facade, such as `App\Models\Event::find(1)`, as a facade call (#757)
+- `mass-assignment-vulnerabilities` no longer reports a model that declares neither `$fillable` nor `$guarded`, since the base `Model` already guards every attribute (#762)
+- `mass-assignment-vulnerabilities` reads Eloquent attributes such as `#[Fillable]` through the file's imports, so an aliased import counts and an `App\Attributes\Fillable` does not (#762)
+- `mass-assignment-vulnerabilities` reads only the leading array of `#[Fillable]`, as Laravel does, so `#[Fillable(['name'], 'password')]` lists only `name` (#762)
+- `mass-assignment-vulnerabilities` no longer reports `$guarded = []` beside a non-empty fillable list, or on a model extending `Pivot` or `MorphPivot` (#762)
+- `mass-assignment-vulnerabilities` honours `$visible` and `#[Visible]`, so a sensitive field the allow-list leaves out is not reported as unhidden (#762)
+- `mass-assignment-vulnerabilities` no longer checks `$hidden` on a model extending a project base class, unless the model declares its own (#762)
+- `logic-in-routes` no longer treats a `*Model` class declared under `app/` without extending Eloquent, such as a view model, as an Eloquent model (#771)
+- `logic-in-routes` no longer grades a non-query static call such as `DashboardViewModel::make()` on an unreadable `*Model` class as business logic, unless the closure writes (#771)
+- `logic-in-routes` grades a read with a `whereHas()` or `when()` query callback, or an eager-load constraint, as a read instead of business logic (#778)
+- `logic-in-routes` grades local scopes named like collection methods, such as `Article::filter()`, as reads (#778)
+- `logic-in-routes` grades reads on a route-bound model, `auth()->guard('api')->user()` or `Request::user()` as reads (#778)
+- `logic-in-routes` grades a closure that only assigns plain values or reads and returns a read, directly or through `view()`, as that read (#778)
+- `logic-in-routes` grades `cache()` and `session()` helper chains like their facade forms (#778)
+- `logic-in-routes` no longer grades `whereIn()` on an in-memory collection as a database query (#778)
+- `shield:baseline` creates a missing baseline directory, and reports a file it cannot write with an error and exit 1 instead of an uncaught `ErrorException` (#786)
+- `logic-in-routes` grades a closure that is only a `DB::table()` read like the same read on a model, instead of High raw database queries (#788)
+- `phpstan` and `collection-call-optimization` run PHPStan with `laravel/pao` disabled, so `shield:analyze` inside an AI coding agent no longer passes with no findings (#792)
+- `phpstan` and `collection-call-optimization` report an error instead of passing when PHPStan prints JSON that is not its report (#792)
+- `phpstan` and `collection-call-optimization` quote an error PHPStan reports outside any file as a 500-character excerpt when longer, instead of the whole text (#793)
+- `phpstan` and `collection-call-optimization` keep `shieldci.excluded_paths` out of the PHPStan run unless the project config uses `excludes_analyse`, so an unparseable excluded file no longer stops it (#795)
+- `phpstan` and `collection-call-optimization` leave Blade templates out of the PHPStan run, so a template PHPStan cannot parse no longer stops it (#795)
+- `phpstan` no longer reports findings inside Blade templates, which PHPStan reads as plain PHP (#795)
+- `phpstan` and `collection-call-optimization` return Skipped when every analysed path is excluded or holds only Blade templates, instead of analysing those files anyway (#795)
+
 ## v1.26.0
 
 ### Changed

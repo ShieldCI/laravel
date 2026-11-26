@@ -674,6 +674,7 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['vendor/*']
         );
 
+        $this->assertSame('warning', $result->getStatus()->value, $result->getMessage());
         $this->assertWarning($result);
         $this->assertIssueCount(1, $result);
         $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
@@ -765,8 +766,10 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             return $this->runAnalyzer($tempDir, ['app']);
         });
 
+        // PHPStan's own wording is not asserted: on 1.12 an "old version" banner fills the
+        // quoted excerpt before it.
         $this->assertError($result);
-        $this->assertStringContainsString('No files found to analyse', $result->getMessage());
+        $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
     }
 
     public function test_a_blade_template_outside_resources_views_does_not_stop_a_real_run(): void

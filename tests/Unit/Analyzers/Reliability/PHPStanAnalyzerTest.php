@@ -2033,8 +2033,10 @@ PHP;
             return $analyzer->analyze();
         });
 
+        // PHPStan's own wording is not asserted: on 1.12 an "old version" banner fills the
+        // quoted excerpt before it.
         $this->assertError($result);
-        $this->assertStringContainsString('No files found to analyse', $result->getMessage());
+        $this->assertStringContainsString('PHPStan produced no analysable output', $result->getMessage());
     }
 
     public function test_skips_when_every_analysed_file_is_a_blade_template(): void

@@ -666,18 +666,40 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
     }
 
-    public function test_a_blade_template_below_the_analysed_project_root_does_not_stop_a_real_run(): void
+    public function test_hands_phpstan_the_project_root_whole_and_excludes_vendor_and_templates_in_the_config(): void
     {
-        $result = $this->analyzeRealProject(
-            ['resources/views/ledger.blade.php' => "<?php if ( ?>\n"],
-            ['.'],
-            ['vendor/*']
-        );
+        // Checked on the generated config rather than in a real run: PHPStan still scans the
+        // files an analyse-only exclude leaves out, and a real run over a root holding this
+        // package's whole vendor tree exceeds PHPStan's default memory limit.
+        $tempDir = $this->createStubbedProject();
+        $this->createFilesIn($tempDir, ['resources/views/ledger.blade.php' => "<?php if ( ?>\n"]);
+        $configPath = $tempDir.'/captured_config.neon';
+        $this->writePHPStanStub($tempDir, sprintf(
+            <<<'PHP'
+            foreach ($argv as $argument) {
+                if (str_starts_with($argument, '--configuration=')) {
+                    copy(substr($argument, strlen('--configuration=')), %s);
+                }
+            }
 
-        $this->assertSame('warning', $result->getStatus()->value, $result->getMessage());
-        $this->assertWarning($result);
-        $this->assertIssueCount(1, $result);
-        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($configPath, true)
+        ));
+
+        $analyzer = new CollectionCallAnalyzer;
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+        $analyzer->setExcludePatterns(['vendor/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertStringContainsString(
+            "        analyse:\n            - '".realpath($tempDir)."/vendor/*'\n            - '*.blade.php'",
+            (string) file_get_contents($configPath)
+        );
     }
 
     public function test_reports_the_finding_from_a_real_run_when_the_views_directory_is_listed_itself(): void

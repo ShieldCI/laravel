@@ -261,6 +261,51 @@ class ExcludesPHPStanFindingsTest extends AnalyzerTestCase
         $this->assertExclusions(['app/*'], true, ['app/*'], ['app', 'routes']);
     }
 
+    public function test_excludes_a_symlinked_directory_a_pattern_covers_without_following_it(): void
+    {
+        $this->linkDirectory('app/Linked');
+
+        $this->assertExclusions(['app/Linked/*'], true, ['app/Linked/*'], ['app']);
+    }
+
+    public function test_leaves_a_symlinked_directory_no_pattern_covers_to_phpstan(): void
+    {
+        // The link is not followed, so a pattern reaching only part of it excludes nothing.
+        $this->linkDirectory('app/Linked');
+
+        $this->assertExclusions([], true, ['app/Linked/Old/*'], ['app']);
+    }
+
+    public function test_leaves_an_unreadable_directory_to_phpstan(): void
+    {
+        $this->withUnreadableDirectory('app/Http', function (): void {
+            $this->assertExclusions([], true, ['app/Http/Middleware/Archive/*'], ['app']);
+        });
+    }
+
+    public function test_keeps_an_excluded_path_outside_the_base_path_as_given(): void
+    {
+        $outside = $this->createTempDirectory(['Old/Legacy.php' => "<?php\n", 'Current.php' => "<?php\n"]);
+
+        $analyzer = new ExclusionAnalyzer;
+        $analyzer->setBasePath($this->basePath);
+        $analyzer->setExcludePatterns([$outside.'/Old/*']);
+
+        $this->assertSame(
+            ['excludePaths' => [$outside.'/Old/*', '*.blade.php'], 'analysable' => true, 'excludesConfigured' => true],
+            $analyzer->exclusions([$outside])
+        );
+    }
+
+    public function test_finds_a_blade_template_given_as_a_file_path(): void
+    {
+        $analyzer = new ExclusionAnalyzer;
+        $analyzer->setBasePath($this->basePath);
+
+        $this->assertTrue($analyzer->holdsTemplate(['missing', 'resources/views/ledger.blade.php']));
+        $this->assertFalse($analyzer->holdsTemplate(['missing', 'routes/web.php']));
+    }
+
     /**
      * @param  array<int, string>  $expectedRelative  excluded entries, relative to the base path
      * @param  array<int, string>  $patterns
@@ -295,6 +340,16 @@ class ExcludesPHPStanFindingsTest extends AnalyzerTestCase
         }
     }
 
+    /**
+     * Link $path, relative to the base path, to a directory outside it holding a PHP file.
+     */
+    private function linkDirectory(string $path): void
+    {
+        $target = $this->createTempDirectory(['Old/Legacy.php' => "<?php\n", 'Current.php' => "<?php\n"]);
+
+        $this->assertTrue(symlink($target, $this->basePath.'/'.$path));
+    }
+
     private function withUnreadableDirectory(string $path, callable $callback): void
     {
         $directory = $this->basePath.'/'.$path;
@@ -327,6 +382,14 @@ class ExclusionAnalyzer extends AbstractFileAnalyzer
     public function exclusions(array $paths, array $explicitPaths = []): array
     {
         return $this->phpstanExclusions($paths, $explicitPaths);
+    }
+
+    /**
+     * @param  array<int, string>  $paths
+     */
+    public function holdsTemplate(array $paths): bool
+    {
+        return $this->holdsBladeTemplate($paths);
     }
 
     protected function metadata(): AnalyzerMetadata

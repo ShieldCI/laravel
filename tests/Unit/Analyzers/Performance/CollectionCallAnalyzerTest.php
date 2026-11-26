@@ -148,6 +148,17 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertStringContainsString('exit code 0', $result->getMessage());
     }
 
+    public function test_reports_an_error_when_phpstan_prints_json_that_is_not_its_report(): void
+    {
+        // Decodes cleanly but has no files to read, which used to pass as a clean run.
+        $result = $this->analyzeAbortedRun('', 0, '{"tool":"analyser","result":"passed","errors":0}');
+
+        $this->assertError($result);
+        $this->assertStringContainsString('not a PHPStan report', $result->getMessage());
+        $this->assertStringContainsString('"result":"passed"', $result->getMessage());
+        $this->assertCount(1, $result->getMetadata()['analysis_errors']);
+    }
+
     public function test_reports_an_error_when_only_analysis_errors_come_back(): void
     {
         $result = $this->analyzeIssues([], analysisErrors: [

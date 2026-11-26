@@ -7,8 +7,13 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 use Illuminate\Contracts\Config\Repository as Config;
 use Mockery;
 use Mockery\MockInterface;
+use PhpParser\Node;
+use PhpParser\NodeFinder;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\SqlInjectionAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
+use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class SqlInjectionAnalyzerTest extends AnalyzerTestCase
@@ -928,5 +933,173 @@ PHP;
         $this->assertFailed($result);
         // Should detect 4 dangerous queries with concatenation/interpolation
         $this->assertIssueCount(4, $result);
+    }
+
+    /**
+     * A parser whose findMethodCalls() also returns nullsafe calls, as analyzers-core
+     * does once it ships the change; the stock parser on the pinned core never does.
+     */
+    private function nullsafeAwareParser(): AstParser
+    {
+        return new class extends AstParser
+        {
+            /**
+             * @param  array<Node>  $ast
+             * @return array<Node>
+             */
+            public function findMethodCalls(array $ast, string $methodName): array
+            {
+                return (new NodeFinder)->find($ast, function (Node $node) use ($methodName): bool {
+                    if (! $node instanceof Node\Expr\MethodCall && ! $node instanceof Node\Expr\NullsafeMethodCall) {
+                        return false;
+                    }
+
+                    if (! $node->name instanceof Node\Identifier) {
+                        return false;
+                    }
+
+                    return $node->name->name === $methodName;
+                });
+            }
+        };
+    }
+
+    private function analyzeQueryCall(string $call, AstParser $parser): ResultInterface
+    {
+        $code = <<<PHP
+<?php
+
+class ReportRepository
+{
+    public function search(\$request, \$q, \$col, \$id)
+    {
+        return {$call};
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['ReportRepository.php' => $code]);
+
+        /** @var Config&MockInterface $config */
+        $config = Mockery::mock(Config::class);
+        $config->shouldReceive('get')->andReturn(null);
+
+        $analyzer = new SqlInjectionAnalyzer($parser, $config);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        return $analyzer->analyze();
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function safeNullsafeWhereRawProvider(): array
+    {
+        return [
+            'nullsafe concatenated column name with bindings' => ['$q?->whereRaw(\'t.\' . $col . \' = ?\', [$id])'],
+            'nullsafe user input inside the bindings' => ['$q?->whereRaw("name like ?", ["{$request->input(\'n\')}%"])'],
+            'arrow concatenated column name with bindings' => ['$q->whereRaw(\'t.\' . $col . \' = ?\', [$id])'],
+            'arrow user input inside the bindings' => ['$q->whereRaw("name like ?", ["{$request->input(\'n\')}%"])'],
+        ];
+    }
+
+    /** @dataProvider safeNullsafeWhereRawProvider */
+    #[DataProvider('safeNullsafeWhereRawProvider')]
+    public function test_nullsafe_where_raw_with_bindings_is_graded_like_the_arrow_form(string $call): void
+    {
+        $result = $this->analyzeQueryCall($call, $this->nullsafeAwareParser());
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function vulnerableNullsafeWhereRawProvider(): array
+    {
+        return [
+            'nullsafe bare user input as the SQL' => ['$q?->whereRaw($request->input(\'w\'))'],
+            'nullsafe user input concatenated into the SQL' => ['$q?->whereRaw(\'name = \' . $request->input(\'n\'))'],
+            'arrow bare user input as the SQL' => ['$q->whereRaw($request->input(\'w\'))'],
+            'arrow user input concatenated into the SQL' => ['$q->whereRaw(\'name = \' . $request->input(\'n\'))'],
+        ];
+    }
+
+    /** @dataProvider vulnerableNullsafeWhereRawProvider */
+    #[DataProvider('vulnerableNullsafeWhereRawProvider')]
+    public function test_nullsafe_where_raw_with_user_input_in_the_sql_is_flagged(string $call): void
+    {
+        $result = $this->analyzeQueryCall($call, $this->nullsafeAwareParser());
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('whereRaw()', $result);
+    }
+
+    public function test_stock_parser_still_grades_arrow_where_raw_by_its_sql_argument(): void
+    {
+        $safe = $this->analyzeQueryCall('$q->whereRaw(\'t.\' . $col . \' = ?\', [$id])', new AstParser);
+        $this->assertPassed($safe);
+
+        $vulnerable = $this->analyzeQueryCall('$q->whereRaw($request->input(\'w\'))', new AstParser);
+        $this->assertFailed($vulnerable);
+        $this->assertHasIssueContaining('whereRaw()', $vulnerable);
+    }
+
+    /**
+     * @return array<string, array{string, string}>
+     */
+    public static function nullsafeRequestReadInSqlStockParserProvider(): array
+    {
+        return [
+            'nullsafe read concatenated into whereRaw' => ['$q->whereRaw(\'a = \' . $request?->input(\'n\'))', 'whereRaw()'],
+            'arrow read concatenated into whereRaw' => ['$q->whereRaw(\'a = \' . $request->input(\'n\'))', 'whereRaw()'],
+            'nullsafe read as the whole DB::select query' => ['DB::select($request?->input(\'sql\'))', 'DB::select()'],
+            'arrow read as the whole DB::select query' => ['DB::select($request->input(\'sql\'))', 'DB::select()'],
+            'nullsafe read concatenated into a bound DB::select' => ['DB::select(\'select * from t where a = \' . $request?->input(\'n\') . \' and b = ?\', [$id])', 'DB::select()'],
+            'arrow read concatenated into a bound DB::select' => ['DB::select(\'select * from t where a = \' . $request->input(\'n\') . \' and b = ?\', [$id])', 'DB::select()'],
+            'nullsafe read on the request() helper' => ['$q->whereRaw(\'a = \' . request()?->input(\'n\'))', 'whereRaw()'],
+        ];
+    }
+
+    /** @dataProvider nullsafeRequestReadInSqlStockParserProvider */
+    #[DataProvider('nullsafeRequestReadInSqlStockParserProvider')]
+    public function test_nullsafe_request_read_in_the_sql_is_user_input(string $call, string $method): void
+    {
+        $result = $this->analyzeQueryCall($call, new AstParser);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining($method, $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function nullsafeRequestReadOnNullsafeSinkProvider(): array
+    {
+        return [
+            'nullsafe read concatenated into nullsafe whereRaw' => ['$q?->whereRaw(\'a = \' . $request?->input(\'n\'))'],
+            'nullsafe read interpolated into nullsafe whereRaw' => ['$q?->whereRaw("a = {$request?->input(\'n\')}")'],
+            'arrow read interpolated into nullsafe whereRaw' => ['$q?->whereRaw("a = {$request->input(\'n\')}")'],
+        ];
+    }
+
+    /** @dataProvider nullsafeRequestReadOnNullsafeSinkProvider */
+    #[DataProvider('nullsafeRequestReadOnNullsafeSinkProvider')]
+    public function test_nullsafe_request_read_on_a_nullsafe_sink_is_user_input(string $call): void
+    {
+        $result = $this->analyzeQueryCall($call, $this->nullsafeAwareParser());
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('whereRaw()', $result);
+    }
+
+    public function test_nullsafe_request_read_inside_the_bindings_passes(): void
+    {
+        $this->assertPassed($this->analyzeQueryCall('$q->whereRaw(\'a = ?\', [$request?->input(\'n\')])', new AstParser));
+        $this->assertPassed($this->analyzeQueryCall('$q?->whereRaw(\'a = ?\', [$request?->input(\'n\')])', $this->nullsafeAwareParser()));
     }
 }

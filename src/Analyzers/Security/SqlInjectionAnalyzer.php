@@ -332,8 +332,11 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      */
     private function isVulnerable(Node $node, bool $strictConcatenation = true): array
     {
-        // For method calls and static calls, check if they support parameter binding
-        if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\StaticCall) {
+        // For method calls (including nullsafe ones) and static calls, check if they support parameter binding
+        if ($node instanceof Node\Expr\MethodCall
+            || $node instanceof Node\Expr\NullsafeMethodCall
+            || $node instanceof Node\Expr\StaticCall
+        ) {
             return $this->isVulnerableCall($node, $strictConcatenation);
         }
 
@@ -352,7 +355,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Check if a method/static call is vulnerable and return the vulnerable node.
+     * Check if a method (`->` or `?->`) or static call is vulnerable and return the vulnerable node.
      *
      * For methods that support parameter binding, only flag when SQL is constructed
      * unsafely (concatenation/interpolation) or when bindings are missing.
@@ -364,7 +367,7 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
      * @return array{vulnerable: bool, node: ?Node}
      */
     private function isVulnerableCall(
-        Node\Expr\MethodCall|Node\Expr\StaticCall $call,
+        Node\Expr\MethodCall|Node\Expr\NullsafeMethodCall|Node\Expr\StaticCall $call,
         bool $strictConcatenation = true
     ): array {
         // Get the first argument (SQL query)
@@ -648,8 +651,8 @@ class SqlInjectionAnalyzer extends AbstractFileAnalyzer
             }
         }
 
-        // Check for $request->input(), $request->get(), etc.
-        if ($node instanceof Node\Expr\MethodCall) {
+        // Check for $request->input(), $request?->input(), $request->get(), etc.
+        if ($node instanceof Node\Expr\MethodCall || $node instanceof Node\Expr\NullsafeMethodCall) {
             if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
                 if ($node->name instanceof Node\Identifier) {
                     $methodName = $node->name->toString();

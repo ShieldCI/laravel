@@ -638,6 +638,150 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
         $this->assertIssueCount(1, $result);
     }
 
+    public function test_an_unparseable_file_in_an_excluded_directory_does_not_stop_a_real_run(): void
+    {
+        // #659: PHPStan stops at a file it cannot parse and drops every other file's
+        // findings, so an excluded file has to be kept out of the run, not just the report.
+        $result = $this->analyzeRealProject(
+            ['app/Archive/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app'],
+            ['app/Archive/*']
+        );
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_a_blade_template_below_an_analysed_resources_directory_does_not_stop_a_real_run(): void
+    {
+        // #664: resources/views is left out of the run when paths lists a directory above it.
+        $result = $this->analyzeRealProject(
+            ['resources/views/ledger.blade.php' => "<?php if ( ?>\n"],
+            ['app', 'resources']
+        );
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_a_blade_template_below_the_analysed_project_root_does_not_stop_a_real_run(): void
+    {
+        $result = $this->analyzeRealProject(
+            ['resources/views/ledger.blade.php' => "<?php if ( ?>\n"],
+            ['.'],
+            ['vendor/*']
+        );
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
+    public function test_reports_the_finding_from_a_real_run_when_the_views_directory_is_listed_itself(): void
+    {
+        // Control for #664: the shape that already worked.
+        $result = $this->analyzeRealProject(
+            ['resources/views/ledger.blade.php' => "<?php if ( ?>\n"],
+            ['app', 'resources/views']
+        );
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+    }
+
+    public function test_an_unparseable_file_that_is_not_excluded_still_stops_a_real_run(): void
+    {
+        // Control: narrowing must not hide a damaged file the project still analyses.
+        $result = $this->analyzeRealProject(
+            ['app/Archive/Damaged.php' => "<?php\n\nclass Damaged {\n"],
+            ['app'],
+            ['app/Elsewhere/*']
+        );
+
+        $this->assertError($result);
+        $this->assertStringContainsString('app/Archive/Damaged.php', $result->getMessage());
+    }
+
+    public function test_hands_phpstan_a_resources_directory_whole_and_excludes_its_views_in_the_config(): void
+    {
+        $tempDir = $this->createStubbedProject();
+        $this->createFilesIn($tempDir, [
+            'resources/views/ledger.blade.php' => "<?php\n",
+            'resources/lang/en/ledger.php' => "<?php\n",
+        ]);
+
+        $args = $this->capturedArgumentsIn($tempDir, ['app', 'resources']);
+        $realBase = (string) realpath($tempDir);
+
+        // The configured paths go through as given; the templates are left out in the config.
+        $this->assertStringContainsString("\napp\nresources\n", $args);
+        $this->assertStringContainsString(
+            "    excludePaths:\n        analyse:\n            - '*.blade.php'",
+            (string) file_get_contents($tempDir.'/captured_config.neon')
+        );
+    }
+
+    public function test_skips_without_running_phpstan_when_every_analysed_path_is_excluded(): void
+    {
+        $tempDir = $this->createStubbedProject();
+        $this->createFilesIn($tempDir, ['resources/views/ledger.blade.php' => "<?php\n"]);
+        $capturePath = $tempDir.'/captured_args.txt';
+        $this->writePHPStanStub($tempDir, sprintf(
+            "file_put_contents(%s, 'ran');\necho '{\"totals\":{\"errors\":0,\"file_errors\":0},\"files\":{},\"errors\":[]}';\n",
+            var_export($capturePath, true)
+        ));
+
+        $analyzer = new CollectionCallAnalyzer;
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app', 'resources/views']);
+        $analyzer->setExcludePatterns(['app/*']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('excluded_paths', $result->getMessage());
+        $this->assertFileDoesNotExist($capturePath);
+    }
+
+    public function test_skips_when_a_resources_directory_holds_nothing_but_templates_and_assets(): void
+    {
+        // Left without its templates, PHPStan finds nothing to analyse and aborts, which used
+        // to surface as an error.
+        $result = $this->analyzeRealProject([
+            'resources/views/ledger.blade.php' => "<?php\n",
+            'resources/js/ledger.js' => "export {};\n",
+        ], ['resources']);
+
+        $this->assertSkipped($result);
+        $this->assertStringContainsString('Blade templates', $result->getMessage());
+        $this->assertStringNotContainsString('excluded_paths', $result->getMessage());
+    }
+
+    public function test_reports_an_error_when_phpstan_finds_no_file_and_nothing_was_excluded(): void
+    {
+        $result = $this->inRealPHPStanProject(['app/notes.txt' => "notes\n"], function (string $tempDir): ResultInterface {
+            return $this->runAnalyzer($tempDir, ['app']);
+        });
+
+        $this->assertError($result);
+        $this->assertStringContainsString('No files found to analyse', $result->getMessage());
+    }
+
+    public function test_a_blade_template_outside_resources_views_does_not_stop_a_real_run(): void
+    {
+        // Templates are recognised by extension: a module keeps its own views directory.
+        $result = $this->analyzeRealProject(
+            ['Modules/Billing/resources/views/index.blade.php' => "<?php if ( ?>\n"],
+            ['app', 'Modules']
+        );
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertArrayNotHasKey('stopped_at', $result->getMetadata());
+    }
+
     public function test_metadata(): void
     {
         $metadata = (new CollectionCallAnalyzer)->getMetadata();
@@ -741,8 +885,10 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
      * canned report.
      *
      * @param  array<string, string>  $config  extra files at the project root, such as its phpstan.neon
+     * @param  array<int, string>  $paths
+     * @param  array<int, string>  $excludePatterns
      */
-    private function analyzeRealProject(array $config): ResultInterface
+    private function analyzeRealProject(array $config, array $paths = ['app'], array $excludePatterns = []): ResultInterface
     {
         return $this->inRealPHPStanProject(array_merge([
             'app/Models/Invoice.php' => <<<'PHP'
@@ -769,7 +915,60 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
                 }
             }
             PHP,
-        ], $config), fn (string $tempDir): ResultInterface => $this->runAnalyzer($tempDir, ['app']));
+        ], $config), function (string $tempDir) use ($paths, $excludePatterns): ResultInterface {
+            $analyzer = new CollectionCallAnalyzer;
+            $analyzer->setBasePath($tempDir);
+            $analyzer->setPaths($paths);
+            $analyzer->setExcludePatterns($excludePatterns);
+
+            return $analyzer->analyze();
+        });
+    }
+
+    /**
+     * @param  array<string, string>  $files  path => contents, relative to $tempDir
+     */
+    private function createFilesIn(string $tempDir, array $files): void
+    {
+        foreach ($files as $path => $contents) {
+            @mkdir(dirname($tempDir.'/'.$path), 0755, true);
+            file_put_contents($tempDir.'/'.$path, $contents);
+        }
+    }
+
+    /**
+     * Run the analyzer over an existing project against a PHPStan that records its arguments.
+     *
+     * @param  array<int, string>  $paths
+     */
+    private function capturedArgumentsIn(string $tempDir, array $paths): string
+    {
+        $capturePath = $tempDir.'/captured_args.txt';
+
+        $this->writePHPStanStub($tempDir, sprintf(
+            <<<'PHP'
+            file_put_contents(%s, implode("\n", array_slice($argv, 1))."\n");
+
+            foreach ($argv as $argument) {
+                if (str_starts_with($argument, '--configuration=')) {
+                    copy(substr($argument, strlen('--configuration=')), %s);
+                }
+            }
+
+            echo '{"totals":{"errors":0,"file_errors":0},"files":{},"errors":[]}';
+
+            PHP,
+            var_export($capturePath, true),
+            var_export($tempDir.'/captured_config.neon', true)
+        ));
+
+        $this->runAnalyzer($tempDir, $paths);
+
+        $this->assertFileExists($capturePath);
+        $captured = file_get_contents($capturePath);
+        $this->assertIsString($captured);
+
+        return "\n".$captured;
     }
 
     /**

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Analyzers\Security;
 
 use PhpParser\Node;
+use PhpParser\NodeFinder;
 use ShieldCI\AnalyzersCore\Abstracts\AbstractFileAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
@@ -24,7 +25,7 @@ use ShieldCI\Support\EloquentModelHelper;
  * - Models with empty $guarded = []
  * - Models without $hidden attributes for sensitive data
  * - create() or update() with request()->all()
- * - fill() with unfiltered request data
+ * - fill(), or a model constructor, with unfiltered request data
  * - Query builder operations with request data
  * - Relationship operations (sync, attach, etc.) with unfiltered data
  * - Nested mass assignment patterns (dot notation)
@@ -84,6 +85,28 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     ];
 
     /**
+     * Laravel's default global facade aliases (Facade::defaultAliases()), less `Eloquent`,
+     * which aliases Model itself.
+     */
+    private const FACADE_ALIASES = [
+        'App', 'Arr', 'Artisan', 'Auth', 'Blade', 'Broadcast', 'Bus', 'Cache', 'Config',
+        'Context', 'Cookie', 'Crypt', 'Date', 'DB', 'Event', 'File', 'Gate', 'Hash', 'Http',
+        'Js', 'Lang', 'Log', 'Mail', 'Notification', 'Number', 'Password', 'Process', 'Queue',
+        'RateLimiter', 'Redirect', 'Request', 'Response', 'Route', 'Schedule', 'Schema',
+        'Session', 'Storage', 'Str', 'URL', 'Validator', 'View', 'Vite',
+    ];
+
+    /**
+     * Functions whose result holds every key of each array they are given.
+     */
+    private const KEY_MERGING_FUNCTIONS = [
+        'array_merge',
+        'array_merge_recursive',
+        'array_replace',
+        'array_replace_recursive',
+    ];
+
+    /**
      * Request data methods using blacklist filtering (less safe than whitelist).
      *
      * These methods DO filter data, but use negative filtering (blacklist)
@@ -118,6 +141,22 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         'two_factor_recovery_codes',
     ];
 
+    /**
+     * Built on first use by isProjectModelReference(), so it is fresh for each analyzer.
+     */
+    private ?EloquentModelDetector $referenceModelDetector = null;
+
+    /**
+     * The file indexReferences() last indexed, and the fully qualified name each class
+     * reference in it resolves to, keyed by the spl_object_id() of the Name node.
+     *
+     * @var array<int, Node>
+     */
+    private array $indexedAst = [];
+
+    /** @var array<int, string> */
+    private array $resolvedReferences = [];
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -149,6 +188,11 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     protected function runAnalysis(): ResultInterface
     {
+        // A cached analyzer instance runs again; nothing read last run may answer for this one.
+        $this->referenceModelDetector = null;
+        $this->indexedAst = [];
+        $this->resolvedReferences = [];
+
         $issues = [];
         $detector = new EloquentModelDetector($this->parser);
 
@@ -409,13 +453,24 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      */
     private function checkDangerousMethodCalls(string $file, array $ast, array &$issues): void
     {
+        $this->indexReferences($ast);
+
         // Check static method calls (e.g., User::create())
         foreach (self::MODEL_STATIC_METHODS as $method) {
             $calls = $this->findStaticMethodCalls($ast, $method);
 
             foreach ($calls as $call) {
-                // Only check if it's likely a model class to avoid false positives
-                if ($this->isLikelyModelClass($call, $file)) {
+                // A facade is never a model, whatever name it is written under:
+                // Validator::make() and View::make() take request data by design.
+                if ($call->class instanceof Node\Name && $this->isFacadeReference($call->class)) {
+                    continue;
+                }
+
+                // A class resolved to a project model is checked whatever its short name, so
+                // App\Models\Calendar\Event is not taken for the Event facade. Otherwise only
+                // check it if it's likely a model class to avoid false positives
+                if (($call->class instanceof Node\Name && $this->isProjectModelReference($call->class))
+                    || $this->isLikelyModelClass($call, $file)) {
                     $this->checkCallForRequestData($call, $method, 'static', $file, $issues);
                 }
             }
@@ -437,6 +492,114 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 }
             }
         }
+
+        // Model::__construct() passes its argument to fill(), so `new User($data)` mass-assigns
+        // like `User::make($data)`. Only a class resolved to a project model counts, since
+        // `new` builds DTOs, exceptions and SDK objects far more often than models.
+        foreach ($this->parser->findNodes($ast, Node\Expr\New_::class) as $new) {
+            if (! $new instanceof Node\Expr\New_ || ! $new->class instanceof Node\Name || empty($new->args)) {
+                continue;
+            }
+
+            if ($this->isProjectModelReference($new->class)) {
+                $this->checkCallForRequestData($new, "new {$new->class->toString()}", 'constructor', $file, $issues);
+            }
+        }
+    }
+
+    /**
+     * Resolve every class reference of a `new` or a static call in the file, in one forward
+     * pass that tracks imports as PHP reads them, so a `use` applies from its own position
+     * and a namespace's imports end with it.
+     *
+     * Fully qualified names need no table and are not indexed. Repeated calls for the file
+     * already indexed are free.
+     *
+     * @param  array<int, Node>  $ast
+     */
+    private function indexReferences(array $ast): void
+    {
+        if ($ast === $this->indexedAst) {
+            return;
+        }
+
+        $this->indexedAst = $ast;
+        $this->resolvedReferences = [];
+        $this->startTrackingImports();
+        $this->indexReferencesIn($ast, new NodeFinder);
+    }
+
+    /**
+     * @param  array<int, Node>  $stmts
+     */
+    private function indexReferencesIn(array $stmts, NodeFinder $finder): void
+    {
+        foreach ($stmts as $stmt) {
+            $this->trackImports($stmt);
+
+            if ($stmt instanceof Node\Stmt\Namespace_) {
+                $this->indexReferencesIn($stmt->stmts, $finder);
+
+                continue;
+            }
+
+            $references = $finder->find($stmt, static fn (Node $node): bool => ($node instanceof Node\Expr\New_ || $node instanceof Node\Expr\StaticCall)
+                && $node->class instanceof Node\Name
+                && ! $node->class instanceof Node\Name\FullyQualified);
+
+            foreach ($references as $reference) {
+                if (($reference instanceof Node\Expr\New_ || $reference instanceof Node\Expr\StaticCall) && $reference->class instanceof Node\Name) {
+                    $this->resolvedReferences[spl_object_id($reference->class)] = $this->resolvedClassFqn($reference->class);
+                }
+            }
+        }
+    }
+
+    /**
+     * The fully qualified name a class reference resolves to, through the imports in effect
+     * where the file writes it, as indexReferences() recorded it.
+     */
+    private function resolveReference(Node\Name $class): string
+    {
+        if ($class instanceof Node\Name\FullyQualified) {
+            return $class->toString();
+        }
+
+        return $this->resolvedReferences[spl_object_id($class)] ?? $class->toString();
+    }
+
+    /**
+     * True when a class reference resolves to an App\ class whose declaration under app/
+     * provably extends an Eloquent model.
+     *
+     * Stricter than isLikelyModelClass(), which assumes an unknown class is a model: a
+     * vendor class under a Models namespace, a helper beside the models, or a class in a
+     * Models namespace extending another framework's base is not one.
+     */
+    private function isProjectModelReference(Node\Name $class): bool
+    {
+        $fqn = $this->resolveReference($class);
+
+        if (! str_starts_with($fqn, 'App\\')) {
+            return false;
+        }
+
+        $this->referenceModelDetector ??= new EloquentModelDetector($this->parser);
+
+        return $this->referenceModelDetector->provablyExtendsModel($fqn, $this->getBasePath());
+    }
+
+    /**
+     * True when a class reference resolves to a Laravel facade: a class under
+     * Illuminate\Support\Facades, or one of Laravel's global facade aliases written as such.
+     * Compared without case, as PHP compares class names.
+     */
+    private function isFacadeReference(Node\Name $class): bool
+    {
+        $fqn = strtolower($this->resolveReference($class));
+
+        return str_starts_with($fqn, 'illuminate\\support\\facades\\')
+            || in_array($fqn, array_map(strtolower(...), self::FACADE_ALIASES), true);
     }
 
     /**
@@ -595,17 +758,47 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      */
     private function checkQueryBuilderCalls(string $file, array $ast, array &$issues): void
     {
-        foreach (self::BUILDER_METHODS as $method) {
+        $this->indexReferences($ast);
+
+        // An Eloquent builder also has the model's creating methods: User::query()->create().
+        // Those need the chain to start on a project model, since the root class of a chain
+        // is otherwise assumed to be a model when nothing says it is not.
+        $creatingMethods = array_diff(self::MODEL_STATIC_METHODS, self::BUILDER_METHODS);
+
+        foreach (array_unique([...self::BUILDER_METHODS, ...self::MODEL_STATIC_METHODS]) as $method) {
             // Find all method calls with this name
             $calls = $this->parser->findMethodCalls($ast, $method);
 
             foreach ($calls as $call) {
                 // Check if it's called on a query builder
-                if ($call instanceof Node\Expr\MethodCall && $this->isQueryBuilderCall($call, $file)) {
-                    $this->checkCallForRequestData($call, $method, 'builder', $file, $issues);
+                if (! $call instanceof Node\Expr\MethodCall || ! $this->isQueryBuilderCall($call, $file)) {
+                    continue;
                 }
+
+                if (in_array($method, $creatingMethods, true) && ! $this->chainStartsOnProjectModel($call)) {
+                    continue;
+                }
+
+                $this->checkCallForRequestData($call, $method, 'builder', $file, $issues);
             }
         }
+    }
+
+    /**
+     * True when the static call a method chain starts from is on a project model, as in
+     * User::where(...)->create().
+     */
+    private function chainStartsOnProjectModel(Node\Expr\MethodCall $call): bool
+    {
+        $root = $call->var;
+
+        while ($root instanceof Node\Expr\MethodCall) {
+            $root = $root->var;
+        }
+
+        return $root instanceof Node\Expr\StaticCall
+            && $root->class instanceof Node\Name
+            && $this->isProjectModelReference($root->class);
     }
 
     /**
@@ -690,8 +883,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 $methodName = $node->name->toString();
                 if ($this->isQueryBuilderMethod($methodName)) {
                     // IMPORTANT: Verify this is actually a model class to avoid false positives
-                    // SomeService::where() should NOT be treated as a query builder
-                    if ($this->isLikelyModelClass($node, $file)) {
+                    // SomeService::where() should NOT be treated as a query builder. A class
+                    // resolved to a project model counts whatever its short name.
+                    if (($node->class instanceof Node\Name && $this->isProjectModelReference($node->class))
+                        || $this->isLikelyModelClass($node, $file)) {
                         return true;
                     }
                 }
@@ -809,7 +1004,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      * @param  array<int, Issue>  $issues
      */
     private function checkCallForRequestData(
-        Node\Expr\MethodCall|Node\Expr\StaticCall $call,
+        Node\Expr\MethodCall|Node\Expr\StaticCall|Node\Expr\New_ $call,
         string $method,
         string $callType,
         string $file,
@@ -818,6 +1013,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         if (empty($call->args)) {
             return;
         }
+
+        $values = [];
 
         foreach ($call->args as $arg) {
             // First-class callable syntax (foo(...)) yields a VariadicPlaceholder
@@ -832,15 +1029,33 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 continue;
             }
 
-            // Recursively check for blacklist filtering first (except)
-            if ($this->containsBlacklistRequestData($arg->value)) {
-                $callTypeLabel = match ($callType) {
-                    'static' => 'Static call to',
-                    'instance' => 'Instance call to',
-                    'builder' => 'Query builder call to',
-                    default => 'Call to',
-                };
+            $values[] = $arg->value;
+        }
 
+        $callTypeLabel = match ($callType) {
+            'static' => 'Static call to',
+            'instance' => 'Instance call to',
+            'builder' => 'Query builder call to',
+            default => 'Call to',
+        };
+
+        // An except() argument is graded High, unless the call also passes a whole request
+        // bag, such as array_merge($request->except('id'), $request->all()): the bag lets every
+        // field through, so the call is graded by it. A single keyed read beside except() does
+        // not change the grade.
+        $passesWholeBag = false;
+
+        foreach ($values as $value) {
+            if ($this->containsWholeBagRequestData($value)) {
+                $passesWholeBag = true;
+
+                break;
+            }
+        }
+
+        foreach ($values as $value) {
+            // Recursively check for blacklist filtering first (except)
+            if (! $passesWholeBag && $this->containsBlacklistRequestData($value)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: "{$callTypeLabel} {$method}() uses blacklist filtering (except) which may allow unintended fields",
                     filePath: $file,
@@ -859,14 +1074,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             }
 
             // Recursively check for unfiltered request data
-            if ($this->containsRequestData($arg->value)) {
-                $callTypeLabel = match ($callType) {
-                    'static' => 'Static call to',
-                    'instance' => 'Instance call to',
-                    'builder' => 'Query builder call to',
-                    default => 'Call to',
-                };
-
+            if ($this->containsRequestData($value)) {
                 $issues[] = $this->createIssueWithSnippet(
                     message: "{$callTypeLabel} {$method}() with unfiltered request data may result in mass assignment vulnerability",
                     filePath: $file,
@@ -882,9 +1090,56 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                 );
 
                 // Only report once per method call
-                break;
+                return;
             }
         }
+    }
+
+    /**
+     * True when the node passes a whole request bag on, so its keys reach the sink: a bag read
+     * such as $request->all() or Request::input(), directly or through a spread, an array
+     * union, a key-merging call, a ternary branch or a cast. A read of one key, such as
+     * request('team'), is not a bag, and nor is request data nested under a literal key.
+     */
+    private function containsWholeBagRequestData(Node $node): bool
+    {
+        if ($this->isRequestData($node)) {
+            // request('key') reads one value; Request::input('key') likewise.
+            return ! $node instanceof Node\Expr\FuncCall
+                && ! (($node instanceof Node\Expr\StaticCall || $node instanceof Node\Expr\MethodCall) && ! empty($node->args));
+        }
+
+        if ($node instanceof Node\Expr\Array_) {
+            foreach ($node->items as $item) {
+                if ($item !== null && $item->unpack && $this->containsWholeBagRequestData($item->value)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        if ($node instanceof Node\Expr\BinaryOp\Plus || $node instanceof Node\Expr\BinaryOp\Coalesce) {
+            return $this->containsWholeBagRequestData($node->left) || $this->containsWholeBagRequestData($node->right);
+        }
+
+        if ($node instanceof Node\Expr\Ternary) {
+            // `$a ?: $b` yields its condition.
+            return $this->containsWholeBagRequestData($node->if ?? $node->cond)
+                || $this->containsWholeBagRequestData($node->else);
+        }
+
+        if ($node instanceof Node\Expr\Cast) {
+            return $this->containsWholeBagRequestData($node->expr);
+        }
+
+        foreach ($this->mergedArrays($node) as $array) {
+            if ($this->containsWholeBagRequestData($array)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -990,6 +1245,13 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Traverse key-merging calls: array_merge($request->except('id'), [...])
+        foreach ($this->mergedArrays($node) as $array) {
+            if ($this->containsBlacklistRequestData($array)) {
+                return true;
+            }
+        }
+
         return false;
     }
 
@@ -1068,7 +1330,55 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             }
         }
 
+        // Traverse key-merging calls: array_merge($request->all(), [...])
+        foreach ($this->mergedArrays($node) as $array) {
+            if ($this->containsRequestData($array)) {
+                return true;
+            }
+        }
+
         return false;
+    }
+
+    /**
+     * The arrays a key-merging call such as array_merge() combines, other than arrays with
+     * closed literal keys. The result holds every key of each, so request data passed to one
+     * reaches the sink with its keys; a closed literal-key array adds only fixed columns.
+     *
+     * @return array<int, Node\Expr>
+     */
+    private function mergedArrays(Node $node): array
+    {
+        if (! $node instanceof Node\Expr\FuncCall
+            || ! $node->name instanceof Node\Name
+            || ! in_array(strtolower($node->name->toString()), self::KEY_MERGING_FUNCTIONS, true)) {
+            return [];
+        }
+
+        $arrays = [];
+
+        foreach ($node->args as $arg) {
+            if ($arg instanceof Node\Arg && ! $this->isClosedLiteralKeyArray($arg->value)) {
+                $arrays[] = $arg->value;
+            }
+        }
+
+        return $arrays;
+    }
+
+    /**
+     * True for the current request itself: a `$request` variable or a bare request() call.
+     */
+    private function isRequestReceiver(Node\Expr $node): bool
+    {
+        if ($node instanceof Node\Expr\Variable) {
+            return $node->name === 'request';
+        }
+
+        return $node instanceof Node\Expr\FuncCall
+            && $node->name instanceof Node\Name
+            && $node->name->toString() === 'request'
+            && empty($node->args);
     }
 
     /**
@@ -1137,18 +1447,36 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             if ($node->name instanceof Node\Identifier) {
                 $methodName = $node->name->toString();
 
+                // $request->toArray() returns all(), and $request->json()->all() or
+                // $request->collect()->toArray() unwrap a bag of every input field. Only the
+                // request itself counts as the receiver: toArray() and collect() are common on
+                // other objects, such as an HTTP client response.
+                if (in_array($methodName, ['all', 'toArray'], true) && empty($node->args)) {
+                    if ($methodName === 'toArray' && $this->isRequestReceiver($node->var)) {
+                        return true;
+                    }
+
+                    $bag = $node->var;
+                    if ($bag instanceof Node\Expr\MethodCall
+                        && $bag->name instanceof Node\Identifier
+                        && in_array($bag->name->toString(), ['json', 'collect'], true)
+                        && empty($bag->args)
+                        && $this->isRequestReceiver($bag->var)) {
+                        return true;
+                    }
+                }
+
                 // Check if it's a dangerous request method
+                // Every one of these is only dangerous when called without arguments: with
+                // arguments, input('name') reads one key and all(['name']) returns only the
+                // listed keys, like only().
                 if (in_array($methodName, self::REQUEST_DATA_METHODS, true)) {
                     // Called on request() function
                     if ($node->var instanceof Node\Expr\FuncCall) {
                         if ($node->var->name instanceof Node\Name && $node->var->name->toString() === 'request') {
-                            // Check if no arguments (e.g., request()->input() with no args = all input)
-                            // These methods are only dangerous when called without arguments
-                            if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
-                                // If has args, it's filtering to a specific key - OK
-                                if (! empty($node->args)) {
-                                    return false;
-                                }
+                            // If has args, it's filtering to specific keys - OK
+                            if (! empty($node->args)) {
+                                return false;
                             }
 
                             return true;
@@ -1158,10 +1486,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     // Called on $request variable
                     if ($node->var instanceof Node\Expr\Variable && $node->var->name === 'request') {
                         // Same logic for instance methods
-                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
-                            if (! empty($node->args)) {
-                                return false;
-                            }
+                        if (! empty($node->args)) {
+                            return false;
                         }
 
                         return true;
@@ -1173,10 +1499,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     // so we can safely assume any variable using them is a Request instance
                     if ($node->var instanceof Node\Expr\Variable) {
                         // Same argument filtering logic
-                        if (in_array($methodName, ['input', 'get', 'post', 'query', 'json'], true)) {
-                            if (! empty($node->args)) {
-                                return false;
-                            }
+                        if (! empty($node->args)) {
+                            return false;
                         }
 
                         return true;
@@ -1199,7 +1523,8 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     if ($node->class instanceof Node\Name) {
                         $className = $node->class->toString();
                         if (str_contains($className, 'Request')) {
-                            return true;
+                            // Request::all(['name']) returns only the listed keys, like only().
+                            return $methodName !== 'all' || empty($node->args);
                         }
                     }
                 }

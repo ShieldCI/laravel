@@ -7,6 +7,7 @@ namespace ShieldCI\Tests\Unit\Analyzers\Security;
 use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\MassAssignmentAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
+use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\Tests\AnalyzerTestCase;
 
@@ -1644,6 +1645,317 @@ PHP;
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('insert()', $result);
+    }
+
+    private const REQUEST_SINK_USES = "use App\\Filters\\ReportFilter;\nuse App\\Models\\Gadget;\nuse App\\Services\\ReportService;";
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: Severity}>
+     */
+    public static function requestSinkProvider(): array
+    {
+        $unfiltered = 'with unfiltered request data may result in mass assignment vulnerability';
+        $blacklist = 'uses blacklist filtering (except) which may allow unintended fields';
+
+        return [
+            'array_merge with the request first' => ['Gadget::create(array_merge($request->all(), ["owner_id" => 1]));', "Static call to create() {$unfiltered}", Severity::Critical],
+            'array_replace with the request last' => ['Gadget::create(array_replace(["owner_id" => 1], request()->all()));', "Static call to create() {$unfiltered}", Severity::Critical],
+            'array_merge with blacklist-filtered request' => ['Gadget::create(array_merge($request->except("owner_id"), ["owner_id" => 1]));', "Static call to create() {$blacklist}", Severity::High],
+            'constructor' => ['$gadget = new Gadget($request->all());', "Call to new Gadget() {$unfiltered}", Severity::Critical],
+            'constructor with the request helper' => ['$gadget = new Gadget(request()->input());', "Call to new Gadget() {$unfiltered}", Severity::Critical],
+            'constructor with blacklist-filtered request' => ['$gadget = new Gadget($request->except("owner_id"));', "Call to new Gadget() {$blacklist}", Severity::High],
+            'constructor with a fully qualified model name' => ['$gadget = new \\App\\Models\\Gadget($request->all());', "Call to new App\\Models\\Gadget() {$unfiltered}", Severity::Critical],
+            'query()->create()' => ['Gadget::query()->create($request->all());', "Query builder call to create() {$unfiltered}", Severity::Critical],
+            'where()->updateOrCreate()' => ['Gadget::where("label", "x")->updateOrCreate(["label" => "x"], $request->all());', "Query builder call to updateOrCreate() {$unfiltered}", Severity::Critical],
+            'query()->create() with blacklist-filtered request' => ['Gadget::query()->create($request->except("owner_id"));', "Query builder call to create() {$blacklist}", Severity::High],
+            'json()->all()' => ['Gadget::create($request->json()->all());', "Static call to create() {$unfiltered}", Severity::Critical],
+            'collect()->all()' => ['Gadget::create($request->collect()->all());', "Static call to create() {$unfiltered}", Severity::Critical],
+            'toArray()' => ['Gadget::create($request->toArray());', "Static call to create() {$unfiltered}", Severity::Critical],
+            'request()->collect()->toArray()' => ['Gadget::create(request()->collect()->toArray());', "Static call to create() {$unfiltered}", Severity::Critical],
+        ];
+    }
+
+    /** @dataProvider requestSinkProvider */
+    #[DataProvider('requestSinkProvider')]
+    public function test_detects_request_data_reaching_a_model_sink(string $statement, string $message, Severity $severity): void
+    {
+        $result = $this->analyzeRequestSinkController($statement);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($message, $result->getIssues()[0]->message);
+        $this->assertSame($severity, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{0: string}>
+     */
+    public static function filteredRequestSinkProvider(): array
+    {
+        return [
+            'literal keys with request values' => ['Gadget::create(["label" => $request->input("label")]);'],
+            'array_merge of only() and a literal array' => ['Gadget::create(array_merge($request->only(["label"]), ["owner_id" => 1]));'],
+            'array_merge with a request value under a literal key' => ['Gadget::create(array_merge($request->only(["label"]), ["owner_id" => request("owner")]));'],
+            'array_merge of validated()' => ['Gadget::create(array_merge($request->validated(), ["owner_id" => 1]));'],
+            'validated()' => ['Gadget::create($request->validated());'],
+            'all() limited to listed keys' => ['Gadget::create($request->all(["label"]));'],
+            'all() limited to listed keys on the request helper' => ['Gadget::create(request()->all(["label", "owner_id"]));'],
+            'all() limited to listed keys on the Request facade' => ['Gadget::create(\Illuminate\Support\Facades\Request::all(["label"]));'],
+            'all() limited to keys held in a variable' => ['$keys = ["label"]; Gadget::create($request->all($keys));'],
+            'constructor with all() limited to listed keys' => ['$gadget = new Gadget($request->all(["label"]));'],
+            'constructor with literal keys' => ['$gadget = new Gadget(["label" => $request->input("label")]);'],
+            'constructor of a non-model class' => ['$filter = new ReportFilter($request->all());'],
+            'query()->create() with literal keys' => ['Gadget::query()->create(["label" => $request->input("label")]);'],
+            'query()->create() on a non-model class' => ['ReportService::query()->create($request->all());'],
+            'collect() of one key' => ['Gadget::create($request->collect("items")->all());'],
+            'collect() on a non-request variable' => ['Gadget::create($response->collect()->all());'],
+            'toArray() on a non-request variable' => ['Gadget::create($filter->toArray());'],
+        ];
+    }
+
+    /** @dataProvider filteredRequestSinkProvider */
+    #[DataProvider('filteredRequestSinkProvider')]
+    public function test_passes_filtered_or_non_model_request_sink(string $statement): void
+    {
+        $this->assertPassed($this->analyzeRequestSinkController($statement));
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: array<string, string>, 3: string, 4: Severity}>
+     */
+    public static function resolvedRequestSinkProvider(): array
+    {
+        $unfiltered = 'with unfiltered request data may result in mass assignment vulnerability';
+        $invoice = ['app/Models/Billing/Invoice.php' => '<?php namespace App\Models\Billing; use Illuminate\Database\Eloquent\Model; class Invoice extends Model { protected $fillable = ["label"]; }'];
+
+        return [
+            'constructor of an aliased model import' => ['use App\Models\Gadget as Widget;', '$widget = new Widget($request->all());', [], "Call to new Widget() {$unfiltered}", Severity::Critical],
+            'constructor of a group-imported model' => ['use App\Models\{Gadget};', '$gadget = new Gadget($request->all());', [], "Call to new Gadget() {$unfiltered}", Severity::Critical],
+            'constructor of a model in a Models sub-namespace' => ['use App\Models\Billing\Invoice;', '$invoice = new Invoice($request->all());', $invoice, "Call to new Invoice() {$unfiltered}", Severity::Critical],
+            'query()->create() on an aliased model import' => ['use App\Models\Gadget as Widget;', 'Widget::query()->create($request->all());', [], "Query builder call to create() {$unfiltered}", Severity::Critical],
+            'constructor of a model extending Model spelled in lower case' => ['use App\Models\Gadget;', '$gadget = new Gadget($request->all());', ['app/Models/Gadget.php' => '<?php namespace App\Models; class Gadget extends \illuminate\database\eloquent\model { protected $fillable = ["label"]; }'], "Call to new Gadget() {$unfiltered}", Severity::Critical],
+            'constructor of a model extending the global Eloquent alias' => ['use App\Models\Gadget;', '$gadget = new Gadget($request->all());', ['app/Models/Gadget.php' => '<?php namespace App\Models; class Gadget extends \Eloquent { protected $fillable = ["label"]; }'], "Call to new Gadget() {$unfiltered}", Severity::Critical],
+            'except() and all() as separate arguments' => ['use App\Models\Gadget;', 'Gadget::updateOrCreate($request->except("owner_id"), $request->all());', [], "Static call to updateOrCreate() {$unfiltered}", Severity::Critical],
+            'array_merge of except() and all()' => ['use App\Models\Gadget;', 'Gadget::create(array_merge($request->except("id"), $request->all()));', [], "Static call to create() {$unfiltered}", Severity::Critical],
+        ];
+    }
+
+    /**
+     * @dataProvider resolvedRequestSinkProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('resolvedRequestSinkProvider')]
+    public function test_detects_request_data_reaching_a_resolved_model_sink(string $uses, string $statement, array $files, string $message, Severity $severity): void
+    {
+        $result = $this->analyzeRequestSinkController($statement, $uses, $files);
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($message, $result->getIssues()[0]->message);
+        $this->assertSame($severity, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: array<string, string>}>
+     */
+    public static function nonModelRequestSinkProvider(): array
+    {
+        $tenantScope = ['app/Models/Scopes/TenantScope.php' => '<?php namespace App\Models\Scopes; class TenantScope { public function __construct(array $input = []) {} }'];
+
+        return [
+            'constructor of a vendor class under a Models namespace' => ['use Acme\Sdk\Models\Customer;', '$customer = new Customer($request->all());', []],
+            'constructor of a fully qualified vendor Model class' => ['', '$pet = new \OpenAPI\Client\Model\Pet($request->all());', []],
+            'constructor of a helper in a Models sub-namespace' => ['', '$scope = new \App\Models\Scopes\TenantScope($request->all());', $tenantScope],
+            'constructor of a non-model sharing a model short name' => ['use App\Data\Gadget;', '$gadget = new Gadget($request->all());', []],
+            'constructor of a class whose model import is commented out' => ["use App\\Billing\\Invoice;\n// was: use App\\Models\\Invoice;", '$invoice = new Invoice($request->all());', []],
+            'query()->create() on a vendor class' => ['use Vendor\Search\Index;', 'Index::query()->create($request->all());', []],
+            'fully qualified Validator facade' => ['', '$validator = \Illuminate\Support\Facades\Validator::make($request->all(), ["label" => "required"]);', []],
+            'aliased Validator facade' => ['use Illuminate\Support\Facades\Validator as V;', '$validator = V::make($request->all(), ["label" => "required"]);', []],
+            'imported App facade' => ['use Illuminate\Support\Facades\App;', '$service = App::make(ReportFilter::class, $request->all());', []],
+            'imported View facade' => ['use Illuminate\Support\Facades\View;', 'return View::make("form", $request->all());', []],
+            'imported Response facade' => ['use Illuminate\Support\Facades\Response;', 'return Response::make($request->all());', []],
+            'global App alias' => ['', '$service = \App::make(ReportFilter::class, $request->all());', []],
+            'global View alias' => ['', 'return \View::make("form", $request->all());', []],
+            'global Response alias' => ['', 'return \Response::make($request->all());', []],
+            'global alias written in lower case' => ['', 'return \validator::make($request->all(), []);', []],
+            'global alias written in lower case in a routes file' => ['', 'return null;', ['routes/web.php' => "<?php\n\nuse Illuminate\\Support\\Facades\\Route;\n\nRoute::post('/gadgets', function () {\n    validator::make(request()->all(), []);\n});\n"]],
+            'constructor of a non-Eloquent class in a Models namespace' => ['use App\Models\Data\GadgetData;', '$data = new GadgetData($request->all());', ['app/Models/Data/GadgetData.php' => '<?php namespace App\Models\Data; use Spatie\LaravelData\Data; class GadgetData extends Data {}']],
+            'constructor of a non-model sharing its file with a same-named model in another namespace' => ['use App\Models\Gadget;', '$gadget = new Gadget($request->all());', ['app/Models/Gadget.php' => '<?php namespace App\Models\Legacy { use Illuminate\Database\Eloquent\Model; class Gadget extends Model {} } namespace App\Models { class Gadget extends \App\Dto\Thing {} }']],
+            'query()->create() on a model whose parent cannot be read' => ['use App\Models\Ledger;', 'Ledger::query()->create($request->all());', ['app/Models/Ledger.php' => '<?php namespace App\Models; use Vendor\Records\Record; class Ledger extends Record {}']],
+        ];
+    }
+
+    /**
+     * @dataProvider nonModelRequestSinkProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('nonModelRequestSinkProvider')]
+    public function test_passes_request_data_reaching_a_non_model_class(string $uses, string $statement, array $files): void
+    {
+        $this->assertPassed($this->analyzeRequestSinkController($statement, $uses, $files));
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function blacklistBesideKeyedReadProvider(): array
+    {
+        $blacklist = 'uses blacklist filtering (except) which may allow unintended fields';
+
+        return [
+            'keyed read in a ternary condition' => ['$filter->update(request("type") === "admin" ? $request->except("role") : $request->only("label"));', "Instance call to update() {$blacklist}"],
+            'keyed read under a literal key in a union' => ['$filter->update($request->except("id") + ["team" => request("team")]);', "Instance call to update() {$blacklist}"],
+            'keyed read under a literal key in a union on a model' => ['Gadget::create($request->except("id") + ["team" => request("team")]);', "Static call to create() {$blacklist}"],
+        ];
+    }
+
+    /** @dataProvider blacklistBesideKeyedReadProvider */
+    #[DataProvider('blacklistBesideKeyedReadProvider')]
+    public function test_a_keyed_request_read_beside_except_keeps_the_blacklist_grade(string $statement, string $message): void
+    {
+        $result = $this->analyzeRequestSinkController($statement);
+
+        $this->assertIssueCount(1, $result);
+        $this->assertSame($message, $result->getIssues()[0]->message);
+        $this->assertSame(Severity::High, $result->getIssues()[0]->severity);
+    }
+
+    public function test_a_reused_analyzer_reads_a_model_changed_since_its_last_run(): void
+    {
+        $analyzer = new MassAssignmentAnalyzer($this->parser);
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Gadget.php' => '<?php namespace App\Models; use Illuminate\Database\Eloquent\Model; class Gadget extends Model { protected $fillable = ["label"]; }',
+            'app/Http/Controllers/Intake.php' => "<?php\nnamespace App\\Http\\Controllers;\nuse App\\Models\\Gadget;\nclass Intake { public function store(\$request) {\nreturn new Gadget(\$request->all());\n} }\n",
+        ]);
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertCount(1, $analyzer->analyze()->getIssues());
+
+        file_put_contents($tempDir.'/app/Models/Gadget.php', '<?php namespace App\Models; class Gadget { public function __construct(array $input) {} }');
+        touch($tempDir.'/app/Models/Gadget.php', time() + 100);
+        clearstatcache();
+
+        $this->assertCount(0, $analyzer->analyze()->getIssues());
+    }
+
+    public function test_nested_model_with_facade_like_short_name_reports_every_sink(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Calendar/Event.php' => '<?php namespace App\Models\Calendar; use Illuminate\Database\Eloquent\Model; class Event extends Model { protected $fillable = ["label"]; }',
+            'app/Http/Controllers/EventController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Calendar\Event;
+use Illuminate\Http\Request;
+
+class EventController
+{
+    public function store(Request $request)
+    {
+        $event = new Event($request->all());
+        Event::query()->create($request->all());
+        Event::create($request->all());
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertIssueCount(3, $result);
+        $this->assertHasIssueContaining('Call to new Event() with unfiltered request data', $result);
+        $this->assertHasIssueContaining('Query builder call to create() with unfiltered request data', $result);
+        $this->assertHasIssueContaining('Static call to create() with unfiltered request data', $result);
+    }
+
+    public function test_resolves_constructor_names_through_the_imports_of_their_own_namespace(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Gadget.php' => '<?php namespace App\Models; use Illuminate\Database\Eloquent\Model; class Gadget extends Model { protected $fillable = ["label"]; }',
+            'app/Http/Controllers/Mixed.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers\First {
+    use App\Data\Gadget;
+
+    class Intake
+    {
+        public function store($request)
+        {
+            return new Gadget($request->all());
+        }
+    }
+}
+
+namespace App\Http\Controllers\Second {
+    use App\Models\Gadget;
+
+    class Intake
+    {
+        public function store($request)
+        {
+            $error = new \RuntimeException($request->all());
+
+            return new Gadget($request->all());
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertIssueCount(1, $result);
+        $this->assertSame(24, $result->getIssues()[0]->location?->line);
+    }
+
+    /**
+     * @param  array<string, string>  $files  Further fixture files, path => contents
+     */
+    private function analyzeRequestSinkController(string $statement, string $uses = self::REQUEST_SINK_USES, array $files = []): ResultInterface
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Http\Controllers;
+
+use Illuminate\Http\Request;
+{$uses}
+
+class GadgetController extends Controller
+{
+    public function store(Request \$request, \$response, \$filter)
+    {
+        {$statement}
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Gadget.php' => '<?php namespace App\\Models; use Illuminate\\Database\\Eloquent\\Model; class Gadget extends Model { protected $fillable = ["label"]; }',
+            'app/Filters/ReportFilter.php' => '<?php namespace App\\Filters; class ReportFilter { public function __construct(array $input = []) {} }',
+            'Controllers/GadgetController.php' => $code,
+            ...$files,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        return $analyzer->analyze();
     }
 
     public function test_detects_fully_qualified_model_class(): void

@@ -30,6 +30,7 @@ use ShieldCI\Support\OriginReachability\DeclaredOriginResolver;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
 use ShieldCI\Support\OriginReachability\RedirectChain;
+use ShieldCI\Support\ResultCaveat;
 use Throwable;
 
 /**
@@ -179,12 +180,15 @@ class XssAnalyzer extends AbstractFileAnalyzer
         }
 
         $summary = sprintf('Found %d XSS issue(s)', count($issues));
+        $resultMetadata = [];
 
         if ($cspUnobserved !== null) {
-            $summary .= sprintf(' (Content-Security-Policy not verified: %s)', $cspUnobserved);
+            $caveat = sprintf('Content-Security-Policy not verified: %s', $cspUnobserved);
+            $summary .= ' ('.$caveat.')';
+            $resultMetadata = ResultCaveat::metadata($caveat);
         }
 
-        return $this->resultBySeverity($summary, $issues);
+        return $this->resultBySeverity($summary, $issues, $resultMetadata);
     }
 
     /**

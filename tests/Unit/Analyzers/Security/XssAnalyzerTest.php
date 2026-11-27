@@ -16,6 +16,7 @@ use Illuminate\Support\Facades\URL;
 use Psr\Http\Message\ResponseInterface;
 use ShieldCI\Analyzers\Security\XssAnalyzer;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class XssAnalyzerTest extends AnalyzerTestCase
@@ -620,6 +621,12 @@ BLADE;
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining('Unescaped blade output', $result);
         $this->assertStringContainsString('Content-Security-Policy not verified', $result->getMessage());
+
+        // The same note is recorded as metadata, so it survives suppression of every issue.
+        $caveat = $result->getMetadata()[ResultCaveat::METADATA_KEY] ?? null;
+        $this->assertIsString($caveat);
+        $this->assertStringStartsWith('Content-Security-Policy not verified: ', $caveat);
+        $this->assertStringEndsWith(' ('.$caveat.')', $result->getMessage());
     }
 
     public function test_fails_http_check_when_csp_contains_unsafe_inline(): void

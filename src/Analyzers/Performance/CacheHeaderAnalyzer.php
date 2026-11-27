@@ -18,6 +18,7 @@ use ShieldCI\Support\OriginReachability\DeclaredOriginResolver;
 use ShieldCI\Support\OriginReachability\OriginOutcome;
 use ShieldCI\Support\OriginReachability\OriginProbeResult;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\ResultCaveat;
 
 /**
  * Analyzes cache headers for compiled assets using HTTP verification.
@@ -270,15 +271,18 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
 
         $message = 'Compiled assets are missing Cache-Control headers or use non-cacheable directives';
         $summary = sprintf('Found %d asset(s) without proper cache headers', $this->uncachedAssets->count());
+        $resultMetadata = [];
 
         if ($this->unobservedAssets->isNotEmpty()) {
             $firstUnobserved = $this->unobservedAssets->first();
 
-            $summary .= sprintf(
-                ' (%d further asset(s) could not be checked, first: %s)',
+            $caveat = sprintf(
+                '%d further asset(s) could not be checked, first: %s',
                 $this->unobservedAssets->count(),
                 $firstUnobserved['reason']
             );
+            $summary .= ' ('.$caveat.')';
+            $resultMetadata = ResultCaveat::metadata($caveat);
         }
 
         $issues = [$this->createIssueWithSnippet(
@@ -295,7 +299,7 @@ class CacheHeaderAnalyzer extends AbstractAnalyzer
             ]
         )];
 
-        return $this->resultBySeverity($summary, $issues);
+        return $this->resultBySeverity($summary, $issues, $resultMetadata);
     }
 
     /**

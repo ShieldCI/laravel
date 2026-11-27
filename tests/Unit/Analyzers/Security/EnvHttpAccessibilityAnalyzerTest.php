@@ -19,6 +19,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class EnvHttpAccessibilityAnalyzerTest extends AnalyzerTestCase
@@ -954,6 +955,12 @@ ENV;
         $this->assertFailed($result);
         $this->assertStringContainsString('publicly accessible at 1 location', $result->getMessage());
         $this->assertStringContainsString('7 further locations could not be checked', $result->getMessage());
+
+        // The same note is recorded as metadata, so it survives suppression of every issue.
+        $this->assertSame(
+            '7 further locations could not be checked',
+            $result->getMetadata()[ResultCaveat::METADATA_KEY] ?? null
+        );
     }
 
     /**

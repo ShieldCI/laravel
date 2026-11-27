@@ -14,8 +14,13 @@ use ShieldCI\Analyzers\Reliability\PHPStanAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\AnalyzersCore\Results\AnalysisResult;
+use ShieldCI\Commands\AnalyzeCommand;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 use ShieldCI\Tests\Concerns\RunsRealPHPStan;
+use ShieldCI\ValueObjects\FilterResult;
 use Symfony\Component\Process\Exception\ProcessTimedOutException;
 
 class PHPStanAnalyzerTest extends AnalyzerTestCase
@@ -1540,6 +1545,89 @@ PHP;
         $this->assertFailed($result);
         $this->assertStringContainsString('so the rest of the project was not analysed', $result->getMessage());
         $this->assertStringContainsString('so these findings may be incomplete', $result->getMessage());
+
+        $caveat = $this->assertErrorCaveat($result);
+        $this->assertStringStartsWith('PHPStan stopped at file(s) it could not process', $caveat);
+        $this->assertStringContainsString('. PHPStan also reported 1 analysis error(s)', $caveat);
+    }
+
+    public function test_marks_findings_next_to_an_analysis_error_with_an_error_caveat(): void
+    {
+        // Without findings this run is an error, so suppressing every finding must leave
+        // one rather than a pass: the caveat carries the notice and that status.
+        $result = $this->analyzeIssues(
+            [['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $example']],
+            [],
+            ['Internal error: synthetic worker crash.']
+        );
+
+        $caveat = $this->assertErrorCaveat($result);
+        $this->assertStringStartsWith('PHPStan also reported 1 analysis error(s), so these findings may be incomplete: ', $caveat);
+        $this->assertStringContainsString('synthetic worker crash', $caveat);
+        $this->assertSame(['Internal error: synthetic worker crash.'], $result->getMetadata()['analysis_errors']);
+    }
+
+    public function test_marks_findings_next_to_a_stopping_file_with_an_error_caveat(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $example', 'line' => 5],
+            ['identifier' => 'phpstan.parse', 'message' => 'Syntax error, unexpected EOF on line 7'],
+        ]);
+
+        $caveat = $this->assertErrorCaveat($result);
+        $this->assertSame(
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php:7',
+            $caveat
+        );
+        $this->assertSame(['app/Services/ExampleService.php:7'], $result->getMetadata()['stopped_at']);
+    }
+
+    public function test_a_complete_run_with_findings_carries_no_caveat(): void
+    {
+        $result = $this->analyzeIssues([
+            ['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $example'],
+        ]);
+
+        $this->assertArrayNotHasKey(ResultCaveat::METADATA_KEY, $result->getMetadata());
+    }
+
+    public function test_suppressing_every_finding_next_to_an_analysis_error_leaves_an_error(): void
+    {
+        $result = $this->analyzeIssues(
+            [['identifier' => 'variable.undefined', 'message' => 'Undefined variable: $example']],
+            [],
+            ['Internal error: synthetic worker crash.']
+        );
+        $this->assertInstanceOf(AnalysisResult::class, $result);
+        $caveat = $result->getMetadata()[ResultCaveat::METADATA_KEY] ?? null;
+        $this->assertIsString($caveat);
+
+        config(['shieldci.ignore_errors' => ['phpstan' => [['message_pattern' => '*']]]]);
+
+        $filter = new \ReflectionMethod(AnalyzeCommand::class, 'filterSingleResultAgainstIgnoreErrors');
+        $filter->setAccessible(true);
+        $filtered = $filter->invoke($this->app?->make(AnalyzeCommand::class), $result);
+        $this->assertInstanceOf(FilterResult::class, $filtered);
+
+        $this->assertSame(Status::Error, $filtered->result->getStatus());
+        $this->assertSame('All issues are ignored via config ('.$caveat.')', $filtered->result->getMessage());
+        $this->assertSame([], $filtered->result->getIssues());
+    }
+
+    /**
+     * Assert the result records its incomplete-run notice as an Error caveat, and that the
+     * notice is the tail of the summary. Returns the caveat text.
+     */
+    private function assertErrorCaveat(ResultInterface $result): string
+    {
+        $metadata = $result->getMetadata();
+        $caveat = $metadata[ResultCaveat::METADATA_KEY] ?? null;
+
+        $this->assertIsString($caveat);
+        $this->assertStringEndsWith('. '.$caveat, $result->getMessage());
+        $this->assertSame(Status::Error, ResultCaveat::from($metadata)?->status);
+
+        return $caveat;
     }
 
     public function test_names_a_file_with_several_parse_errors_once(): void

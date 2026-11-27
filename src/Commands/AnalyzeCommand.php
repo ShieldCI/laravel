@@ -28,6 +28,7 @@ use ShieldCI\Enums\TriggerSource;
 use ShieldCI\Support\CiEnvironmentDetector;
 use ShieldCI\Support\MemoryLimit;
 use ShieldCI\Support\Reporter;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\ValueObjects\AnalysisReport;
 use ShieldCI\ValueObjects\FailureNotification;
 use ShieldCI\ValueObjects\FilterResult;
@@ -1571,7 +1572,7 @@ class AnalyzeCommand extends Command
         // Update message to reflect filtered count
         $message = $result->getMessage();
         if ($newIssues->isEmpty()) {
-            $message = 'All issues are ignored via config';
+            [$status, $message] = $this->fullySuppressedOutcome($result, 'All issues are ignored via config');
         } elseif ($newIssues->count() !== count($currentIssues)) {
             // Some (but not all) issues were filtered - update the count in the message
             $originalCount = count($currentIssues);
@@ -1680,6 +1681,10 @@ class AnalyzeCommand extends Command
         $status = $this->deriveSuppressedStatus($result->getStatus(), $newIssues);
 
         $message = $this->adjustFilteredMessage($result->getMessage(), count($currentIssues), count($newIssues));
+
+        if ($newIssues === []) {
+            [$status, $message] = $this->fullySuppressedOutcome($result, $message);
+        }
 
         return new FilterResult(
             new AnalysisResult(
@@ -1805,7 +1810,7 @@ class AnalyzeCommand extends Command
             // Update message to reflect filtered count
             $message = $result->getMessage();
             if ($newIssues->isEmpty()) {
-                $message = 'All issues are in baseline';
+                [$status, $message] = $this->fullySuppressedOutcome($result, 'All issues are in baseline');
             } elseif ($newIssues->count() !== count($currentIssues)) {
                 // Some (but not all) issues were filtered - update the count in the message
                 $originalCount = count($currentIssues);
@@ -1868,9 +1873,10 @@ class AnalyzeCommand extends Command
     /**
      * Derive a result's status after suppression has removed some issues.
      *
-     * Suppression only ever removes issues, so a result's status can only
-     * improve or stay the same — never worsen:
-     *   - no issues remain                              → Passed
+     * Suppression only ever removes issues, so from the remaining issues alone a
+     * result's status can only improve or stay the same. The one exception is a result
+     * left with no issues, which fullySuppressedOutcome() grades by its caveat:
+     *   - no issues remain                              → Passed (see fullySuppressedOutcome())
      *   - issues remain, none High/Critical, was Failed → Warning (downgrade)
      *   - otherwise                                     → unchanged
      *
@@ -1893,6 +1899,29 @@ class AnalyzeCommand extends Command
         }
 
         return Status::Warning; // only Low/Medium remain → downgrade
+    }
+
+    /**
+     * The status and message of a result whose every issue was suppressed.
+     *
+     * Suppressing the issues says nothing about the part of the check the analyzer could
+     * not complete, so a result carrying a ResultCaveat takes the status the analyzer gives
+     * the same run when it finds no issues (a warning, or an error for a PHPStan run that
+     * did not finish) and keeps the note after the suppression message, since the summary
+     * this message replaces was the only other place the note appeared. Without a caveat
+     * the result passes, as before.
+     *
+     * @return array{0: Status, 1: string}
+     */
+    private function fullySuppressedOutcome(ResultInterface $result, string $suppressionMessage): array
+    {
+        $caveat = ResultCaveat::from($result->getMetadata());
+
+        if ($caveat === null) {
+            return [Status::Passed, $suppressionMessage];
+        }
+
+        return [$caveat->status, $suppressionMessage.' ('.$caveat->text.')'];
     }
 
     /**

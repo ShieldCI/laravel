@@ -15,6 +15,7 @@ use ShieldCI\Concerns\FindsLoginRoute;
 use ShieldCI\Support\OriginReachability\DeclaredOrigin;
 use ShieldCI\Support\OriginReachability\OriginProbeResult;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\ResultCaveat;
 
 /**
  * Checks if .env file is publicly accessible via HTTP.
@@ -215,11 +216,15 @@ class EnvHttpAccessibilityAnalyzer extends AbstractAnalyzer
             ? '.env file is not accessible via HTTP - web server properly configured'
             : sprintf('.env file is publicly accessible at %d location%s', count($issues), count($issues) === 1 ? '' : 's');
 
+        $resultMetadata = [];
+
         if ($issues !== [] && $unobserved !== []) {
-            $summary .= sprintf(' (%d further location%s could not be checked)', count($unobserved), count($unobserved) === 1 ? '' : 's');
+            $caveat = sprintf('%d further location%s could not be checked', count($unobserved), count($unobserved) === 1 ? '' : 's');
+            $summary .= ' ('.$caveat.')';
+            $resultMetadata = ResultCaveat::metadata($caveat);
         }
 
-        return $this->resultBySeverity($summary, $issues);
+        return $this->resultBySeverity($summary, $issues, $resultMetadata);
     }
 
     /**

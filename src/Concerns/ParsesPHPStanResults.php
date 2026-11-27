@@ -6,7 +6,9 @@ namespace ShieldCI\Concerns;
 
 use Illuminate\Support\Collection;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Support\ResultCaveat;
 
 /**
  * Shared functionality for analyzers that parse PHPStan results.
@@ -144,8 +146,42 @@ trait ParsesPHPStanResults
             return $message;
         }
 
-        return $message.sprintf(
-            '. PHPStan also reported %d analysis error(s), so these findings may be incomplete: %s',
+        return $message.'. '.$this->describeFindingsBesideAnalysisErrors($analysisErrors);
+    }
+
+    /**
+     * The ResultCaveat for findings from a run that did not complete, or [] for one that did.
+     *
+     * Without findings the same run is an error (describeIncompleteRunWithoutFindings()), so
+     * the caveat carries that status: suppressing every finding must not turn it into a pass.
+     * The text is the notices the summary appends, in the order PHPStanAnalyzer appends them.
+     *
+     * @param  list<string>  $analysisErrors
+     * @param  list<string>  $stoppedAt
+     * @return array<string, string>
+     */
+    protected function incompleteRunCaveat(array $analysisErrors, array $stoppedAt): array
+    {
+        $notices = [];
+
+        if ($stoppedAt !== []) {
+            $notices[] = $this->describeIncompleteRun($stoppedAt);
+        }
+
+        if ($analysisErrors !== []) {
+            $notices[] = $this->describeFindingsBesideAnalysisErrors($analysisErrors);
+        }
+
+        return $notices === [] ? [] : ResultCaveat::metadata(implode('. ', $notices), Status::Error);
+    }
+
+    /**
+     * @param  non-empty-list<string>  $analysisErrors
+     */
+    private function describeFindingsBesideAnalysisErrors(array $analysisErrors): string
+    {
+        return sprintf(
+            'PHPStan also reported %d analysis error(s), so these findings may be incomplete: %s',
             count($analysisErrors),
             $this->summarizeAnalysisErrors($analysisErrors)
         );

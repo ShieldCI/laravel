@@ -24,6 +24,7 @@ use ShieldCI\Concerns\AnalyzesMiddleware;
 use ShieldCI\Concerns\DetectsLaravelVersion;
 use ShieldCI\Concerns\LocatesMiddlewareFile;
 use ShieldCI\Concerns\SanitizesErrorMessages;
+use ShieldCI\Support\ResultCaveat;
 
 /**
  * Detects unused global HTTP middleware in the application.
@@ -132,12 +133,14 @@ class UnusedGlobalMiddlewareAnalyzer extends AbstractAnalyzer
         }
 
         $summary = sprintf('Found %d unused global middleware', count($this->unusedMiddleware));
+        $resultMetadata = [];
 
         if ($this->trustProxiesUninspected !== null) {
             $summary .= sprintf(' (%s)', $this->trustProxiesUninspected);
+            $resultMetadata = ResultCaveat::metadata($this->trustProxiesUninspected);
         }
 
-        return $this->resultBySeverity($summary, $issues);
+        return $this->resultBySeverity($summary, $issues, $resultMetadata);
     }
 
     private function checkTrustProxiesMiddleware(): void

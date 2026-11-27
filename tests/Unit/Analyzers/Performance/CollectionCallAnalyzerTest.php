@@ -11,6 +11,8 @@ use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\AnalyzersCore\Enums\Status;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 use ShieldCI\Tests\Concerns\RunsRealPHPStan;
 
@@ -232,6 +234,55 @@ class CollectionCallAnalyzerTest extends AnalyzerTestCase
             ['Internal error: child process died.'],
             $result->getMetadata()['analysis_errors']
         );
+    }
+
+    public function test_marks_findings_next_to_an_analysis_error_with_an_error_caveat(): void
+    {
+        // Without findings this run is an error, so suppressing every finding must leave
+        // one rather than a pass: the caveat carries the notice and that status.
+        $result = $this->analyzeIssues(
+            [['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER]],
+            analysisErrors: ['Internal error: synthetic worker crash.']
+        );
+
+        $metadata = $result->getMetadata();
+        $caveat = $metadata[ResultCaveat::METADATA_KEY] ?? null;
+
+        $this->assertIsString($caveat);
+        $this->assertStringStartsWith('PHPStan also reported 1 analysis error(s), so these findings may be incomplete: ', $caveat);
+        $this->assertStringContainsString('synthetic worker crash', $caveat);
+        $this->assertStringEndsWith('. '.$caveat, $result->getMessage());
+        $this->assertSame(Status::Error, ResultCaveat::from($metadata)?->status);
+    }
+
+    public function test_marks_findings_next_to_a_stopping_file_with_an_error_caveat(): void
+    {
+        // PHPStan before 1.11.6 keeps other findings when it stops at a file. The summary
+        // has never said so, and stays as it is, but the run is still incomplete: without
+        // findings it is an error, and suppressing every finding must leave one.
+        $result = $this->analyzeIssues([
+            ['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER, 'line' => 5],
+            ['message' => 'Syntax error, unexpected EOF on line 7', 'identifier' => 'phpstan.parse'],
+        ]);
+
+        $this->assertWarning($result);
+        $this->assertSame('Found 1 inefficient collection operation(s)', $result->getMessage());
+
+        $metadata = $result->getMetadata();
+        $this->assertSame(
+            'PHPStan stopped at file(s) it could not process, so the rest of the project was not analysed: app/Services/ExampleService.php:7',
+            $metadata[ResultCaveat::METADATA_KEY] ?? null
+        );
+        $this->assertSame(Status::Error, ResultCaveat::from($metadata)?->status);
+    }
+
+    public function test_a_complete_run_with_findings_carries_no_caveat(): void
+    {
+        $result = $this->analyzeIssues([
+            ['message' => self::COLLECTION_MESSAGE, 'identifier' => CollectionCallAnalyzer::IDENTIFIER],
+        ]);
+
+        $this->assertArrayNotHasKey(ResultCaveat::METADATA_KEY, $result->getMetadata());
     }
 
     public function test_caps_the_quoted_analysis_errors_but_not_the_metadata(): void

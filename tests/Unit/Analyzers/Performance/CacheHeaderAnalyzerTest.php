@@ -18,6 +18,7 @@ use ShieldCI\AnalyzersCore\Enums\Category;
 use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Enums\Status;
 use ShieldCI\Support\OriginReachability\OriginReachabilityChecker;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class CacheHeaderAnalyzerTest extends AnalyzerTestCase
@@ -828,6 +829,12 @@ class CacheHeaderAnalyzerTest extends AnalyzerTestCase
 
         $this->assertFailed($result);
         $this->assertSame('Found 1 asset(s) without proper cache headers (1 further asset(s) could not be checked, first: https://example.test/css/app.css?id=def456: connected (non-2xx) HTTP 503)', $result->getMessage());
+
+        // The same note is recorded as metadata, so it survives suppression of every issue.
+        $this->assertSame(
+            '1 further asset(s) could not be checked, first: https://example.test/css/app.css?id=def456: connected (non-2xx) HTTP 503',
+            $result->getMetadata()[ResultCaveat::METADATA_KEY] ?? null
+        );
 
         $issues = $result->getIssues();
         $this->assertCount(1, $issues);

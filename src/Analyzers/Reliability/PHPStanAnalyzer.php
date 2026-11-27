@@ -742,6 +742,7 @@ class PHPStanAnalyzer extends AbstractFileAnalyzer
         $message = $this->appendAnalysisErrorNotice($message, $analysisErrors);
 
         $metadata += $this->incompleteRunMetadata($analysisErrors, $stoppedAt);
+        $metadata += $this->incompleteRunCaveat($analysisErrors, $stoppedAt);
 
         return $this->resultBySeverity($message, $allIssueObjects, $metadata);
     }

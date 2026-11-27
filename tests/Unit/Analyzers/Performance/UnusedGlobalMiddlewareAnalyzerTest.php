@@ -24,6 +24,7 @@ use ShieldCI\Analyzers\Performance\UnusedGlobalMiddlewareAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Contracts\ResultInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\AnalyzerTestCase;
 
 class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
@@ -775,6 +776,12 @@ class UnusedGlobalMiddlewareAnalyzerTest extends AnalyzerTestCase
         $this->assertSame(
             'Found 1 unused global middleware (TrustProxies could not be inspected: Cannot instantiate)',
             $result->getMessage()
+        );
+
+        // The same note is recorded as metadata, so it survives suppression of every issue.
+        $this->assertSame(
+            'TrustProxies could not be inspected: Cannot instantiate',
+            $result->getMetadata()[ResultCaveat::METADATA_KEY] ?? null
         );
     }
 

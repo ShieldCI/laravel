@@ -212,6 +212,10 @@ class CollectionCallAnalyzer extends AbstractFileAnalyzer
             $metadata['analysis_errors'] = $analysisErrors;
         }
 
+        // The summary below notes only the analysis errors, but a stopping file leaves the
+        // run just as incomplete, and without findings either one is an error.
+        $metadata += $this->incompleteRunCaveat($analysisErrors, $stoppedAt);
+
         return $this->resultBySeverity(
             $this->appendAnalysisErrorNotice(
                 $this->formatIssueCountMessage($totalIssues, $displayedCount, 'inefficient collection operation(s)'),

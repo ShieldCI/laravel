@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
 use Mockery;
 use Mockery\MockInterface;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\Test;
 use RuntimeException;
 use ShieldCI\AnalyzerManager;
@@ -28,6 +29,7 @@ use ShieldCI\AnalyzersCore\ValueObjects\Location;
 use ShieldCI\Commands\AnalyzeCommand;
 use ShieldCI\Contracts\ClientInterface;
 use ShieldCI\Support\CiEnvironmentDetector;
+use ShieldCI\Support\ResultCaveat;
 use ShieldCI\Tests\TestCase;
 use ShieldCI\ValueObjects\AnalysisReport;
 use stdClass;
@@ -982,6 +984,307 @@ class AnalyzeCommandTest extends TestCase
         $this->assertSame(1, $exitCode);
         $this->assertStringContainsString('"status": "error"', $output);
         $this->assertStringNotContainsString('All issues are in baseline', $output);
+    }
+
+    private const SYNTHETIC_CAVEAT = 'Example probe not verified: synthetic timeout';
+
+    /**
+     * @return array<string, array{0: string, 1: string}>
+     */
+    public static function suppressionMechanisms(): array
+    {
+        return [
+            'ignore_errors' => ['ignore_errors', 'All issues are ignored via config'],
+            'baseline' => ['baseline', 'All issues are in baseline'],
+            'inline' => ['inline', 'All issues are suppressed via @shieldci-ignore'],
+        ];
+    }
+
+    /**
+     * @dataProvider suppressionMechanisms
+     */
+    #[Test]
+    #[DataProvider('suppressionMechanisms')]
+    public function a_fully_suppressed_result_with_a_caveat_stays_a_warning_that_names_it(string $mechanism, string $literal): void
+    {
+        [, $result] = $this->runWithSuppressedIssues($mechanism, self::SYNTHETIC_CAVEAT, partial: false);
+
+        $this->assertSame('warning', $result['status']);
+        $this->assertSame($literal.' ('.self::SYNTHETIC_CAVEAT.')', $result['message']);
+        $this->assertSame([], $result['issues']);
+        $this->assertIsArray($result['metadata']);
+        $this->assertSame(self::SYNTHETIC_CAVEAT, $result['metadata'][ResultCaveat::METADATA_KEY] ?? null);
+    }
+
+    /**
+     * @dataProvider suppressionMechanisms
+     */
+    #[Test]
+    #[DataProvider('suppressionMechanisms')]
+    public function a_fully_suppressed_result_without_a_caveat_still_passes(string $mechanism, string $literal): void
+    {
+        [$exitCode, $result] = $this->runWithSuppressedIssues($mechanism, null, partial: false, options: [], failOn: 'medium');
+
+        $this->assertSame(0, $exitCode);
+        $this->assertSame('passed', $result['status']);
+        $this->assertSame($literal, $result['message']);
+    }
+
+    /**
+     * @dataProvider suppressionMechanisms
+     */
+    #[Test]
+    #[DataProvider('suppressionMechanisms')]
+    public function a_partially_suppressed_result_with_a_caveat_keeps_its_status_and_summary(string $mechanism, string $literal): void
+    {
+        [, $result] = $this->runWithSuppressedIssues($mechanism, self::SYNTHETIC_CAVEAT, partial: true);
+
+        $this->assertSame('failed', $result['status']);
+        $this->assertSame('Found 1 issue(s) ('.self::SYNTHETIC_CAVEAT.')', $result['message']);
+        $this->assertStringNotContainsString($literal, (string) $result['message']);
+        $this->assertIsArray($result['issues']);
+        $this->assertCount(1, $result['issues']);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: int}>
+     */
+    public static function failOnThresholdsForSuppressedCaveat(): array
+    {
+        return [
+            'medium grades issue-less warnings' => ['medium', 1],
+            'high does not' => ['high', 0],
+        ];
+    }
+
+    /**
+     * @dataProvider failOnThresholdsForSuppressedCaveat
+     */
+    #[Test]
+    #[DataProvider('failOnThresholdsForSuppressedCaveat')]
+    public function a_fully_suppressed_result_with_a_caveat_blocks_only_where_warnings_are_graded(string $failOn, int $expectedExitCode): void
+    {
+        [$exitCode, $result] = $this->runWithSuppressedIssues('ignore_errors', self::SYNTHETIC_CAVEAT, partial: false, options: [], failOn: $failOn);
+
+        $this->assertSame($expectedExitCode, $exitCode);
+        $this->assertSame('warning', $result['status']);
+    }
+
+    /**
+     * @dataProvider suppressionMechanisms
+     */
+    #[Test]
+    #[DataProvider('suppressionMechanisms')]
+    public function an_errored_result_with_a_caveat_is_not_rewritten_by_suppression(string $mechanism, string $literal): void
+    {
+        $file = $this->createTempPhpFile("<?php\n// @shieldci-ignore\n\$a = 1;\n");
+        $this->registerManagerWithResults([
+            AnalysisResult::error('caveat-analyzer', 'Example analyzer could not run', 0.1, ResultCaveat::metadata(self::SYNTHETIC_CAVEAT)),
+        ]);
+        $options = $this->configureSuppression($mechanism, $file, ['Example finding']);
+
+        $exitCode = Artisan::call('shield:analyze', array_merge(['--format' => 'json'], $options));
+        $result = $this->decodeSingleResult(Artisan::output(), 'caveat-analyzer');
+
+        $this->assertSame(1, $exitCode);
+        $this->assertSame('error', $result['status']);
+        $this->assertSame('Example analyzer could not run', $result['message']);
+        $this->assertStringNotContainsString($literal, (string) $result['message']);
+    }
+
+    /**
+     * @dataProvider suppressionMechanisms
+     */
+    #[Test]
+    #[DataProvider('suppressionMechanisms')]
+    public function a_fully_suppressed_result_whose_caveat_carries_error_is_an_error(string $mechanism, string $literal): void
+    {
+        [$exitCode, $result] = $this->runWithSuppressedIssues($mechanism, self::SYNTHETIC_CAVEAT, partial: false, caveatStatus: Status::Error);
+
+        $this->assertSame('error', $result['status']);
+        $this->assertSame($literal.' ('.self::SYNTHETIC_CAVEAT.')', $result['message']);
+        $this->assertSame([], $result['issues']);
+        $this->assertSame(1, $exitCode);
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: array<string, mixed>, 2: list<string>, 3: int}>
+     */
+    public static function errorCaveatExitCodes(): array
+    {
+        return [
+            'default fail_on high' => ['ignore_errors', [], [], 1],
+            'fail_on never' => ['ignore_errors', ['shieldci.fail_on' => 'never'], [], 0],
+            'config dont_report waives it' => ['ignore_errors', ['shieldci.dont_report' => ['caveat-analyzer']], [], 0],
+            'baseline dont_report does not' => ['baseline', [], ['caveat-analyzer'], 1],
+        ];
+    }
+
+    /**
+     * A fully suppressed Error-marked result exits as the analyzer's issue-less error
+     * would: only a human waives it, through fail_on or the config's dont_report.
+     *
+     * @dataProvider errorCaveatExitCodes
+     *
+     * @param  array<string, mixed>  $config
+     * @param  list<string>  $baselineDontReport
+     */
+    #[Test]
+    #[DataProvider('errorCaveatExitCodes')]
+    public function a_fully_suppressed_error_caveat_exits_like_an_errored_analyzer(string $mechanism, array $config, array $baselineDontReport, int $expectedExitCode): void
+    {
+        $failOn = $config['shieldci.fail_on'] ?? 'high';
+        unset($config['shieldci.fail_on']);
+        config($config);
+
+        [$exitCode, $result] = $this->runWithSuppressedIssues(
+            $mechanism,
+            self::SYNTHETIC_CAVEAT,
+            partial: false,
+            failOn: is_string($failOn) ? $failOn : 'high',
+            caveatStatus: Status::Error,
+            baselineDontReport: $baselineDontReport,
+        );
+
+        $this->assertSame('error', $result['status']);
+        $this->assertSame($expectedExitCode, $exitCode);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_fully_suppressed_error_caveat_is_reported_as_an_incomplete_analysis_on_the_console(): void
+    {
+        $file = $this->createTempPhpFile("<?php\n// example\n\$a = 1;\n");
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('caveat-analyzer', 'Found 1 issue(s). '.self::SYNTHETIC_CAVEAT, [new Issue(
+                message: 'Example finding',
+                location: new Location($file, 3),
+                severity: Severity::High,
+                recommendation: 'Example recommendation',
+            )], 0.1, ResultCaveat::metadata(self::SYNTHETIC_CAVEAT, Status::Error)),
+        ]);
+        $this->configureSuppression('ignore_errors', $file, ['Example finding']);
+
+        $exitCode = Artisan::call('shield:analyze', ['--format' => 'console']);
+        $output = Artisan::output();
+
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('All issues are ignored via config ('.self::SYNTHETIC_CAVEAT.')', $output);
+        $this->assertStringContainsString('Analysis incomplete: 1 analyzer could not run (caveat-analyzer)', $output);
+    }
+
+    /**
+     * Run the command on one result whose first issue (or every issue) is suppressed.
+     *
+     * The result holds one issue, or two when $partial is set; only the issue named
+     * 'Example finding' on line 3 is suppressed.
+     *
+     * @param  array<string, mixed>  $options
+     * @param  list<string>  $baselineDontReport
+     * @return array{0: int, 1: array<string, mixed>}
+     */
+    private function runWithSuppressedIssues(
+        string $mechanism,
+        ?string $caveat,
+        bool $partial,
+        array $options = [],
+        string $failOn = 'high',
+        Status $caveatStatus = Status::Warning,
+        array $baselineDontReport = [],
+    ): array {
+        $comment = $mechanism === 'inline' ? '// @shieldci-ignore' : '// example';
+        $file = $this->createTempPhpFile("<?php\n{$comment}\n\$a = 1;\n\n\$b = 2;\n");
+
+        $issues = [new Issue(
+            message: 'Example finding',
+            location: new Location($file, 3),
+            severity: Severity::High,
+            recommendation: 'Example recommendation',
+        )];
+
+        if ($partial) {
+            $issues[] = new Issue(
+                message: 'Another example finding',
+                location: new Location($file, 5),
+                severity: Severity::High,
+                recommendation: 'Example recommendation',
+            );
+        }
+
+        $summary = sprintf('Found %d issue(s)', count($issues)).($caveat !== null ? ' ('.$caveat.')' : '');
+
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('caveat-analyzer', $summary, $issues, 0.1, $caveat !== null ? ResultCaveat::metadata($caveat, $caveatStatus) : []),
+        ]);
+        config(['shieldci.fail_on' => $failOn]);
+
+        $options = array_merge($options, $this->configureSuppression($mechanism, $file, ['Example finding'], $baselineDontReport));
+
+        $exitCode = Artisan::call('shield:analyze', array_merge(['--format' => 'json'], $options));
+
+        return [$exitCode, $this->decodeSingleResult(Artisan::output(), 'caveat-analyzer')];
+    }
+
+    /**
+     * Configure ignore_errors or a baseline matching the line-3 issue of $file; inline
+     * suppression needs no configuration, the comment is in the file.
+     *
+     * @param  list<string>  $messages
+     * @param  list<string>  $baselineDontReport
+     * @return array<string, mixed> extra command options
+     */
+    private function configureSuppression(string $mechanism, string $file, array $messages, array $baselineDontReport = []): array
+    {
+        if ($mechanism === 'ignore_errors') {
+            config(['shieldci.ignore_errors' => [
+                'caveat-analyzer' => array_map(fn (string $message) => ['path' => $file, 'message' => $message], $messages),
+            ]]);
+
+            return [];
+        }
+
+        if ($mechanism === 'baseline') {
+            $baselinePath = dirname($file).'/baseline.json';
+            file_put_contents($baselinePath, json_encode([
+                'generated_at' => '2024-01-01T00:00:00Z',
+                'version' => '1.0.0',
+                'errors' => [
+                    'caveat-analyzer' => array_map(fn (string $message) => [
+                        'type' => 'hash',
+                        'path' => $file,
+                        'hash' => hash('sha256', json_encode(
+                            ['file' => $file, 'line' => 3, 'message' => $message],
+                            JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR
+                        )),
+                    ], $messages),
+                ],
+                'dont_report' => $baselineDontReport,
+            ]));
+            config(['shieldci.baseline_file' => $baselinePath]);
+
+            return ['--baseline' => true];
+        }
+
+        return [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function decodeSingleResult(string $output, string $analyzerId): array
+    {
+        // Artisan::output() buffers stderr with stdout, so the baseline's progress lines
+        // come before the report.
+        $start = strpos($output, '{');
+        $data = json_decode($start === false ? $output : substr($output, $start), true);
+        $this->assertIsArray($data, 'JSON output was not parseable');
+        $this->assertIsArray($data['results'] ?? null);
+
+        $result = collect($data['results'])->firstWhere('analyzer_id', $analyzerId);
+        $this->assertIsArray($result);
+
+        /** @var array<string, mixed> $result */
+        return $result;
     }
 
     /** @test */

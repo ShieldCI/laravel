@@ -379,6 +379,175 @@ class BaselineCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function it_does_not_add_an_issueless_warning_to_dont_report(): void
+    {
+        // An issue-less warning says part of the check could not be completed. Waiving the
+        // analyzer for it would hide every later finding from the exit code under --baseline.
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $manager->shouldReceive('runAll')->andReturn(collect([
+            new AnalysisResult(
+                analyzerId: 'partial-analyzer',
+                status: Status::Warning,
+                message: 'Nothing found in code, but the remote check timed out',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Partial Analyzer'],
+            ),
+        ]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+
+        $dontReport = $content['dont_report'] ?? null;
+        $this->assertIsArray($dontReport);
+        $this->assertNotContains('partial-analyzer', $dontReport);
+        $this->assertArrayNotHasKey('partial-analyzer', $content['errors']);
+
+        $this->assertStringContainsString('Partial Analyzer: its check was not completed, so nothing was recorded for it', $output);
+        $this->assertStringNotContainsString('added to dont_report', $output);
+        $this->assertStringContainsString('1 analyzer did not complete its check (partial-analyzer)', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_names_errored_and_incomplete_analyzers_in_separate_notices(): void
+    {
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $manager->shouldReceive('runAll')->andReturn(collect([
+            new AnalysisResult(
+                analyzerId: 'broken-analyzer',
+                status: Status::Error,
+                message: 'Analysis failed: parser exploded',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Broken Analyzer'],
+            ),
+            new AnalysisResult(
+                analyzerId: 'partial-one',
+                status: Status::Warning,
+                message: 'Remote check timed out',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Partial One'],
+            ),
+            new AnalysisResult(
+                analyzerId: 'partial-two',
+                status: Status::Warning,
+                message: 'Remote check timed out',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Partial Two'],
+            ),
+        ]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringContainsString('1 analyzer could not run (broken-analyzer)', $output);
+        $this->assertStringContainsString('2 analyzers did not complete their check (partial-one, partial-two)', $output);
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+        $this->assertSame([], $content['dont_report']);
+    }
+
+    /** @test */
+    #[Test]
+    public function it_still_records_the_issues_of_a_warning_that_has_them(): void
+    {
+        $manager = Mockery::mock(AnalyzerManager::class);
+
+        $manager->shouldReceive('runAll')->andReturn(collect([
+            new AnalysisResult(
+                analyzerId: 'warning-analyzer',
+                status: Status::Warning,
+                message: 'Found 1 issue',
+                issues: [
+                    new Issue(
+                        message: 'Synthetic warning issue',
+                        location: new Location('/app/Sample.php', 7),
+                        severity: Severity::Medium,
+                        recommendation: 'Address the sample',
+                    ),
+                ],
+                executionTime: 0.1,
+                metadata: ['name' => 'Warning Analyzer'],
+            ),
+        ]));
+
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+
+        $exitCode = Artisan::call('shield:baseline');
+        $output = Artisan::output();
+
+        $this->assertSame(0, $exitCode);
+        $this->assertStringNotContainsString('nothing was recorded', $output);
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+        $dontReport = $content['dont_report'] ?? null;
+        $errors = $content['errors'] ?? null;
+        $this->assertIsArray($dontReport);
+        $this->assertIsArray($errors);
+        $this->assertNotContains('warning-analyzer', $dontReport);
+        $this->assertArrayHasKey('warning-analyzer', $errors);
+        $this->assertCount(1, $errors['warning-analyzer']);
+        $this->assertSame('Synthetic warning issue', $errors['warning-analyzer'][0]['message']);
+    }
+
+    /** @test */
+    #[Test]
+    public function merging_keeps_an_existing_dont_report_entry_for_an_analyzer_that_now_warns_without_issues(): void
+    {
+        // Existing baselines are not migrated: an entry already there stays.
+        config(['shieldci.baseline_file' => $this->baselinePath]);
+        file_put_contents($this->baselinePath, json_encode([
+            'generated_at' => date('c'),
+            'version' => '1.0.0',
+            'errors' => [],
+            'dont_report' => ['partial-analyzer'],
+        ]));
+
+        $manager = Mockery::mock(AnalyzerManager::class);
+        $manager->shouldReceive('runAll')->andReturn(collect([
+            new AnalysisResult(
+                analyzerId: 'partial-analyzer',
+                status: Status::Warning,
+                message: 'Remote check timed out',
+                issues: [],
+                executionTime: 0.1,
+                metadata: ['name' => 'Partial Analyzer'],
+            ),
+        ]));
+        $this->app->singleton(AnalyzerManager::class, fn () => $manager);
+
+        $this->artisan('shield:baseline', ['--merge' => true])->assertSuccessful();
+
+        $content = json_decode((string) file_get_contents($this->baselinePath), true);
+        $this->assertIsArray($content);
+        $this->assertSame(['partial-analyzer'], $content['dont_report']);
+    }
+
+    /** @test */
+    #[Test]
     public function it_skips_passed_analyzers(): void
     {
         $manager = Mockery::mock(AnalyzerManager::class);

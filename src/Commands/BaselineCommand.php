@@ -71,6 +71,7 @@ class BaselineCommand extends Command
         $dontReport = $existingDontReport;
         $newIssuesCount = 0;
         $erroredAnalyzers = [];
+        $incompleteAnalyzers = [];
 
         foreach ($results as $result) {
             $analyzerId = $result->getAnalyzerId();
@@ -99,6 +100,17 @@ class BaselineCommand extends Command
             }
 
             $issues = $result->getIssues();
+
+            // An issue-less warning says part of the check could not be completed, such as a
+            // header request that timed out. Like an errored analyzer it produced no verdict
+            // to waive, and adding it to dont_report would hide every later finding of that
+            // analyzer from the exit code under --baseline.
+            if (count($issues) === 0 && $result->getStatus() === Status::Warning) {
+                $incompleteAnalyzers[] = $analyzerId;
+                $this->line("  ⚡ {$analyzerName}: its check was not completed, so nothing was recorded for it");
+
+                continue;
+            }
 
             // If analyzer failed but has no specific issues, add to dont_report
             if (count($issues) === 0) {
@@ -203,6 +215,24 @@ class BaselineCommand extends Command
                 $count === 1 ? 'it' : 'them',
                 $count === 1 ? 'it' : 'they',
                 $count === 1 ? 'it does' : 'they do'
+            ));
+        }
+
+        if ($incompleteAnalyzers !== []) {
+            $count = count($incompleteAnalyzers);
+            $noun = $count === 1 ? 'analyzer' : 'analyzers';
+
+            $this->newLine();
+            $this->warn(sprintf(
+                '⚠️  %d %s did not complete %s check (%s). Nothing was recorded for %s, so '
+                .'unless dont_report lists %s, a recurring warning fails the build at fail_on medium or low '
+                .'and counts against fail_threshold.',
+                $count,
+                $noun,
+                $count === 1 ? 'its' : 'their',
+                implode(', ', $incompleteAnalyzers),
+                $count === 1 ? 'it' : 'them',
+                $count === 1 ? 'it' : 'them'
             ));
         }
 

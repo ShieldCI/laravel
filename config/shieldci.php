@@ -184,6 +184,8 @@ return [
     | 'php artisan shield:baseline' adds analyzers that fail without naming a
     | specific issue, and merges that list with this one under --baseline.
     | Analyzers that could not run are never added, and are waived here only.
+    | Analyzers that warned without naming an issue, because part of their
+    | check was not completed, are not added either.
     |
     */
 
@@ -265,7 +267,8 @@ return [
     | "message_pattern": "*XSS*" (Laravel Str::is patterns)
     |
     | The baseline also auto-populates 'dont_report' for analyzers that
-    | fail but have no specific issues (informational analyzers).
+    | fail but have no specific issues (informational analyzers), but not
+    | for analyzers that could not run or only warned.
     |
     */
 

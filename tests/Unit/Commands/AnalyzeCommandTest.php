@@ -830,6 +830,62 @@ class AnalyzeCommandTest extends TestCase
 
     /** @test */
     #[Test]
+    public function a_baseline_taken_during_an_issueless_warning_does_not_waive_a_later_critical_finding(): void
+    {
+        $baselinePath = base_path('tests/test-baseline-issueless-warning.json');
+        @unlink($baselinePath);
+        config(['shieldci.baseline_file' => $baselinePath]);
+
+        $this->registerManagerWithResults([
+            AnalysisResult::warning('partial-analyzer', 'Nothing found in code, but the remote check timed out'),
+        ]);
+        $baselineExit = Artisan::call('shield:baseline');
+
+        $this->registerManagerWithResults([
+            AnalysisResult::failed('partial-analyzer', 'Found 1 issue', [
+                new Issue(
+                    message: 'Synthetic critical finding',
+                    location: new Location('/app/Sample.php', 12),
+                    severity: Severity::Critical,
+                    recommendation: 'Address the sample',
+                ),
+            ]),
+        ]);
+        $exitCode = Artisan::call('shield:analyze', ['--baseline' => true, '--format' => 'json']);
+        $output = Artisan::output();
+
+        @unlink($baselinePath);
+
+        $this->assertSame(0, $baselineExit);
+        $this->assertSame(1, $exitCode);
+        $this->assertStringContainsString('Synthetic critical finding', $output);
+    }
+
+    /** @test */
+    #[Test]
+    public function a_baseline_taken_during_an_issueless_warning_does_not_waive_that_warning_at_fail_on_medium(): void
+    {
+        $baselinePath = base_path('tests/test-baseline-issueless-warning-medium.json');
+        @unlink($baselinePath);
+        config(['shieldci.baseline_file' => $baselinePath, 'shieldci.fail_on' => 'medium']);
+
+        $this->registerManagerWithResults([
+            AnalysisResult::warning('partial-analyzer', 'Nothing found in code, but the remote check timed out'),
+        ]);
+        $baselineExit = Artisan::call('shield:baseline');
+        $baselineOutput = Artisan::output();
+
+        $exitCode = Artisan::call('shield:analyze', ['--baseline' => true, '--format' => 'json']);
+
+        @unlink($baselinePath);
+
+        $this->assertSame(0, $baselineExit);
+        $this->assertStringContainsString('a recurring warning fails the build at fail_on medium or low', $baselineOutput);
+        $this->assertSame(1, $exitCode);
+    }
+
+    /** @test */
+    #[Test]
     public function it_returns_exit_code_one_when_an_analyzer_errors(): void
     {
         $this->registerManagerWithResults([

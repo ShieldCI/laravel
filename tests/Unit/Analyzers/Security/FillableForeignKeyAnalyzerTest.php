@@ -1308,4 +1308,177 @@ PHP;
             $this->assertIssueCount(0, $result);
         }
     }
+
+    public function test_own_constant_item_is_reported_at_its_line_beside_a_literal(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ticket extends Model
+{
+    public const OWNER = 'user_id';
+
+    protected $fillable = [
+        'subject',
+        self::OWNER,
+    ];
+}
+PHP;
+
+        $literal = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Receipt extends Model
+{
+    protected $fillable = [
+        'subject',
+        'user_id',
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Ticket.php' => $code, 'Models/Receipt.php' => $literal]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $lines = [];
+        foreach ($result->getIssues() as $issue) {
+            $this->assertStringContainsString('user_id', $issue->message);
+            $this->assertNotNull($issue->location);
+            $lines[basename($issue->location->file)] = $issue->location->line;
+        }
+        ksort($lines);
+        $this->assertSame(['Receipt.php' => 11, 'Ticket.php' => 13], $lines);
+    }
+
+    public function test_fillable_property_holding_an_own_constant_is_reported_at_the_property(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ticket extends Model
+{
+    public const COLUMNS = ['subject', 'user_id'];
+
+    protected $fillable = self::COLUMNS;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Ticket.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertNotNull($result->getIssues()[0]->location);
+        $this->assertSame(11, $result->getIssues()[0]->location->line);
+    }
+
+    public function test_fillable_item_holding_a_nested_list_is_not_a_column(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ticket extends Model
+{
+    public const OWNER = ['user_id'];
+
+    protected $fillable = ['subject', self::OWNER];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Ticket.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_fillable_item_spreading_an_own_constant_is_reported_at_its_line(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Ticket extends Model
+{
+    public const OWNER = ['user_id'];
+
+    protected $fillable = [
+        'subject',
+        ...self::OWNER,
+    ];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['Models/Ticket.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertNotNull($result->getIssues()[0]->location);
+        $this->assertSame(13, $result->getIssues()[0]->location->line);
+    }
+
+    public function test_leading_own_constant_is_the_whole_fillable_attribute_list(): void
+    {
+        // Eloquent keeps a leading array as the whole list, so owner_id after it is dropped.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(self::COLS, 'user_id')]
+class Ledger extends Model
+{
+    public const COLS = ['memo'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
 }

@@ -61,6 +61,9 @@ final class EloquentModelDetector
     /** @var array<string, bool|null> "path::ShortName" => Eloquent verdict */
     private array $verdictCache = [];
 
+    /** @var array<string, array{Stmt\Class_, array<Node>}|null> "basePath::FQN" => findProjectClass() result */
+    private array $projectClassCache = [];
+
     /**
      * Whether a namespace denotes Eloquent models.
      *
@@ -193,6 +196,37 @@ final class EloquentModelDetector
     }
 
     /**
+     * The declaration of a project class, found the way the verdict's chain walk finds a
+     * parent: an App\ name is mapped to its file under app/ and the class of that short name
+     * is read from it. Returns the declaration with the AST of its file, so a caller can
+     * resolve the names the declaration writes, its own `extends` included, through that
+     * file's imports.
+     *
+     * Null when the name is outside App\, the file is absent or does not parse, or it
+     * declares no class of that name. Memoized per instance, misses included, because the
+     * parser caches only a successful parse and one parent may be asked for by every child.
+     *
+     * @param  string  $fqn  A fully qualified class name, with or without a leading `\`
+     * @param  string  $basePath  Project root, used to locate app/
+     * @return array{Stmt\Class_, array<Node>}|null
+     */
+    public function findProjectClass(string $fqn, string $basePath): ?array
+    {
+        $fqn = ltrim($fqn, '\\');
+        // Keyed on the name as written, which is how fqnToFilePath() looks the file up: on a
+        // case-sensitive filesystem a miss for one spelling says nothing about another.
+        $cacheKey = $basePath.'::'.$fqn;
+
+        if (array_key_exists($cacheKey, $this->projectClassCache)) {
+            return $this->projectClassCache[$cacheKey];
+        }
+
+        $path = $this->fqnToFilePath($fqn, $basePath);
+
+        return $this->projectClassCache[$cacheKey] = $path === null ? null : $this->namedClassInFile($path, $this->shortName($fqn));
+    }
+
+    /**
      * Three-valued verdict for one named class declared in a file, memoized by
      * path + short name.
      *
@@ -222,26 +256,45 @@ final class EloquentModelDetector
         // in progress hits this reserved cache entry and returns immediately.
         $this->verdictCache[$cacheKey] = null;
 
+        $found = $this->namedClassInFile($filePath, $shortName, $provenFqn);
+        if ($found === null) {
+            return null;
+        }
+
+        return $this->verdictCache[$cacheKey] = $this->classVerdict($found[0], $found[1], $basePath, $provenFqn !== null);
+    }
+
+    /**
+     * The named class $shortName declares in a file, with the file's AST, matched ignoring
+     * case as PHP matches class names. A sibling class or an anonymous class in the same file
+     * never stands in for it. With $provenFqn the class is matched instead by the fully
+     * qualified name it is declared under. Null when the file does not parse or declares no
+     * such class.
+     *
+     * @return array{Stmt\Class_, array<Node>}|null
+     */
+    private function namedClassInFile(string $filePath, string $shortName, ?string $provenFqn = null): ?array
+    {
         $fileAst = $this->parser->parseFile($filePath);
         if ($fileAst === []) {
             return null;
         }
 
         foreach ($this->parser->findClasses($fileAst) as $class) {
-            if ($class->name?->toString() !== $shortName && $provenFqn === null) {
+            if ($provenFqn === null) {
+                if ($class->name !== null && strcasecmp($class->name->toString(), $shortName) === 0) {
+                    return [$class, $fileAst];
+                }
+
                 continue;
             }
 
-            if ($provenFqn !== null) {
-                $this->startTrackingImports();
-                $this->trackImportsUntil($fileAst, $class);
+            $this->startTrackingImports();
+            $this->trackImportsUntil($fileAst, $class);
 
-                if (strcasecmp((string) $this->declarationFqn($class), $provenFqn) !== 0) {
-                    continue;
-                }
+            if (strcasecmp((string) $this->declarationFqn($class), $provenFqn) === 0) {
+                return [$class, $fileAst];
             }
-
-            return $this->verdictCache[$cacheKey] = $this->classVerdict($class, $fileAst, $basePath, $provenFqn !== null);
         }
 
         return null;

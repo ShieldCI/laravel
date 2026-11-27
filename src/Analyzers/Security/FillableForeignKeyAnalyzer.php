@@ -145,17 +145,27 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
                     continue;
                 }
 
-                // A dynamically-built $fillable (non-array default) has no static
-                // array to inspect, so there is nothing to flag here. Mass-assignment
-                // concerns for such models are owned by MassAssignmentAnalyzer.
-                if (! $prop->default instanceof Node\Expr\Array_) {
+                if ($prop->default === null) {
                     continue;
                 }
 
-                // Check each item in the fillable array
+                // A default that is not an array literal, such as a constant the model declares,
+                // is read as a whole and reported at the property. Any other dynamically-built
+                // $fillable has nothing to read; mass-assignment concerns for such models are
+                // owned by MassAssignmentAnalyzer.
+                if (! $prop->default instanceof Node\Expr\Array_) {
+                    foreach (EloquentModelHelper::fieldsListedBy($class, $prop->default) as $fieldName) {
+                        $this->checkField($file, $prop->getLine(), $modelName, $fieldName, $issues);
+                    }
+
+                    continue;
+                }
+
+                // Check each item in the fillable array, at the item's own line; an item naming
+                // the model's own constant is read as its value, and a `...` spread as the
+                // entries it unpacks.
                 foreach ($prop->default->items as $item) {
-                    if ($item->value instanceof Node\Scalar\String_) {
-                        $fieldName = $item->value->value;
+                    foreach (EloquentModelHelper::fieldsListedByItem($class, $item) as $fieldName) {
                         $this->checkField($file, $item->getLine(), $modelName, $fieldName, $issues);
                     }
                 }

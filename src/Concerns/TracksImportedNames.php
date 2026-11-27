@@ -225,6 +225,22 @@ trait TracksImportedNames
     }
 
     /**
+     * resolvedClassFqn() bound to the table as it stands now.
+     *
+     * resolvedClassFqn() reads whichever table the next startTrackingImports() builds, so a
+     * caller that goes on to fill the table for another file, such as a parent class's, while
+     * still resolving names written in this one holds this instead.
+     *
+     * @return \Closure(Name): string
+     */
+    private function currentClassResolver(): \Closure
+    {
+        $importedNames = $this->importedNames;
+
+        return static fn (Name $class): string => ltrim($importedNames->getResolvedClassName($class)->toString(), '\\');
+    }
+
+    /**
      * The fully qualified name of a class-like declaration, or null for an anonymous class,
      * which nothing elsewhere can name to ask about.
      *

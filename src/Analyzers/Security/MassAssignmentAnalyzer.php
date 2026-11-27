@@ -157,6 +157,14 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     /** @var array<int, string> */
     private array $resolvedReferences = [];
 
+    /**
+     * declarationsIn() results, per parsed file: keyed by the file's first node, which the
+     * parser's cache keeps alive for as long as the file's AST is reused.
+     *
+     * @var \WeakMap<Node, array<string, array{Node\Stmt\Class_, \Closure(Node\Name): string}>>|null
+     */
+    private ?\WeakMap $declarationsByFile = null;
+
     public function __construct(
         private AstParser $parser
     ) {}
@@ -192,6 +200,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         $this->referenceModelDetector = null;
         $this->indexedAst = [];
         $this->resolvedReferences = [];
+        $this->declarationsByFile = null;
 
         $issues = [];
         $detector = new EloquentModelDetector($this->parser);
@@ -211,9 +220,11 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                     $this->startTrackingImports();
                     $this->trackImportsUntil($ast, $class);
 
-                    $resolve = $this->resolvedClassFqn(...);
+                    // Bound to this file's table: the protection check fills the table again
+                    // for each parent file it reads.
+                    $resolve = $this->currentClassResolver();
 
-                    $this->checkModelProtection($file, $class, $resolve, $issues);
+                    $this->checkModelProtection($file, $class, $ast, $resolve, $detector, $issues);
                     $this->checkHiddenAttributes($file, $class, $resolve, $issues);
                     $this->checkRelationshipSecurity($file, $class, $issues);
                 }
@@ -270,20 +281,23 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
      * restates the parent's own default, and a Pivot that declares nothing behaves the same.
      *
      * A model that lists fillable columns is not reported either: fill() keeps only those
-     * columns whatever $guarded says.
+     * columns whatever $guarded says. That includes columns it inherits from a project
+     * ancestor's `$fillable` or `#[Fillable]`, and a model under a project base that extends
+     * Pivot or MorphPivot is exempt as a direct child of either is.
      *
+     * @param  array<Node>  $ast  AST of the file declaring the model
      * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
      * @param  array<int, Issue>  &$issues
      */
-    private function checkModelProtection(string $file, Node\Stmt\Class_ $class, \Closure $resolve, array &$issues): void
+    private function checkModelProtection(string $file, Node\Stmt\Class_ $class, array $ast, \Closure $resolve, EloquentModelDetector $detector, array &$issues): void
     {
         $parentKind = $this->parentKind($class, $resolve);
 
-        // A $fillable whose default is not an array literal, such as a constant, still lists
+        // A $fillable entry that cannot be read, such as another class's constant, still lists
         // columns; only their names are unknown.
         if ($parentKind === 'pivot'
-            || EloquentModelHelper::extractFillableFields($class, $resolve) !== []
-            || $this->declaresNonLiteralProperty($class, 'fillable')) {
+            || EloquentModelHelper::fillablePropertyListsColumns($class, $resolve) === true
+            || EloquentModelHelper::fillableAttributeListsColumns($class, $resolve) === true) {
             return;
         }
 
@@ -298,7 +312,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
                         continue;
                     }
 
-                    if ($prop->default instanceof Node\Expr\Array_ && empty($prop->default->items)) {
+                    // An empty list, written out or held in a constant the model declares,
+                    // guards nothing.
+                    if ($prop->default !== null
+                        && EloquentModelHelper::guardedPropertyListsColumns($class, $resolve) === false) {
                         $hasEmptyGuarded = true;
                     }
 
@@ -313,6 +330,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         // Issue if guarded is empty array (allows all)
         if ($hasEmptyGuarded) {
+            if ($parentKind === null && $this->ancestorsExemptEmptyGuarded($class, $ast, $resolve, $detector)) {
+                return;
+            }
+
             $issues[] = $this->createIssueWithSnippet(
                 message: "Model '{$modelName}' has \$guarded = [] which allows mass assignment of all attributes",
                 filePath: $file,
@@ -397,11 +418,20 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
             return null;
         }
 
-        $parent = $resolve($class->extends);
+        return $this->baseKind($resolve($class->extends));
+    }
 
+    /**
+     * `model` or `pivot` when the fully qualified name is one of those Eloquent bases, null
+     * for any other class.
+     *
+     * @return 'model'|'pivot'|null
+     */
+    private function baseKind(string $fqn): ?string
+    {
         foreach (['model' => self::MODEL_BASES, 'pivot' => self::PIVOT_BASES] as $kind => $bases) {
             foreach ($bases as $base) {
-                if (strcasecmp($parent, $base) === 0) {
+                if (strcasecmp($fqn, $base) === 0) {
                     return $kind;
                 }
             }
@@ -411,22 +441,126 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * True if the class body declares the named property with a default that is not an array
-     * literal, so the list it holds cannot be read here.
+     * True if the model's project ancestors exempt its own `$guarded = []`: one provably gives
+     * it a fillable list that the model and every class between them leave in place, or the
+     * chain ends at Pivot or MorphPivot, whose own `$guarded = []` the model only restates, as
+     * a direct child of either does.
+     *
+     * `$fillable` and `#[Fillable]` are inherited separately and both apply: the nearest
+     * class declaring the property decides the property, as PHP inheritance does, and the
+     * nearest class carrying the attribute decides the attribute, as resolveClassAttribute()
+     * does before GuardsAttributes merges it into the property. A parent declared in the
+     * file being read is found there before its own file is looked for. An ancestor that
+     * cannot be found or parsed, or a chain that loops, ends the walk with nothing exempted.
+     *
+     * @param  array<Node>  $ast  AST of the file declaring the model
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to in the model's file
      */
-    private function declaresNonLiteralProperty(Node\Stmt\Class_ $class, string $name): bool
+    private function ancestorsExemptEmptyGuarded(Node\Stmt\Class_ $class, array $ast, \Closure $resolve, EloquentModelDetector $detector): bool
     {
-        foreach ($class->getProperties() as $property) {
-            foreach ($property->props as $prop) {
-                if ($prop->name->toString() === $name
-                    && $prop->default !== null
-                    && ! $prop->default instanceof Node\Expr\Array_) {
+        $propertyDecided = EloquentModelHelper::fillablePropertyListsColumns($class, $resolve) !== null;
+        $attributeDecided = EloquentModelHelper::fillableAttributeListsColumns($class, $resolve) !== null;
+        $visited = [];
+
+        while ($class->extends !== null) {
+            $parentFqn = $resolve($class->extends);
+            $key = strtolower($parentFqn);
+            $baseKind = $this->baseKind($parentFqn);
+
+            if ($baseKind !== null || isset($visited[$key])) {
+                return $baseKind === 'pivot';
+            }
+
+            $visited[$key] = true;
+            $found = $this->declarationsIn($ast)[$key] ?? null;
+
+            if ($found === null) {
+                $located = $detector->findProjectClass($parentFqn, $this->getBasePath());
+                if ($located === null) {
+                    return false;
+                }
+
+                $ast = $located[1];
+                $found = [$located[0], $this->resolverFor($located[0], $ast)];
+            }
+
+            [$class, $resolve] = $found;
+
+            if (! $propertyDecided) {
+                $lists = EloquentModelHelper::fillablePropertyListsColumns($class, $resolve);
+                if ($lists === true) {
                     return true;
                 }
+                $propertyDecided = $lists !== null;
+            }
+
+            if (! $attributeDecided) {
+                $lists = EloquentModelHelper::fillableAttributeListsColumns($class, $resolve);
+                if ($lists === true) {
+                    return true;
+                }
+                $attributeDecided = $lists !== null;
             }
         }
 
         return false;
+    }
+
+    /**
+     * Every named class a file declares, keyed by its lower-cased fully qualified name, with a
+     * resolver for the names written in it. Built once per parsed file, since the walk up the
+     * ancestors asks of the same file for each of its models.
+     *
+     * @param  array<Node>  $ast
+     * @return array<string, array{Node\Stmt\Class_, \Closure(Node\Name): string}>
+     */
+    private function declarationsIn(array $ast): array
+    {
+        $key = $ast[0] ?? null;
+        if ($key === null) {
+            return [];
+        }
+
+        $cache = $this->declarationsByFile ??= new \WeakMap;
+        if (isset($cache[$key])) {
+            return $cache[$key];
+        }
+
+        $declarations = [];
+        foreach ($this->parser->findClasses($ast) as $class) {
+            $this->startTrackingImports();
+            $this->trackImportsUntil($ast, $class);
+
+            $fqn = $this->declarationFqn($class);
+            if ($fqn !== null) {
+                $declarations[strtolower($fqn)] ??= [$class, $this->currentClassResolver()];
+            }
+        }
+
+        $cache[$key] = $declarations;
+
+        return $declarations;
+    }
+
+    /**
+     * The resolver for names written in $class, taken from its file's declarations when the
+     * class is among them, built for it otherwise.
+     *
+     * @param  array<Node>  $ast  AST of the file declaring $class
+     * @return \Closure(Node\Name): string
+     */
+    private function resolverFor(Node\Stmt\Class_ $class, array $ast): \Closure
+    {
+        foreach ($this->declarationsIn($ast) as [$declared, $resolve]) {
+            if ($declared === $class) {
+                return $resolve;
+            }
+        }
+
+        $this->startTrackingImports();
+        $this->trackImportsUntil($ast, $class);
+
+        return $this->currentClassResolver();
     }
 
     /**
@@ -1572,6 +1706,10 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         $fillableFields = EloquentModelHelper::extractFillableFields($class, $resolve);
         // A non-empty $visible is an allow-list: a field it leaves out is never serialized.
         $visibleFields = EloquentModelHelper::extractVisibleFields($class, $resolve);
+        // One with an entry that cannot be read, such as another class's constant, is still an
+        // allow-list, so only a field it provably names is serialized.
+        $narrowsToVisible = $visibleFields !== []
+            || EloquentModelHelper::hasUnreadableEntries($class, 'visible', $resolve);
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
         // Pivot and MorphPivot keep Model's $hidden and $visible defaults.
@@ -1583,7 +1721,7 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
         if ($inheritsModelDefaults && $hasFillable && ! $hasHidden && ! empty($fillableFields)) {
             $exposedSensitiveFields = array_intersect($fillableFields, self::SENSITIVE_FIELDS);
 
-            if ($visibleFields !== []) {
+            if ($narrowsToVisible) {
                 $exposedSensitiveFields = array_intersect($exposedSensitiveFields, $visibleFields);
             }
 
@@ -1605,12 +1743,14 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
         // Check if sensitive fields are missing from $hidden when they appear to be accessible
         // A $hidden property replaces the parent's list; a #[Hidden] attribute merges into it.
+        // One with an entry that cannot be read may hide any field.
         if ($hasHidden && ! empty($hiddenFields)
+            && ! EloquentModelHelper::hasUnreadableEntries($class, 'hidden', $resolve)
             && ($inheritsModelDefaults || $this->declaresProperty($class, 'hidden'))) {
             foreach (self::SENSITIVE_FIELDS as $field) {
                 // Skip if field is already hidden or guarded, or left out of a $visible allow-list
                 if (in_array($field, $hiddenFields, true) || in_array($field, $guardedFields, true)
-                    || ($visibleFields !== [] && ! in_array($field, $visibleFields, true))) {
+                    || ($narrowsToVisible && ! in_array($field, $visibleFields, true))) {
                     continue;
                 }
 

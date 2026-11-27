@@ -184,11 +184,12 @@ final class EloquentModelHelper
      * trait as well as the class, which is why a trait is accepted.
      *
      * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
+     * @param  bool  $asConstructed  Read the arguments as Eloquent's constructor keeps them, see extractFieldsFromAttribute()
      * @return list<string>
      */
-    public static function extractEloquentAttributeFields(Node\Stmt\ClassLike $class, string $attributeShortName, \Closure $resolve): array
+    public static function extractEloquentAttributeFields(Node\Stmt\ClassLike $class, string $attributeShortName, \Closure $resolve, bool $asConstructed = false): array
     {
-        return self::extractFieldsFromAttribute($class, $attributeShortName, $resolve, false);
+        return self::extractFieldsFromAttribute($class, $attributeShortName, $resolve, $asConstructed);
     }
 
     /**
@@ -311,7 +312,7 @@ final class EloquentModelHelper
      *
      * @param  (\Closure(Node\Name): string)|null  $resolve
      */
-    private static function attributeIs(Node\Attribute $attr, string $shortName, ?\Closure $resolve): bool
+    public static function attributeIs(Node\Attribute $attr, string $shortName, ?\Closure $resolve): bool
     {
         return $resolve === null
             ? self::shortName($attr->name->toString()) === $shortName

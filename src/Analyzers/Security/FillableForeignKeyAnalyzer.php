@@ -13,6 +13,7 @@ use ShieldCI\AnalyzersCore\Enums\Severity;
 use ShieldCI\AnalyzersCore\Support\AstParser;
 use ShieldCI\AnalyzersCore\ValueObjects\AnalyzerMetadata;
 use ShieldCI\AnalyzersCore\ValueObjects\Issue;
+use ShieldCI\Concerns\TracksImportedNames;
 use ShieldCI\Support\EloquentModelDetector;
 use ShieldCI\Support\EloquentModelHelper;
 
@@ -31,6 +32,8 @@ use ShieldCI\Support\EloquentModelHelper;
  */
 class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
 {
+    use TracksImportedNames;
+
     /**
      * @var array<string, string>
      */
@@ -105,7 +108,13 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
             foreach ($classes as $class) {
                 if ($this->modelDetector()->isModel($class, $ast, $this->getBasePath())) {
                     $this->checkFillableProperty($file, $class, $issues);
-                    $this->checkFillableAttribute($file, $class, $issues);
+
+                    // Resolve attribute names through the imports in effect at this class, so
+                    // an aliased #[Fillable] is Laravel's and one from another namespace is not.
+                    $this->startTrackingImports();
+                    $this->trackImportsUntil($ast, $class);
+
+                    $this->checkFillableAttribute($file, $class, $this->resolvedClassFqn(...), $issues);
                 }
             }
         }
@@ -158,19 +167,22 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
      * Check fields declared via a #[Fillable(...)] attribute for foreign keys.
      *
      * Reuses the same curated-pattern detection (checkField) as the property path so an
-     * attribute-based model is analyzed identically to a property-based one.
+     * attribute-based model is analyzed identically to a property-based one. Only Laravel's
+     * own attribute is read: a `Fillable` from another namespace has no effect on Eloquent.
      *
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
      * @param  array<int, Issue>  &$issues
      */
-    private function checkFillableAttribute(string $file, Node\Stmt\Class_ $class, array &$issues): void
+    private function checkFillableAttribute(string $file, Node\Stmt\Class_ $class, \Closure $resolve, array &$issues): void
     {
-        $fields = EloquentModelHelper::extractFillableFieldsFromAttribute($class);
+        // Read as Eloquent constructs it: #[Fillable(['a'], 'b')] makes only `a` fillable.
+        $fields = EloquentModelHelper::extractEloquentAttributeFields($class, 'Fillable', $resolve, asConstructed: true);
         if ($fields === []) {
             return;
         }
 
         $modelName = $class->name ? $class->name->toString() : 'Unknown';
-        $line = $this->fillableAttributeLine($class);
+        $line = $this->fillableAttributeLine($class, $resolve);
 
         foreach ($fields as $fieldName) {
             $this->checkField($file, $line, $modelName, $fieldName, $issues);
@@ -178,15 +190,15 @@ class FillableForeignKeyAnalyzer extends AbstractFileAnalyzer
     }
 
     /**
-     * Line of the #[Fillable] attribute, falling back to the class line.
+     * Line of Laravel's #[Fillable] attribute, falling back to the class line.
+     *
+     * @param  \Closure(Node\Name): string  $resolve  The fully qualified name a reference resolves to
      */
-    private function fillableAttributeLine(Node\Stmt\Class_ $class): int
+    private function fillableAttributeLine(Node\Stmt\Class_ $class, \Closure $resolve): int
     {
         foreach ($class->attrGroups as $group) {
             foreach ($group->attrs as $attr) {
-                $name = $attr->name->toString();
-                $short = ($pos = strrpos($name, '\\')) !== false ? substr($name, $pos + 1) : $name;
-                if ($short === 'Fillable') {
+                if (EloquentModelHelper::attributeIs($attr, 'Fillable', $resolve)) {
                     return $attr->getLine();
                 }
             }

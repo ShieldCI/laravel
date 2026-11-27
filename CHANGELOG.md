@@ -16,7 +16,7 @@
 - `logic-in-routes` grades a collection `push($value)` or a first-class callable such as `->delete(...)` on a model chain Medium instead of High (#757)
 - `mass-assignment-vulnerabilities` reports `#[Unguarded]` and `#[Guarded([])]` Critical on a direct `Model` or `Authenticatable` subclass with no fillable columns, which can fail a default `fail_on: high` build (#762)
 - `logic-in-routes` matches Eloquent write methods regardless of case, such as `->Delete()`, which can fail a default `fail_on: high` build (#770)
-- `logic-in-routes` reports writes in query callbacks, on route-bound models, `auth()->guard('api')->user()`, `Request::user()` and model collections, which can fail a default `fail_on: high` build (#778)
+- `logic-in-routes` reports writes in query callbacks, on route-bound models, `Auth::guard('api')->user()`, `Request::user()` and model collections, which can fail a default `fail_on: high` build (#778)
 - `logic-in-routes` reports reads on route-bound models and `Request::user()`, such as `fn (Post $post) => $post->comments()->get()`, at Low when `allow_simple_reads` is off (#778)
 - `logic-in-routes` adds the newly detected write or business logic to an already-reported closure's message, which changes its fingerprint (#756, #757, #770, #778)
 - `logic-in-routes` gives a regraded closure, such as a `whereIn()` read chain or a closure that is only a `DB::table()` read, a new message, which changes its fingerprint (#752, #788)

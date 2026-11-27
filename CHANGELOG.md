@@ -19,6 +19,7 @@
 - `logic-in-routes` reports writes in query callbacks, on route-bound models, guarded users and model collections, which can fail a default `fail_on: high` build (#778)
 - `logic-in-routes` reports reads on route-bound models and `Request::user()`, such as `fn (Post $post) => $post->comments()->get()`, at Low when `allow_simple_reads` is off (#778)
 - `logic-in-routes` adds the newly detected write or business logic to an already-reported closure's message, which changes its fingerprint (#756, #757, #770, #778)
+- `logic-in-routes` gives a regraded closure, such as a `whereIn()` read chain or a closure that is only a `DB::table()` read, a new message, which changes its fingerprint (#752, #788)
 - `logic-in-routes` reads route files under `routes/` that the configured paths leave out, which can fail a default `fail_on: high` build (#794)
 - `logic-in-routes` reports a route file that cannot be parsed or read as a Low issue instead of passing (#794)
 - `sql-injection` recognises `$request?->input()` and the other nullsafe `$request?->` reads as user input, which can fail a default `fail_on: high` build (#797)

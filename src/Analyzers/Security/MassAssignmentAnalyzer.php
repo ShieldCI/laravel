@@ -184,14 +184,14 @@ class MassAssignmentAnalyzer extends AbstractFileAnalyzer
 
     public function shouldRun(): bool
     {
-        $modelsPath = $this->getBasePath().DIRECTORY_SEPARATOR.'app'.DIRECTORY_SEPARATOR.'Models';
+        $files = $this->getPhpFiles();
 
-        return is_dir($modelsPath);
+        return ! empty($files);
     }
 
     public function getSkipReason(): string
     {
-        return 'No app/Models directory found';
+        return 'No PHP files found to analyze';
     }
 
     protected function runAnalysis(): ResultInterface

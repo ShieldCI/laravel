@@ -176,6 +176,23 @@ final class EloquentModelDetector
     }
 
     /**
+     * Whether an App\\ class provably extends an Eloquent base: its declaration under app/ is
+     * read and its `extends` chain, resolved through imports, reaches one of the Eloquent base
+     * classes by fully qualified name.
+     *
+     * Stricter than verdictForClassName(): no namespace convention and no short-name match
+     * stands in for a link of the chain, so a class in a Models namespace extending another
+     * framework's base, or a parent the chain cannot read, answers false.
+     */
+    public function provablyExtendsModel(string $fqn, string $basePath): bool
+    {
+        $fqn = ltrim($fqn, '\\');
+        $path = $this->fqnToFilePath($fqn, $basePath);
+
+        return $path !== null && $this->classVerdictInFile($path, $this->shortName($fqn), $basePath, $fqn) === true;
+    }
+
+    /**
      * Three-valued verdict for one named class declared in a file, memoized by
      * path + short name.
      *
@@ -185,10 +202,15 @@ final class EloquentModelDetector
      * file whose $shortName class is a plain class does not read as a model merely
      * because some other class beside it extends an Eloquent base. Returns null when
      * the file declares no class of that name (parse failure, or a mismatch).
+     *
+     * @param  string|null  $provenFqn  The class to prove, as provablyExtendsModel() describes:
+     *                                  only an `extends` chain resolved to an Eloquent base
+     *                                  counts, and the declaration is matched by this fully
+     *                                  qualified name rather than its short name
      */
-    private function classVerdictInFile(string $filePath, string $shortName, string $basePath): ?bool
+    private function classVerdictInFile(string $filePath, string $shortName, string $basePath, ?string $provenFqn = null): ?bool
     {
-        $cacheKey = $filePath.'::'.$shortName;
+        $cacheKey = $provenFqn === null ? $filePath.'::'.$shortName : 'proven::'.$filePath.'::'.strtolower($provenFqn);
 
         if (array_key_exists($cacheKey, $this->verdictCache)) {
             return $this->verdictCache[$cacheKey];
@@ -206,20 +228,32 @@ final class EloquentModelDetector
         }
 
         foreach ($this->parser->findClasses($fileAst) as $class) {
-            if ($class->name?->toString() === $shortName) {
-                return $this->verdictCache[$cacheKey] = $this->classVerdict($class, $fileAst, $basePath);
+            if ($class->name?->toString() !== $shortName && $provenFqn === null) {
+                continue;
             }
+
+            if ($provenFqn !== null) {
+                $this->startTrackingImports();
+                $this->trackImportsUntil($fileAst, $class);
+
+                if (strcasecmp((string) $this->declarationFqn($class), $provenFqn) !== 0) {
+                    continue;
+                }
+            }
+
+            return $this->verdictCache[$cacheKey] = $this->classVerdict($class, $fileAst, $basePath, $provenFqn !== null);
         }
 
         return null;
     }
 
     /**
-     * The step 1-7 algorithm for one class.
+     * The step 1-7 algorithm for one class. With $proven, steps 2, 4 and 6 are skipped, since
+     * they rest on a short name or a namespace convention rather than the resolved chain.
      *
      * @param  array<Node>  $fileAst
      */
-    private function classVerdict(Stmt\Class_ $class, array $fileAst, string $basePath): ?bool
+    private function classVerdict(Stmt\Class_ $class, array $fileAst, string $basePath, bool $proven = false): ?bool
     {
         // Step 1: a class that extends nothing is never an Eloquent model.
         if ($class->extends === null) {
@@ -229,7 +263,7 @@ final class EloquentModelDetector
         $parentName = $class->extends->toString();
 
         // Step 2: the parent's short name is a known Eloquent base.
-        if (in_array($this->shortName($parentName), self::ELOQUENT_BASE_CLASSES, true)) {
+        if (! $proven && in_array($this->shortName($parentName), self::ELOQUENT_BASE_CLASSES, true)) {
             return true;
         }
 
@@ -240,13 +274,15 @@ final class EloquentModelDetector
         $parentFqn = $this->resolvedClassFqn($class->extends);
         $namespace = $this->importedNames->getNamespace()?->toString();
 
-        // Step 3: the resolved parent FQN is a known Eloquent base.
-        if (in_array($parentFqn, self::ELOQUENT_BASE_FQNS, true)) {
+        // Step 3: the resolved parent FQN is a known Eloquent base. A proven chain compares it
+        // as PHP does, without case, and also accepts `Eloquent`, Laravel's global Model alias.
+        if (in_array($parentFqn, self::ELOQUENT_BASE_FQNS, true)
+            || ($proven && in_array(strtolower($parentFqn), array_map(strtolower(...), [...self::ELOQUENT_BASE_FQNS, 'Eloquent']), true))) {
             return true;
         }
 
         // Step 4: the parent itself lives in a Models namespace.
-        if (self::namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
+        if (! $proven && self::namespaceLooksLikeModels($this->namespaceOf($parentFqn))) {
             return true;
         }
 
@@ -254,14 +290,14 @@ final class EloquentModelDetector
         //         A definite verdict from the chain outranks the convention below.
         $parentPath = $this->fqnToFilePath($parentFqn, $basePath);
         if ($parentPath !== null) {
-            $chainVerdict = $this->classVerdictInFile($parentPath, $this->shortName($parentFqn), $basePath);
+            $chainVerdict = $this->classVerdictInFile($parentPath, $this->shortName($parentFqn), $basePath, $proven ? $parentFqn : null);
             if ($chainVerdict !== null) {
                 return $chainVerdict;
             }
         }
 
         // Step 6: the analyzed class's own namespace is a Models namespace.
-        if (self::namespaceLooksLikeModels($namespace)) {
+        if (! $proven && self::namespaceLooksLikeModels($namespace)) {
             return true;
         }
 

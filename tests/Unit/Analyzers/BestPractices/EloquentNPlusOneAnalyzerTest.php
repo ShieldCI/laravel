@@ -7082,6 +7082,58 @@ PHP,
     }
 
     /**
+     * A #[Fillable] attribute holding a constant the model declares lists that constant's
+     * columns, so reading one in a loop is a column read, not a lazy load.
+     */
+    public function test_does_not_flag_a_column_a_fillable_attribute_lists_through_an_own_constant(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Bulletin.php' => <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+use Vendor\Pkg\HasThings;
+
+#[Fillable(self::COLS)]
+class Bulletin extends Model
+{
+    use HasThings;
+
+    public const COLS = ['subject', 'body'];
+}
+PHP,
+            'app/Http/Controllers/BulletinController.php' => <<<'PHP'
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Bulletin;
+
+class BulletinController
+{
+    public function index()
+    {
+        $bulletins = Bulletin::get();
+
+        foreach ($bulletins as $b) {
+            echo $b->subject;
+        }
+    }
+}
+PHP,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['app']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
      * A casts() method that returns anything but an array literal names no column the scan can
      * read, so the column stays unknown and the name heuristic still answers it.
      */

@@ -3381,9 +3381,10 @@ PHP;
         $this->assertPassed($analyzer->analyze());
     }
 
-    public function test_detects_empty_guarded_on_child_of_a_parent_with_fillable(): void
+    public function test_passes_empty_guarded_on_child_of_a_parent_with_fillable(): void
     {
-        // The child's own $guarded = [] replaces whatever the parent declared.
+        // The parent's $fillable is inherited and limits fill() to its columns, whatever the
+        // child's own $guarded = [] says.
         $base = <<<'PHP'
 <?php
 
@@ -3417,12 +3418,7 @@ PHP;
         $analyzer->setBasePath($tempDir);
         $analyzer->setPaths(['.']);
 
-        $result = $analyzer->analyze();
-
-        $this->assertFailed($result);
-        $this->assertIssueCount(1, $result);
-        $this->assertHasIssueContaining("Model 'Ledger' has \$guarded = []", $result);
-        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+        $this->assertPassed($analyzer->analyze());
     }
 
     public function test_passes_with_fillable_attribute(): void
@@ -4333,5 +4329,663 @@ PHP;
         $this->assertFailed($result);
         $this->assertIssueCount(1, $result);
         $this->assertHasIssueContaining("Model 'Ledger' has \$guarded = [] which allows mass assignment of all attributes", $result);
+    }
+
+    // -------------------------------------------------------------------------
+    // Lists held in the model's own constants are read; one held anywhere else is
+    // assumed to list columns
+    // -------------------------------------------------------------------------
+
+    /**
+     * Models beside `$guarded = []` whose `$fillable` or `#[Fillable]` lists columns through
+     * constants.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function fillableThroughConstantsProvider(): array
+    {
+        return [
+            'own string constant through self' => ['', "public const LABEL = 'label';\n\n    protected \$fillable = [self::LABEL];"],
+            'own string constant through the class name' => ['', "public const LABEL = 'label';\n\n    protected \$fillable = [Voucher::LABEL];"],
+            'own string constant through the fully qualified class name' => ['', "public const LABEL = 'label';\n\n    protected \$fillable = [\\App\\Models\\Voucher::LABEL];"],
+            'own array constant spread through a nested constant' => ['', "public const LABEL = 'label';\n\n    public const COLUMNS = [self::LABEL];\n\n    protected \$fillable = [...self::COLUMNS];"],
+            'own array constant in the Fillable attribute' => ['#[Fillable(self::COLUMNS)]', "public const COLUMNS = ['label'];"],
+            'own string constants variadic in the Fillable attribute' => ['#[Fillable(self::LABEL, self::CODE)]', "public const LABEL = 'label';\n\n    public const CODE = 'code';"],
+            'another class constant' => ['', 'protected $fillable = [Catalog::LABEL];'],
+            'an enum case value' => ['', 'protected $fillable = [Column::Label->value];'],
+            'another class constant in the Fillable attribute' => ['#[Fillable(Catalog::COLUMNS)]', ''],
+            'a constant this class does not declare' => ['', 'protected $fillable = [self::INHERITED];'],
+        ];
+    }
+
+    /** @dataProvider fillableThroughConstantsProvider */
+    #[DataProvider('fillableThroughConstantsProvider')]
+    public function test_passes_empty_guarded_beside_a_fillable_listed_through_constants(string $attribute, string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;
+use Illuminate\\Database\\Eloquent\\Model;
+
+{$attribute}
+class Voucher extends Model
+{
+    {$body}
+
+    protected \$guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Models whose fillable constants resolve to an empty list, so `$guarded = []` opens every
+     * column.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function fillableConstantResolvesEmptyProvider(): array
+    {
+        return [
+            'property holding an empty constant' => ['', "public const NONE = [];\n\n    protected \$fillable = self::NONE;"],
+            'property spreading an empty constant' => ['', "public const NONE = [];\n\n    protected \$fillable = [...self::NONE];"],
+            'property holding a constant that holds an empty constant' => ['', "public const NONE = [];\n\n    public const COLUMNS = self::NONE;\n\n    protected \$fillable = self::COLUMNS;"],
+            'Fillable attribute holding an empty constant' => ['#[Fillable(self::NONE)]', 'public const NONE = [];'],
+        ];
+    }
+
+    /** @dataProvider fillableConstantResolvesEmptyProvider */
+    #[DataProvider('fillableConstantResolvesEmptyProvider')]
+    public function test_detects_empty_guarded_beside_a_fillable_constant_that_is_empty(string $attribute, string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;
+use Illuminate\\Database\\Eloquent\\Model;
+
+{$attribute}
+class Voucher extends Model
+{
+    {$body}
+
+    protected \$guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Voucher' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_detects_guarded_attribute_holding_an_empty_constant(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Guarded;
+use Illuminate\Database\Eloquent\Model;
+
+#[Guarded(self::NONE)]
+class Voucher extends Model
+{
+    public const NONE = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Voucher' has #[Guarded([])] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+    }
+
+    /**
+     * Models whose `$visible` or `$hidden`, held in constants, keeps a fillable password out of
+     * JSON output, or may.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function serializationListThroughConstantsProvider(): array
+    {
+        return [
+            'visible property holding an own constant' => ['', "public const SHOWN = ['nickname'];\n\n    protected \$visible = self::SHOWN;"],
+            'visible property listing an own string constant' => ['', "public const NICKNAME = 'nickname';\n\n    protected \$visible = [self::NICKNAME];"],
+            'Visible attribute holding an own constant' => ['#[Visible(self::SHOWN)]', "public const SHOWN = ['nickname'];"],
+            'visible property holding another class constant' => ['', 'protected $visible = Catalog::SHOWN;'],
+            'visible property listing another class constant' => ['', 'protected $visible = [Catalog::NICKNAME];'],
+            'hidden property holding an own constant' => ['', "public const SECRET = ['password'];\n\n    protected \$hidden = self::SECRET;"],
+            'hidden property listing another class constant beside a literal' => ['', "protected \$hidden = ['remember_token', Catalog::SECRET];"],
+        ];
+    }
+
+    /** @dataProvider serializationListThroughConstantsProvider */
+    #[DataProvider('serializationListThroughConstantsProvider')]
+    public function test_passes_when_a_serialization_list_through_constants_omits_the_sensitive_field(string $attribute, string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Attributes\\Visible;
+use Illuminate\\Database\\Eloquent\\Model;
+
+{$attribute}
+class Member extends Model
+{
+    {$body}
+
+    protected \$fillable = ['nickname', 'password'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_flags_sensitive_field_a_visible_constant_exposes(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Member extends Model
+{
+    public const SHOWN = ['nickname', 'password'];
+
+    protected $fillable = ['nickname', 'password'];
+
+    protected $visible = self::SHOWN;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+    }
+
+    public function test_flags_sensitive_field_a_hidden_constant_leaves_out(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Member extends Model
+{
+    public const SECRET = ['remember_token'];
+
+    protected $fillable = ['nickname', 'password'];
+
+    protected $hidden = self::SECRET;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has 'password' in \$fillable but doesn't hide it from JSON output", $result);
+    }
+
+    public function test_flags_sensitive_fillable_without_visible_or_hidden(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Member extends Model
+{
+    public const NICKNAME = 'nickname';
+
+    protected $fillable = [self::NICKNAME, 'password'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Member.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertWarning($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining("Model 'Member' has sensitive fields in \$fillable but no \$hidden attributes", $result);
+    }
+
+    // -------------------------------------------------------------------------
+    // A $fillable inherited from a project ancestor limits fill() for a child that
+    // declares $guarded = []
+    // -------------------------------------------------------------------------
+
+    /**
+     * Ancestor chains under which a child's `$guarded = []` is limited by an inherited fillable
+     * list.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function inheritedFillableProvider(): array
+    {
+        $header = "<?php\n\nnamespace App\\Models;\n\n";
+        $child = $header."class Ledger extends Record\n{\n    protected \$guarded = [];\n}\n";
+
+        return [
+            'grandparent fillable through an intermediate class' => [[
+                'app/Models/Archive.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Archive extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+                'app/Models/Record.php' => $header."abstract class Record extends Archive\n{\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent outside a Models namespace, imported' => [[
+                'app/Support/Record.php' => "<?php\n\nnamespace App\\Support;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+                'app/Models/Ledger.php' => $header."use App\\Support\\Record;\n\nclass Ledger extends Record\n{\n    protected \$guarded = [];\n}\n",
+            ]],
+            'parent fillable held in its own constant' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    public const COLUMNS = ['title'];\n\n    protected \$fillable = self::COLUMNS;\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent fillable held in another class constant' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    protected \$fillable = Catalog::COLUMNS;\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent Fillable attribute' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Fillable(['title'])]\nabstract class Record extends Model\n{\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent Fillable attribute beside the child emptying the property' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Attributes\\Fillable;\nuse Illuminate\\Database\\Eloquent\\Model;\n\n#[Fillable(['title'])]\nabstract class Record extends Model\n{\n}\n",
+                'app/Models/Ledger.php' => $header."class Ledger extends Record\n{\n    protected \$fillable = [];\n\n    protected \$guarded = [];\n}\n",
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider inheritedFillableProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('inheritedFillableProvider')]
+    public function test_passes_empty_guarded_under_an_inherited_fillable(array $files): void
+    {
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    /**
+     * Ancestor chains that leave a child's `$guarded = []` opening every column, or that cannot
+     * be read to show otherwise.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function noInheritedFillableProvider(): array
+    {
+        $header = "<?php\n\nnamespace App\\Models;\n\n";
+        $child = $header."class Ledger extends Record\n{\n    protected \$guarded = [];\n}\n";
+
+        return [
+            'parent without fillable' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    protected \$hidden = ['secret'];\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent file missing' => [[
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'grandparent file missing' => [[
+                'app/Models/Record.php' => $header."abstract class Record extends Archive\n{\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'child emptying the fillable property the parent lists' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+                'app/Models/Ledger.php' => $header."class Ledger extends Record\n{\n    protected \$fillable = [];\n\n    protected \$guarded = [];\n}\n",
+            ]],
+            'intermediate class emptying the fillable property the grandparent lists' => [[
+                'app/Models/Archive.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Archive extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+                'app/Models/Record.php' => $header."abstract class Record extends Archive\n{\n    protected \$fillable = [];\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'parent fillable held in an empty constant' => [[
+                'app/Models/Record.php' => $header."use Illuminate\\Database\\Eloquent\\Model;\n\nabstract class Record extends Model\n{\n    public const NONE = [];\n\n    protected \$fillable = self::NONE;\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+            'cyclic chain' => [[
+                'app/Models/Record.php' => $header."abstract class Record extends Archive\n{\n}\n",
+                'app/Models/Archive.php' => $header."abstract class Archive extends Record\n{\n}\n",
+                'app/Models/Ledger.php' => $child,
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider noInheritedFillableProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('noInheritedFillableProvider')]
+    public function test_detects_empty_guarded_without_an_inherited_fillable(array $files): void
+    {
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Ledger' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    public function test_passes_empty_guarded_under_a_fillable_parent_declared_in_the_same_file(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+abstract class Folder extends Model
+{
+    protected $fillable = ['title'];
+}
+
+class Binder extends Folder
+{
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Binder.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_detects_empty_guarded_when_a_same_file_class_of_the_parent_name_is_in_another_namespace(): void
+    {
+        // The Folder beside the child lives in another namespace, so it is not the parent.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Archive {
+    use Illuminate\Database\Eloquent\Model;
+
+    abstract class Folder extends Model
+    {
+        protected $fillable = ['title'];
+    }
+}
+
+namespace App\Models {
+    class Binder extends Folder
+    {
+        protected $guarded = [];
+    }
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Binder.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Binder' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+    }
+
+    public function test_passes_empty_guarded_under_a_fillable_parent_declared_in_another_case(): void
+    {
+        // PHP class names ignore case, so `class record` is the Record the child extends.
+        $tempDir = $this->createTempDirectory([
+            'app/Models/Record.php' => "<?php\n\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\nabstract class record extends Model\n{\n    protected \$fillable = ['title'];\n}\n",
+            'app/Models/Ledger.php' => "<?php\n\nnamespace App\\Models;\n\nclass Ledger extends Record\n{\n    protected \$guarded = [];\n}\n",
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_detects_guarded_property_holding_an_empty_constant(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Voucher extends Model
+{
+    public const NONE = [];
+
+    protected $guarded = self::NONE;
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Voucher' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+        $this->assertSame(Severity::Critical, $result->getIssues()[0]->severity);
+    }
+
+    /**
+     * Guarded properties held in constants that do not open every column, or cannot be read.
+     *
+     * @return array<string, array{string}>
+     */
+    public static function guardedConstantNotEmptyProvider(): array
+    {
+        return [
+            'own constant guarding a column' => ["public const SAFE = ['id'];\n\n    protected \$guarded = self::SAFE;"],
+            'another class constant' => ['protected $guarded = Catalog::GUARDED;'],
+        ];
+    }
+
+    /** @dataProvider guardedConstantNotEmptyProvider */
+    #[DataProvider('guardedConstantNotEmptyProvider')]
+    public function test_passes_guarded_property_held_in_a_constant_that_is_not_empty(string $body): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\\Models;
+
+use Illuminate\\Database\\Eloquent\\Model;
+
+class Voucher extends Model
+{
+    {$body}
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
+    }
+
+    public function test_reads_every_model_in_a_file_declaring_many_children_of_a_same_file_parent(): void
+    {
+        $children = '';
+        for ($i = 1; $i <= 30; $i++) {
+            $children .= "class Sheet{$i} extends Folder\n{\n    protected \$guarded = [];\n}\n\n";
+        }
+
+        $code = "<?php\n\nnamespace App\\Models;\n\nuse Illuminate\\Database\\Eloquent\\Model;\n\n"
+            .$children
+            ."class Loose extends Plain\n{\n    protected \$guarded = [];\n}\n\n"
+            ."abstract class Plain extends Model\n{\n}\n\n"
+            ."abstract class Folder extends Model\n{\n    protected \$fillable = ['title'];\n}\n";
+
+        $tempDir = $this->createTempDirectory(['app/Models/Sheets.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Loose' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+    }
+
+    public function test_detects_empty_guarded_beside_a_fillable_item_that_is_a_nested_list(): void
+    {
+        // An item holding an array is not a column name: fill() matches no key against it.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Voucher extends Model
+{
+    public const NESTED = ['label'];
+
+    protected $fillable = [self::NESTED, ['code']];
+
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Voucher.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertSame("Model 'Voucher' has \$guarded = [] which allows mass assignment of all attributes", $result->getIssues()[0]->message);
+    }
+
+    /**
+     * Children of a project base that extends Pivot or MorphPivot, restating its `$guarded = []`.
+     *
+     * @return array<string, array{array<string, string>}>
+     */
+    public static function pivotAncestorProvider(): array
+    {
+        $header = "<?php\n\nnamespace App\\Models;\n\n";
+        $child = $header."class RoleMember extends LinkBase\n{\n    protected \$guarded = [];\n}\n";
+
+        return [
+            'base extending Pivot' => [[
+                'app/Models/LinkBase.php' => $header."use Illuminate\\Database\\Eloquent\\Relations\\Pivot;\n\nabstract class LinkBase extends Pivot\n{\n}\n",
+                'app/Models/RoleMember.php' => $child,
+            ]],
+            'base extending MorphPivot through an intermediate class' => [[
+                'app/Models/MorphBase.php' => $header."use Illuminate\\Database\\Eloquent\\Relations\\MorphPivot;\n\nabstract class MorphBase extends MorphPivot\n{\n}\n",
+                'app/Models/LinkBase.php' => $header."abstract class LinkBase extends MorphBase\n{\n}\n",
+                'app/Models/RoleMember.php' => $child,
+            ]],
+        ];
+    }
+
+    /**
+     * @dataProvider pivotAncestorProvider
+     *
+     * @param  array<string, string>  $files
+     */
+    #[DataProvider('pivotAncestorProvider')]
+    public function test_passes_empty_guarded_restated_under_a_project_pivot_base(array $files): void
+    {
+        $tempDir = $this->createTempDirectory($files);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $this->assertPassed($analyzer->analyze());
     }
 }

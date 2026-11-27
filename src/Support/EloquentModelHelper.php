@@ -20,6 +20,11 @@ use PhpParser\Node;
  * the fully qualified name a reference resolves to in the declaring file. With it, the
  * attribute must resolve into Illuminate\Database\Eloquent\Attributes, so an aliased import
  * (`use ...\Fillable as F;`) is read and a `Fillable` from any other namespace is not.
+ *
+ * A list entry may name a constant the class declares itself, through `self::`, `static::` or
+ * the class's own name, and is read as that constant's value. Any other expression, such as
+ * another class's constant or an enum case's `->value`, cannot be read here and is left out of
+ * the field lists; the *ListsColumns() and hasUnreadableEntries() readers say where one was.
  */
 final class EloquentModelHelper
 {
@@ -89,10 +94,14 @@ final class EloquentModelHelper
                 return 'Unguarded';
             }
 
-            if (self::attributeIs($attr, 'Guarded', $resolve)
-                && count($attr->args) === 1
-                && $attr->args[0]->value instanceof Node\Expr\Array_
-                && $attr->args[0]->value->items === []) {
+            if (! self::attributeIs($attr, 'Guarded', $resolve) || count($attr->args) !== 1) {
+                continue;
+            }
+
+            $seen = [];
+            $value = self::dereference($class, $attr->args[0]->value, $resolve, $seen);
+
+            if ($value instanceof Node\Expr\Array_ && $value->items === []) {
                 $emptyGuarded = true;
             }
         }
@@ -109,7 +118,7 @@ final class EloquentModelHelper
     public static function extractFillableFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
-            self::extractFieldsFromProperty($class, 'fillable'),
+            self::extractFieldsFromProperty($class, 'fillable', $resolve),
             self::extractFieldsFromAttribute($class, 'Fillable', $resolve),
         ));
     }
@@ -123,7 +132,7 @@ final class EloquentModelHelper
     public static function extractGuardedFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
-            self::extractFieldsFromProperty($class, 'guarded'),
+            self::extractFieldsFromProperty($class, 'guarded', $resolve),
             self::extractFieldsFromAttribute($class, 'Guarded', $resolve),
         ));
     }
@@ -137,7 +146,7 @@ final class EloquentModelHelper
     public static function extractHiddenFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
-            self::extractFieldsFromProperty($class, 'hidden'),
+            self::extractFieldsFromProperty($class, 'hidden', $resolve),
             self::extractFieldsFromAttribute($class, 'Hidden', $resolve),
         ));
     }
@@ -153,9 +162,103 @@ final class EloquentModelHelper
     public static function extractVisibleFields(Node\Stmt\Class_ $class, ?\Closure $resolve = null): array
     {
         return array_values(array_merge(
-            self::extractFieldsFromProperty($class, 'visible'),
+            self::extractFieldsFromProperty($class, 'visible', $resolve),
             self::extractFieldsFromAttribute($class, 'Visible', $resolve),
         ));
+    }
+
+    /**
+     * What the class's own `$fillable` property says: null when the class does not declare
+     * it, true when it lists a column or holds an entry that cannot be read here (assumed to
+     * list one), false when it provably lists none.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     */
+    public static function fillablePropertyListsColumns(Node\Stmt\Class_ $class, ?\Closure $resolve = null): ?bool
+    {
+        $list = self::readProperty($class, 'fillable', $resolve);
+
+        return $list === null ? null : ($list['fields'] !== [] || ! $list['complete']);
+    }
+
+    /**
+     * What the class's own `#[Fillable]` attribute says, read as its constructor keeps the
+     * arguments: null when the class carries none, true when it lists a column or holds an
+     * entry that cannot be read here (assumed to list one), false when it provably lists none.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     */
+    public static function fillableAttributeListsColumns(Node\Stmt\Class_ $class, ?\Closure $resolve = null): ?bool
+    {
+        $list = self::readAttribute($class, 'Fillable', $resolve, true);
+
+        return $list === null ? null : ($list['fields'] !== [] || ! $list['complete']);
+    }
+
+    /**
+     * What the class's own `$guarded` property says: null when the class does not declare
+     * it, true when it guards a column (`*` included) or holds an entry that cannot be read
+     * here (assumed to guard one), false when it provably guards none.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     */
+    public static function guardedPropertyListsColumns(Node\Stmt\Class_ $class, ?\Closure $resolve = null): ?bool
+    {
+        $list = self::readProperty($class, 'guarded', $resolve);
+
+        return $list === null ? null : ($list['fields'] !== [] || ! $list['complete']);
+    }
+
+    /**
+     * The string field names one expression written in the class lists as a whole: a string
+     * literal, an array literal, or a constant the class declares itself holding either. An
+     * entry that cannot be read here is left out. For one entry of an array literal, use
+     * fieldsListedByItem().
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     * @return list<string>
+     */
+    public static function fieldsListedBy(Node\Stmt\ClassLike $class, Node\Expr $expr, ?\Closure $resolve = null): array
+    {
+        $fields = [];
+        self::collectFields($class, $expr, $resolve, $fields);
+
+        return $fields;
+    }
+
+    /**
+     * The string field names one entry of an array literal written in the class contributes:
+     * a `...` spread contributes the names of the list it unpacks, any other entry its value
+     * when that is a string, read through the class's own constants. An entry holding a list
+     * names no field, and one that cannot be read here is left out.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     * @return list<string>
+     */
+    public static function fieldsListedByItem(Node\Stmt\ClassLike $class, Node\Expr\ArrayItem $item, ?\Closure $resolve = null): array
+    {
+        $fields = [];
+        self::collectItemFields($class, $item, $resolve, $fields);
+
+        return $fields;
+    }
+
+    /**
+     * True if the class's `$name` property or its same-named attribute (`$visible` and
+     * `#[Visible]`) holds an entry that cannot be read here, so the field list read for it
+     * may be missing names.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve  The fully qualified name a reference resolves to
+     */
+    public static function hasUnreadableEntries(Node\Stmt\Class_ $class, string $name, ?\Closure $resolve = null): bool
+    {
+        foreach ([self::readProperty($class, $name, $resolve), self::readAttribute($class, ucfirst($name), $resolve, true)] as $list) {
+            if ($list !== null && ! $list['complete']) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -209,62 +312,217 @@ final class EloquentModelHelper
      */
     private static function extractFieldsFromAttribute(Node\Stmt\ClassLike $class, string $attributeShortName, ?\Closure $resolve = null, bool $asConstructed = true): array
     {
-        $fields = [];
+        return self::readAttribute($class, $attributeShortName, $resolve, $asConstructed)['fields'] ?? [];
+    }
+
+    /**
+     * String field names from a `protected $name = [...]` array property.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @return list<string>
+     */
+    private static function extractFieldsFromProperty(Node\Stmt\Class_ $class, string $name, ?\Closure $resolve = null): array
+    {
+        return self::readProperty($class, $name, $resolve)['fields'] ?? [];
+    }
+
+    /**
+     * The fields every same-named class-level attribute lists, and whether each entry could be
+     * read. Null when the class carries no such attribute.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @return array{fields: list<string>, complete: bool}|null
+     */
+    private static function readAttribute(Node\Stmt\ClassLike $class, string $attributeShortName, ?\Closure $resolve, bool $asConstructed): ?array
+    {
+        $list = null;
 
         foreach (self::attributes($class) as $attr) {
             if (! self::attributeIs($attr, $attributeShortName, $resolve)) {
                 continue;
             }
 
+            $list ??= ['fields' => [], 'complete' => true];
             $args = $attr->args;
-            if ($asConstructed && $args !== [] && $args[0]->value instanceof Node\Expr\Array_) {
-                $args = [$args[0]];
+
+            if ($asConstructed && $args !== []) {
+                $seen = [];
+                if (self::dereference($class, $args[0]->value, $resolve, $seen) instanceof Node\Expr\Array_) {
+                    $args = [$args[0]];
+                }
             }
 
             foreach ($args as $arg) {
-                if ($arg->value instanceof Node\Expr\Array_) {
-                    foreach ($arg->value->items as $item) {
-                        if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
-                            $fields[] = $item->value->value;
-                        }
-                    }
-                } elseif ($arg->value instanceof Node\Scalar\String_) {
-                    $fields[] = $arg->value->value;
-                }
+                $list['complete'] = self::collectFields($class, $arg->value, $resolve, $list['fields']) && $list['complete'];
             }
         }
 
-        return $fields;
+        return $list;
     }
 
     /**
-     * String field names from a `protected $name = [...]` array property.
+     * The fields the class's own `$name` property lists, and whether each entry could be read.
+     * Null when the class does not declare the property; a declaration without a default
+     * lists nothing.
      *
-     * @return list<string>
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @return array{fields: list<string>, complete: bool}|null
      */
-    private static function extractFieldsFromProperty(Node\Stmt\Class_ $class, string $name): array
+    private static function readProperty(Node\Stmt\Class_ $class, string $name, ?\Closure $resolve): ?array
     {
-        $fields = [];
+        $list = null;
 
-        foreach ($class->stmts as $stmt) {
-            if (! $stmt instanceof Node\Stmt\Property) {
-                continue;
-            }
-
-            foreach ($stmt->props as $prop) {
-                if ($prop->name->toString() !== $name || ! $prop->default instanceof Node\Expr\Array_) {
+        foreach ($class->getProperties() as $property) {
+            foreach ($property->props as $prop) {
+                if ($prop->name->toString() !== $name) {
                     continue;
                 }
 
-                foreach ($prop->default->items as $item) {
-                    if ($item instanceof Node\Expr\ArrayItem && $item->value instanceof Node\Scalar\String_) {
-                        $fields[] = $item->value->value;
-                    }
+                $list ??= ['fields' => [], 'complete' => true];
+
+                if ($prop->default !== null) {
+                    $list['complete'] = self::collectFields($class, $prop->default, $resolve, $list['fields']) && $list['complete'];
                 }
             }
         }
 
-        return $fields;
+        return $list;
+    }
+
+    /**
+     * Append the string field names $expr lists to $fields: a string literal, an array literal
+     * of entries, or a constant the class declares itself holding either, nested to any depth.
+     * Returns false when some entry is anything else, so its names are unknown.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @param  list<string>  $fields
+     * @param  list<string>  $seen  Constants being followed on the way here, so a cycle stops
+     */
+    private static function collectFields(Node\Stmt\ClassLike $class, Node\Expr $expr, ?\Closure $resolve, array &$fields, array $seen = []): bool
+    {
+        $expr = self::dereference($class, $expr, $resolve, $seen);
+
+        if ($expr instanceof Node\Scalar\String_) {
+            $fields[] = $expr->value;
+
+            return true;
+        }
+
+        if (! $expr instanceof Node\Expr\Array_) {
+            return false;
+        }
+
+        $complete = true;
+
+        foreach ($expr->items as $item) {
+            $complete = self::collectItemFields($class, $item, $resolve, $fields, $seen) && $complete;
+        }
+
+        return $complete;
+    }
+
+    /**
+     * Append the field names one array entry contributes to $fields. A `...` spread
+     * contributes the names of the list it unpacks; any other entry is one value, a name when
+     * it is a string. An entry holding a list contributes nothing, because Eloquent compares
+     * each key against the entries themselves and no key equals an array. Returns false when
+     * the entry cannot be read.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @param  list<string>  $fields
+     * @param  list<string>  $seen
+     */
+    private static function collectItemFields(Node\Stmt\ClassLike $class, Node\Expr\ArrayItem $item, ?\Closure $resolve, array &$fields, array $seen = []): bool
+    {
+        if ($item->unpack) {
+            return self::collectFields($class, $item->value, $resolve, $fields, $seen);
+        }
+
+        $value = self::dereference($class, $item->value, $resolve, $seen);
+
+        if ($value instanceof Node\Scalar\String_) {
+            $fields[] = $value->value;
+
+            return true;
+        }
+
+        return $value instanceof Node\Expr\Array_;
+    }
+
+    /**
+     * Follow $expr through the constants the class declares itself to the expression one
+     * finally holds. Null when it names a constant that cannot be followed: one of another
+     * class, one the class does not declare (inherited, or from an interface or trait), or one
+     * already in $seen.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     * @param  list<string>  $seen
+     */
+    private static function dereference(Node\Stmt\ClassLike $class, Node\Expr $expr, ?\Closure $resolve, array &$seen): ?Node\Expr
+    {
+        while ($expr instanceof Node\Expr\ClassConstFetch) {
+            if (! $expr->class instanceof Node\Name
+                || ! $expr->name instanceof Node\Identifier
+                || ! self::namesOwnClass($class, $expr->class, $resolve)) {
+                return null;
+            }
+
+            $name = $expr->name->toString();
+            $value = self::ownConstantValue($class, $name);
+
+            if ($value === null || in_array($name, $seen, true)) {
+                return null;
+            }
+
+            $seen[] = $name;
+            $expr = $value;
+        }
+
+        return $expr;
+    }
+
+    /**
+     * True if $name refers to $class itself: `self`, `static`, or the class's own name.
+     *
+     * Without $resolve the own name must be written unqualified. With it, the reference and the
+     * class's short name are both resolved as references in the declaring file: PHP refuses a
+     * class whose name an import already holds, so the short name resolves to the class's own
+     * fully qualified name.
+     *
+     * @param  (\Closure(Node\Name): string)|null  $resolve
+     */
+    private static function namesOwnClass(Node\Stmt\ClassLike $class, Node\Name $name, ?\Closure $resolve): bool
+    {
+        if ($name->isSpecialClassName()) {
+            return in_array($name->toLowerString(), ['self', 'static'], true);
+        }
+
+        if ($class->name === null) {
+            return false;
+        }
+
+        if ($resolve === null) {
+            return $name->isUnqualified() && strcasecmp($name->toString(), $class->name->toString()) === 0;
+        }
+
+        return strcasecmp($resolve($name), $resolve(new Node\Name($class->name->toString()))) === 0;
+    }
+
+    /**
+     * The value of a constant the class declares in its own body, null when it declares none
+     * of that name. Constant names are case-sensitive.
+     */
+    private static function ownConstantValue(Node\Stmt\ClassLike $class, string $name): ?Node\Expr
+    {
+        foreach ($class->getConstants() as $classConst) {
+            foreach ($classConst->consts as $const) {
+                if ($const->name->toString() === $name) {
+                    return $const->value;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**

@@ -938,4 +938,101 @@ PHP);
 
         $this->assertTrue($this->detector->verdictForClassName('App\\Entities\\Order', $referencing, $dir));
     }
+
+    public function test_find_project_class_returns_the_named_declaration_and_its_file(): void
+    {
+        $base = <<<'PHP'
+<?php
+namespace App\Domain;
+use Illuminate\Database\Eloquent\Model;
+class Helper {}
+abstract class RecordBase extends Model {}
+PHP;
+
+        $dir = $this->createTempDir(['app/Domain/RecordBase.php' => $base]);
+
+        $found = $this->detector->findProjectClass('\App\Domain\RecordBase', $dir);
+
+        $this->assertNotNull($found);
+        [$class, $ast] = $found;
+        $this->assertSame('RecordBase', $class->name?->toString());
+        $this->assertNotSame([], $ast);
+    }
+
+    public function test_find_project_class_is_null_outside_app_or_without_a_declaration(): void
+    {
+        $dir = $this->createTempDir([
+            'app/Domain/Empty.php' => "<?php\nnamespace App\\Domain;\nclass Other {}\n",
+        ]);
+
+        $this->assertNull($this->detector->findProjectClass('Illuminate\Database\Eloquent\Model', $dir));
+        $this->assertNull($this->detector->findProjectClass('App\Domain\Missing', $dir));
+        $this->assertNull($this->detector->findProjectClass('App\Domain\Empty', $dir));
+    }
+
+    public function test_find_project_class_matches_the_declared_name_ignoring_case(): void
+    {
+        $dir = $this->createTempDir([
+            'app/Domain/RecordBase.php' => "<?php\nnamespace App\\Domain;\nabstract class recordbase {}\n",
+        ]);
+
+        $found = $this->detector->findProjectClass('App\Domain\RecordBase', $dir);
+
+        $this->assertNotNull($found);
+        $this->assertSame('recordbase', $found[0]->name?->toString());
+    }
+
+    public function test_find_project_class_parses_an_unparsable_file_once(): void
+    {
+        $parser = new class extends AstParser
+        {
+            /** @var array<string, int> */
+            public array $parses = [];
+
+            public function parseFile(string $filePath): array
+            {
+                $this->parses[$filePath] = ($this->parses[$filePath] ?? 0) + 1;
+
+                return parent::parseFile($filePath);
+            }
+        };
+
+        $dir = $this->createTempDir(['app/Domain/Broken.php' => "<?php\nnamespace App\\Domain;\nclass Broken {\n"]);
+        $detector = new EloquentModelDetector($parser);
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertNull($detector->findProjectClass('App\Domain\Broken', $dir));
+        }
+
+        $this->assertSame([1], array_values($parser->parses));
+    }
+
+    public function test_find_project_class_does_not_reuse_a_lookup_written_in_another_case(): void
+    {
+        $parser = new class extends AstParser
+        {
+            /** @var list<string> */
+            public array $parsed = [];
+
+            public function parseFile(string $filePath): array
+            {
+                $this->parsed[] = $filePath;
+
+                return parent::parseFile($filePath);
+            }
+        };
+
+        $dir = $this->createTempDir([
+            'app/Domain/RecordBase.php' => "<?php\nnamespace App\\Domain;\nabstract class RecordBase {}\n",
+        ]);
+        $detector = new EloquentModelDetector($parser);
+
+        // Found or not depending on the filesystem's case sensitivity; either way the lookup
+        // as written must not answer for the class's own spelling.
+        $detector->findProjectClass('App\Domain\recordbase', $dir);
+        $found = $detector->findProjectClass('App\Domain\RecordBase', $dir);
+
+        $this->assertNotNull($found);
+        $this->assertContains($dir.'/app/Domain/RecordBase.php', $parser->parsed);
+    }
 }

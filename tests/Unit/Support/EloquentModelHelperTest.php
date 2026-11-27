@@ -318,4 +318,148 @@ PHP));
         // The readers other analyzers call keep returning every argument.
         $this->assertSame(['nickname', 'password'], EloquentModelHelper::extractEloquentAttributeFields($classes[0], 'Fillable', $resolve));
     }
+
+    public function test_own_constants_are_read_as_their_values(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+class Voucher
+{
+    public const LABEL = 'label';
+    public const CODES = ['code', self::LABEL];
+    protected $fillable = [self::LABEL, Voucher::CODES, ...self::CODES];
+    protected $visible = self::CODES;
+}
+PHP);
+
+        // The plain Voucher::CODES item holds a list, which is not a column name; the spread
+        // contributes its entries.
+        $this->assertSame(['label', 'code', 'label'], EloquentModelHelper::extractFillableFields($class));
+        $this->assertSame(['code', 'label'], EloquentModelHelper::extractVisibleFields($class));
+        $this->assertTrue(EloquentModelHelper::fillablePropertyListsColumns($class));
+        $this->assertNull(EloquentModelHelper::fillableAttributeListsColumns($class));
+        $this->assertFalse(EloquentModelHelper::hasUnreadableEntries($class, 'fillable'));
+        $this->assertFalse(EloquentModelHelper::hasUnreadableEntries($class, 'visible'));
+    }
+
+    public function test_a_constant_the_class_does_not_declare_is_unreadable(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+class Voucher
+{
+    protected $fillable = [Catalog::LABEL, parent::LABEL, self::INHERITED, Other\Voucher::LABEL];
+    protected $hidden = ['token', Column::Secret->value];
+}
+PHP);
+
+        $this->assertSame([], EloquentModelHelper::extractFillableFields($class));
+        $this->assertTrue(EloquentModelHelper::fillablePropertyListsColumns($class));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($class, 'fillable'));
+        $this->assertSame(['token'], EloquentModelHelper::extractHiddenFields($class));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($class, 'hidden'));
+    }
+
+    public function test_a_class_qualified_constant_in_an_anonymous_class_is_unreadable(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+$model = new class {
+    public const COLUMNS = ['label'];
+
+    protected $fillable = [...self::COLUMNS, Catalog::LABEL];
+};
+PHP);
+
+        $this->assertNull($class->name);
+        $this->assertSame(['label'], EloquentModelHelper::extractFillableFields($class));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($class, 'fillable'));
+    }
+
+    public function test_a_constant_holding_an_empty_list_lists_no_column(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Attributes\Guarded;
+
+#[Fillable(self::NONE)]
+#[Guarded(self::NONE)]
+class Voucher
+{
+    public const NONE = [];
+    protected $fillable = self::NONE;
+}
+PHP);
+
+        $this->assertFalse(EloquentModelHelper::fillablePropertyListsColumns($class));
+        $this->assertFalse(EloquentModelHelper::fillableAttributeListsColumns($class));
+        $this->assertSame('Guarded', EloquentModelHelper::unguardingAttribute($class));
+    }
+
+    public function test_cyclic_constants_stop_and_read_as_unreadable(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+class Voucher
+{
+    public const FIRST = self::SECOND;
+    public const SECOND = self::FIRST;
+    public const OUTER = ['label', ...self::INNER];
+    public const INNER = [...self::OUTER];
+    protected $fillable = self::FIRST;
+    protected $visible = self::OUTER;
+}
+PHP);
+
+        $this->assertSame([], EloquentModelHelper::extractFillableFields($class));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($class, 'fillable'));
+        $this->assertSame(['label'], EloquentModelHelper::extractVisibleFields($class));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($class, 'visible'));
+    }
+
+    public function test_own_class_name_is_matched_through_the_resolver(): void
+    {
+        $ast = $this->parser->parseCode(<<<'PHP'
+<?php
+namespace App\Models;
+
+use App\Catalog\Voucher as Listed;
+
+class Voucher
+{
+    public const LABEL = 'label';
+    protected $fillable = [\App\Models\Voucher::LABEL, Listed::LABEL];
+}
+PHP);
+
+        $classes = (new NodeFinder)->findInstanceOf($ast, Node\Stmt\Class_::class);
+        $this->assertCount(1, $classes);
+        $resolve = fn (Node\Name $name): string => match (true) {
+            $name->isFullyQualified() => $name->toString(),
+            $name->toString() === 'Listed' => 'App\Catalog\Voucher',
+            default => 'App\Models\\'.$name->toString(),
+        };
+
+        // The import shares the short name but names another class, so its constant is unread.
+        $this->assertSame(['label'], EloquentModelHelper::extractFillableFields($classes[0], $resolve));
+        $this->assertTrue(EloquentModelHelper::hasUnreadableEntries($classes[0], 'fillable', $resolve));
+    }
+
+    public function test_a_leading_own_constant_holding_an_array_is_the_whole_attribute_list(): void
+    {
+        $class = $this->classFrom(<<<'PHP'
+<?php
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+
+#[Fillable(self::COLUMNS, 'user_id')]
+class Ticket
+{
+    public const COLUMNS = ['memo'];
+}
+PHP);
+
+        // Eloquent's constructor keeps only a leading array, so 'user_id' is not fillable.
+        $this->assertSame(['memo'], EloquentModelHelper::extractFillableFields($class));
+    }
 }

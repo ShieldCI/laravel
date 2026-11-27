@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ShieldCI\Tests\Unit\Analyzers\Security;
 
 use Illuminate\Config\Repository;
+use PHPUnit\Framework\Attributes\DataProvider;
 use ShieldCI\Analyzers\Security\FillableForeignKeyAnalyzer;
 use ShieldCI\AnalyzersCore\Contracts\AnalyzerInterface;
 use ShieldCI\AnalyzersCore\Enums\Severity;
@@ -1099,5 +1100,212 @@ PHP,
 
         $this->assertFailed($result);
         $this->assertHasIssueContaining('user_id', $result);
+    }
+
+    /**
+     * Laravel's #[Fillable], however the attribute name reaches it.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function laravelFillableSpellingProvider(): array
+    {
+        return [
+            'plain import' => ['use Illuminate\Database\Eloquent\Attributes\Fillable;', 'Fillable'],
+            'aliased import' => ['use Illuminate\Database\Eloquent\Attributes\Fillable as Assignable;', 'Assignable'],
+            'aliased group import' => ['use Illuminate\Database\Eloquent\Attributes\{Fillable as Assignable};', 'Assignable'],
+            'fully qualified without import' => ['', '\Illuminate\Database\Eloquent\Attributes\Fillable'],
+            'namespace import' => ['use Illuminate\Database\Eloquent\Attributes;', 'Attributes\Fillable'],
+        ];
+    }
+
+    /** @dataProvider laravelFillableSpellingProvider */
+    #[DataProvider('laravelFillableSpellingProvider')]
+    public function test_detects_foreign_key_in_laravel_fillable_attribute_however_it_is_spelled(string $import, string $attribute): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[{$attribute}(['memo', 'owner_id'])]
+class Ledger extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('"owner_id" (owner relationship) is fillable in model "Ledger"', $result);
+    }
+
+    /**
+     * A #[Fillable] that is not Laravel's: Model never reads it, so it makes nothing fillable.
+     *
+     * @return array<string, array{string, string}>
+     */
+    public static function foreignFillableProvider(): array
+    {
+        return [
+            'imported from another namespace' => ['use Acme\Meta\Fillable;', 'Fillable'],
+            'unimported, so in the model namespace' => ['', 'Fillable'],
+            'fully qualified from another namespace' => ['', '\Acme\Meta\Fillable'],
+        ];
+    }
+
+    /** @dataProvider foreignFillableProvider */
+    #[DataProvider('foreignFillableProvider')]
+    public function test_ignores_a_fillable_attribute_that_is_not_laravels(string $import, string $attribute): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+{$import}
+use Illuminate\Database\Eloquent\Model;
+
+#[{$attribute}(['memo', 'owner_id'])]
+class Ledger extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+        $this->assertIssueCount(0, $result);
+    }
+
+    public function test_fillable_property_is_still_reported_beside_a_foreign_fillable_attribute(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Acme\Meta\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable(['memo', 'tenant_id'])]
+class Ledger extends Model
+{
+    protected $fillable = ['memo', 'owner_id'];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('"owner_id" (owner relationship)', $result);
+        $this->assertNotNull($result->getIssues()[0]->location);
+        $this->assertSame(11, $result->getIssues()[0]->location->line);
+    }
+
+    public function test_aliased_fillable_attribute_issue_is_reported_at_the_attribute_line(): void
+    {
+        // The foreign #[\Acme\Meta\Fillable] on line 8 shares the short name; the issue
+        // belongs on line 9, where Laravel's attribute lists owner_id.
+        $code = <<<'PHP'
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable as Assignable;
+use Illuminate\Database\Eloquent\Model;
+
+#[\Acme\Meta\Fillable(['memo'])]
+#[Assignable(['owner_id'])]
+class Ledger extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertNotNull($result->getIssues()[0]->location);
+        $this->assertSame(9, $result->getIssues()[0]->location->line);
+    }
+
+    /**
+     * Eloquent's Fillable constructor keeps a leading array as the whole list and drops any
+     * argument after it; without a leading array every argument is a column.
+     *
+     * @return array<string, array{string, bool}>
+     */
+    public static function fillableArgumentShapeProvider(): array
+    {
+        return [
+            'argument after a leading array is dropped' => ["['memo'], 'owner_id'", false],
+            'leading array is the whole list' => ["['memo', 'owner_id'], 'notes'", true],
+            'variadic strings are all columns' => ["'memo', 'owner_id'", true],
+        ];
+    }
+
+    /** @dataProvider fillableArgumentShapeProvider */
+    #[DataProvider('fillableArgumentShapeProvider')]
+    public function test_reads_fillable_attribute_arguments_as_eloquent_constructs_them(string $arguments, bool $reported): void
+    {
+        $code = <<<PHP
+<?php
+
+namespace App\Models;
+
+use Illuminate\Database\Eloquent\Attributes\Fillable;
+use Illuminate\Database\Eloquent\Model;
+
+#[Fillable({$arguments})]
+class Ledger extends Model
+{
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory(['app/Models/Ledger.php' => $code]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        if ($reported) {
+            $this->assertFailed($result);
+            $this->assertIssueCount(1, $result);
+            $this->assertHasIssueContaining('"owner_id" (owner relationship) is fillable in model "Ledger"', $result);
+        } else {
+            $this->assertPassed($result);
+            $this->assertIssueCount(0, $result);
+        }
     }
 }

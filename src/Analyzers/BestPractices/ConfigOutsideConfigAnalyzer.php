@@ -194,12 +194,21 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     /** @var int Digits in one snake_case segment that read as key material rather than a word */
     private const MIN_KEY_SEGMENT_DIGITS = 3;
 
+    /** @var int Digits in an all-digit segment that still read as a number (a year, a version) rather than key material */
+    private const MAX_NUMBER_SEGMENT_DIGITS = 4;
+
+    /** @var int Longest kebab-case segment that may mix letters and digits (v2, h264); a longer one reads as key material */
+    private const MAX_MIXED_SLUG_SEGMENT_LENGTH = 4;
+
     /** @var string Character sets for the identifier checks */
     private const LOWERCASE = 'abcdefghijklmnopqrstuvwxyz';
 
     private const UPPERCASE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
     private const DIGITS = '0123456789';
+
+    /** @var int Base64 length of a sha384 digest, which never pads */
+    private const SRI_SHA384_DIGEST_LENGTH = 64;
 
     /** @var int Maximum characters to display in URL messages */
     private const URL_DISPLAY_LENGTH = 50;
@@ -485,17 +494,23 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
         // The identifier checks below use character spans and segment checks rather than a
         // repeated regex group, which hits the JIT stack limit on long input and then reads
-        // as a non-match. They ignore one trailing newline, as the regex $ anchor they replace did
+        // as a non-match. They and the hash checks ignore one trailing newline, as the regex
+        // $ anchor above does
         $identifier = str_ends_with($value, "\n") ? substr($value, 0, -1) : $value;
 
         // Exclude snake_case identifiers (method names, constants, etc.)
         // Pattern: three or more lowercase words separated by underscores. Prefixed strings are graded below
-        if (! $hasKeyPrefix && $this->isUnderscoreSeparatedWords($identifier, self::LOWERCASE)) {
+        if (! $hasKeyPrefix && $this->isSeparatedWords($identifier, self::LOWERCASE, '_')) {
             return false;
         }
 
         // Exclude SCREAMING_SNAKE_CASE constants
-        if ($this->isUnderscoreSeparatedWords($identifier, self::UPPERCASE)) {
+        if ($this->isSeparatedWords($identifier, self::UPPERCASE, '_')) {
+            return false;
+        }
+
+        // Exclude kebab-case slugs (cache keys, file and route names)
+        if ($this->isSeparatedWords($identifier, self::LOWERCASE, '-', self::MAX_MIXED_SLUG_SEGMENT_LENGTH)) {
             return false;
         }
 
@@ -525,7 +540,9 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
 
         // Exclude known hash and identifier formats
-        if ($this->isKnownHashFormat($value, $length) || $this->isCanonicalUuid($value)) {
+        if ($this->isKnownHashFormat($identifier, strlen($identifier))
+            || $this->isSubresourceIntegrity($identifier)
+            || $this->isCanonicalUuid($identifier)) {
             return false;
         }
 
@@ -543,23 +560,37 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
     }
 
     /**
-     * Check if a string is three or more underscore-separated words, each starting with a
-     * letter from $letters and holding only those letters and digits.
+     * Check if a string is three or more $separator-separated words, each holding only letters
+     * from $letters and digits. Each starts with a letter or is a bare number such as a year,
+     * a date part or a migration timestamp. With $maxMixedLength, a letter-led word longer than
+     * that must hold letters only.
+     *
+     * @param  non-empty-string  $separator
      */
-    private function isUnderscoreSeparatedWords(string $value, string $letters): bool
+    private function isSeparatedWords(string $value, string $letters, string $separator, ?int $maxMixedLength = null): bool
     {
-        if (strspn($value, $letters.self::DIGITS.'_') !== strlen($value)) {
+        if (strspn($value, $letters.self::DIGITS.$separator) !== strlen($value)) {
             return false;
         }
 
-        $segments = explode('_', $value);
+        $segments = explode($separator, $value);
 
         if (count($segments) < 3) {
             return false;
         }
 
         foreach ($segments as $segment) {
-            if (strspn($segment, $letters, 0, 1) !== 1) {
+            if (strspn($segment, $letters, 0, 1) === 1) {
+                // A long word mixing in digits (q7x2k9m4) reads like a random key, not a slug word
+                if ($maxMixedLength !== null && strlen($segment) > $maxMixedLength && strspn($segment, $letters) !== strlen($segment)) {
+                    return false;
+                }
+
+                continue;
+            }
+
+            // A digit-led word such as 2fa is not excused: it reads like key material
+            if ($segment === '' || strspn($segment, self::DIGITS) !== strlen($segment)) {
                 return false;
             }
         }
@@ -581,10 +612,17 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
 
     /**
      * Check if any underscore-separated segment holds enough digits to read as key material.
+     * A short bare number (a year, a version) is not; a longer digit run is.
      */
     private function hasDigitHeavySegment(string $value): bool
     {
         foreach (explode('_', $value) as $segment) {
+            $length = strlen($segment);
+
+            if ($length <= self::MAX_NUMBER_SEGMENT_DIGITS && strspn($segment, self::DIGITS) === $length) {
+                continue;
+            }
+
             if (preg_match_all('/\d/', $segment) >= self::MIN_KEY_SEGMENT_DIGITS) {
                 return true;
             }
@@ -608,8 +646,18 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
             return true;
         }
 
+        // SHA224 hashes (56 hex characters)
+        if ($length === 56 && ctype_xdigit($value)) {
+            return true;
+        }
+
         // SHA256 hashes (64 hex characters)
         if ($length === 64 && ctype_xdigit($value)) {
+            return true;
+        }
+
+        // SHA384 hashes (96 hex characters)
+        if ($length === 96 && ctype_xdigit($value)) {
             return true;
         }
 
@@ -619,6 +667,23 @@ class ConfigHardcodeVisitor extends NodeVisitorAbstract
         }
 
         return false;
+    }
+
+    /**
+     * Check if a string is a sha384 Subresource Integrity value, as a script or link integrity
+     * attribute carries. Only sha384 is checked: sha256 and sha512 digests always end in =
+     * padding, which never passes the character gate above. With no padding, + and / cannot
+     * reach here either, so the digest is 64 letters and digits.
+     */
+    private function isSubresourceIntegrity(string $value): bool
+    {
+        if (! str_starts_with($value, 'sha384-')) {
+            return false;
+        }
+
+        $digest = substr($value, strlen('sha384-'));
+
+        return strlen($digest) === self::SRI_SHA384_DIGEST_LENGTH && ctype_alnum($digest);
     }
 
     /**

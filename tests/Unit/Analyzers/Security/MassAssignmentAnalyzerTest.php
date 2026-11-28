@@ -183,8 +183,6 @@ PHP;
 
         $tempDir = $this->createTempDirectory([
             'app/User.php' => $code,
-            // Presence of app/Models/ satisfies shouldRun(); this model is protected.
-            'app/Models/Placeholder.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Placeholder extends Model { protected \$fillable = ['name']; }",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -216,8 +214,6 @@ PHP;
 
         $tempDir = $this->createTempDirectory([
             'app/Pivots/Membership.php' => $code,
-            // Presence of app/Models/ satisfies shouldRun(); this model is protected.
-            'app/Models/Placeholder.php' => "<?php\nnamespace App\\Models;\nuse Illuminate\\Database\\Eloquent\\Model;\nclass Placeholder extends Model { protected \$fillable = ['name']; }",
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1048,10 +1044,10 @@ PHP;
         $this->assertPassed($result);
     }
 
-    public function test_skips_when_no_models_directory(): void
+    public function test_skips_when_no_php_files(): void
     {
         $tempDir = $this->createTempDirectory([
-            'Controllers/HomeController.php' => '<?php',
+            'resources/js/app.js' => 'console.log("ready");',
         ]);
 
         $analyzer = $this->createAnalyzer();
@@ -1061,6 +1057,143 @@ PHP;
         $result = $analyzer->analyze();
 
         $this->assertSkipped($result);
+        $this->assertSame('No PHP files found to analyze', $analyzer->getSkipReason());
+    }
+
+    public function test_runs_without_models_directory_and_passes_when_nothing_is_wrong(): void
+    {
+        $tempDir = $this->createTempDirectory([
+            'app/Http/Controllers/HomeController.php' => '<?php namespace App\\Http\\Controllers; class HomeController { public function index() { return view("home"); } }',
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    public function test_detects_create_with_request_all_when_models_live_outside_app_models(): void
+    {
+        $tempDir = $this->createTempDirectory(
+            $this->createFromRequestFixture('app/Modules/Ledger/Models/Receipt.php', 'App\\Modules\\Ledger\\Models')
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse(is_dir($tempDir.'/app/Models'));
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create() with unfiltered request data', $result);
+        $this->assertCreateIssueAtController($result);
+    }
+
+    public function test_detects_create_with_request_all_when_models_live_in_app_models(): void
+    {
+        $tempDir = $this->createTempDirectory(
+            $this->createFromRequestFixture('app/Models/Receipt.php', 'App\\Models')
+        );
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining('create() with unfiltered request data', $result);
+        $this->assertCreateIssueAtController($result);
+    }
+
+    public function test_detects_empty_guarded_when_models_live_outside_app_models(): void
+    {
+        $code = <<<'PHP'
+<?php
+
+namespace App\Modules\Ledger\Models;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Receipt extends Model
+{
+    protected $guarded = [];
+}
+PHP;
+
+        $tempDir = $this->createTempDirectory([
+            'app/Modules/Ledger/Models/Receipt.php' => $code,
+        ]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFalse(is_dir($tempDir.'/app/Models'));
+        $this->assertFailed($result);
+        $this->assertHasIssueContaining("Model 'Receipt' has \$guarded = []", $result);
+    }
+
+    /**
+     * A model declaring $fillable at $modelPath and a controller passing request()->all() to its create().
+     *
+     * @return array<string, string>
+     */
+    private function createFromRequestFixture(string $modelPath, string $modelNamespace): array
+    {
+        $model = <<<PHP
+<?php
+
+namespace {$modelNamespace};
+
+use Illuminate\\Database\\Eloquent\\Model;
+
+class Receipt extends Model
+{
+    protected \$fillable = ['amount', 'memo'];
+}
+PHP;
+
+        $controller = <<<PHP
+<?php
+
+namespace App\\Http\\Controllers;
+
+use {$modelNamespace}\\Receipt;
+
+class ReceiptController extends Controller
+{
+    public function store()
+    {
+        return Receipt::create(request()->all());
+    }
+}
+PHP;
+
+        return [
+            $modelPath => $model,
+            'app/Http/Controllers/ReceiptController.php' => $controller,
+        ];
+    }
+
+    private function assertCreateIssueAtController(ResultInterface $result): void
+    {
+        $matches = array_values(array_filter(
+            $result->getIssues(),
+            fn ($issue) => str_contains($issue->message, 'create() with unfiltered request data'),
+        ));
+
+        $this->assertCount(1, $matches);
+        $this->assertSame(Severity::Critical, $matches[0]->severity);
+        $this->assertNotNull($matches[0]->location);
+        $this->assertStringEndsWith('app/Http/Controllers/ReceiptController.php', $matches[0]->location->file);
+        $this->assertSame(11, $matches[0]->location->line);
     }
 
     public function test_handles_model_in_different_namespace(): void

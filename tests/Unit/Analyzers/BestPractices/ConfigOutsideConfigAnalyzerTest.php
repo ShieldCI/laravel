@@ -1697,7 +1697,8 @@ PHP;
             'digit rule, digit-led segment' => ['api_live_4ec39hq8x2mzp7wq1rt5vk8n'],
             'not snake_case, mixed case' => ['sk_test_4eC39HqLyjWDarjtT1zdp7dc'],
             'digit rule, trailing underscore' => ['api_live_f3a9e17c4b2d8e6a0c5f1b7d_'],
-            'digit rule, exactly three digits in a segment' => ['api_response_cache_for_dashboard_123'],
+            'digit rule, five-digit number segment' => ['api_response_cache_for_dashboard_58317'],
+            'digit rule, exactly three digits in a mixed segment' => ['api_response_cache_for_dashboard_k3x7p1'],
         ];
     }
 
@@ -1751,6 +1752,10 @@ PHP;
             'prefixed, double underscore' => ['api__response_cache_for_dashboard'],
             'unprefixed, trailing underscore' => ['report_widget_totals_for_reporting_'],
             'prefixed, thousands of segments' => ['api'.str_repeat('_ab', 5000)],
+            'prefixed, three-digit number segment' => ['api_response_cache_for_dashboard_123'],
+            'prefixed, four-digit year segment' => ['api_invoice_widgets_cache_for_2023'],
+            'unprefixed, year segment' => ['annual_invoice_totals_cache_for_2026'],
+            'unprefixed, long number segment' => ['annual_invoice_totals_cache_for_58317'],
         ];
     }
 
@@ -2034,6 +2039,17 @@ PHP;
             'snake_case, thousands of segments' => ['summary'.str_repeat('_b2', 6000)],
             'SCREAMING_SNAKE_CASE, thousands of segments' => ['SUMMARY'.str_repeat('_B2', 6000)],
             'camelCase, thousands of humps' => ['summary'.str_repeat('B2', 6000)],
+            'SCREAMING_SNAKE_CASE, year segment' => ['ANNUAL_INVOICE_TOTALS_CACHE_FOR_2026'],
+            'kebab-case, year segment' => ['annual-billing-summary-2026-archive'],
+            'kebab-case, version and year segments' => ['release-digest-for-v2-published-2027'],
+            'kebab-case, short letter-led mixed segment' => ['export-h264-video-archive-for-2026'],
+            'kebab-case, thousands of segments' => ['summary'.str_repeat('-b2', 6000)],
+            'kebab-case, thousands of number segments' => ['archive'.str_repeat('-2026', 3000)],
+            'snake_case, number first segment' => ['2026_annual_billing_summary_archive'],
+            'snake_case, migration name' => ['2023_08_30_104512_create_invoice_archive_records_table'],
+            'SCREAMING_SNAKE_CASE, number first segment' => ['2026_ANNUAL_BILLING_SUMMARY_ARCHIVE'],
+            'kebab-case, number first segment' => ['2026-annual-billing-summary-archive'],
+            'kebab-case, date-led slug' => ['2026-07-annual-billing-summary-archive'],
         ];
     }
 
@@ -2067,6 +2083,8 @@ PHP;
             'snake, leading underscore' => ['_report_widget_totals_for_q2_reporting'],
             'snake, digit-led segment' => ['report_2fa_challenge_for_session_page'],
             'snake, digit-led first segment' => ['2report_widget_totals_for_reporting_page'],
+            'screaming, digit-led first segment' => ['2REPORT_WIDGET_TOTALS_FOR_REPORTING_PAGE'],
+            'kebab, digit-led first segment' => ['2annual-billing-summary-q2-archive'],
             'snake, two segments' => ['reportwidget_totalsforq2reportingpage'],
             'screaming, double underscore' => ['REPORT__WIDGET_TOTALS_FOR_Q2_PAGE'],
             'screaming, trailing underscore' => ['REPORT_WIDGET_TOTALS_FOR_Q2_REPORTING_'],
@@ -2078,6 +2096,18 @@ PHP;
             'camel, leading capital' => ['ReportWidgetTotalsForQ2DashboardPage'],
             'camel, digit-led' => ['2reportWidgetTotalsForDashboardPage'],
             'snake, thousands of segments then a digit-led tail' => ['summary'.str_repeat('_b2', 6000).'_7k3q9z'],
+            'kebab, double dash' => ['annual--billing-summary-q2-archive'],
+            'kebab, trailing dash' => ['annual-billing-summary-q2-archive-'],
+            'kebab, leading dash' => ['-annual-billing-summary-q2-archive'],
+            'kebab, digit-led segment' => ['annual-2fa-challenge-for-session-page'],
+            'kebab, two segments' => ['annualbillingsummaryq2-archivefor2026'],
+            'kebab, uppercase' => ['ANNUAL-BILLING-SUMMARY-Q2-ARCHIVE'],
+            'kebab, mixed separators' => ['annual_billing-summary_q2-archive'],
+            'kebab, mixed case random key' => ['a8Kd02-mXq7Lp3-Zr9Tn5V-b1Wc6Yh4'],
+            'kebab, lowercase random key with digit-led segments' => ['x7k2-9fq3m-8zp1w-4tr6v-2nb5c-3hj8k'],
+            'kebab, lowercase random key with long letter-led mixed segments' => ['k3j9x7q2-m8p4w1z6-r5t0y4v7-b2c9d8e1'],
+            'kebab, one long letter-led mixed segment' => ['q7x2k9m4zz-plan-for-quarterly-reporting'],
+            'kebab, thousands of segments then a digit-led tail' => ['summary'.str_repeat('-b2', 6000).'-7k3q9z'],
         ];
     }
 
@@ -2135,7 +2165,87 @@ PHP;
             'prefixed digit-heavy, 29 characters with the newline, under the length gate' => ['api_key_7f3k9q2m8x4w1z6v5b0n\n', false],
             'prefixed digit-heavy, longer, one newline' => ['api_key_7f3k9q2m8x4w1z6v5b0n4r8t\n', true],
             'prefixed mixed case, one newline' => ['sk_test_4eC39HqLyjWDarjtT1zdp7dc\n', true],
+            'SHA-256 digest, one newline' => [hash('sha256', 'invoice-archive').'\n', false],
+            'SHA-384 digest, one newline' => [hash('sha384', 'invoice-archive').'\n', false],
+            'hex of no digest length, one newline' => [substr(hash('sha256', 'invoice-archive'), 0, 60).'\n', true],
         ];
+    }
+
+    /**
+     * @dataProvider hashDigestProvider
+     */
+    #[DataProvider('hashDigestProvider')]
+    public function test_hash_digests_are_not_keys(string $value): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($value)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertPassed($result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function hashDigestProvider(): array
+    {
+        return [
+            'SHA-224, 56 hex characters' => [hash('sha224', 'invoice-archive')],
+            'SHA-384, 96 hex characters' => [hash('sha384', 'invoice-archive')],
+            'Subresource Integrity, sha384' => ['sha384-'.self::sriSha384Digest()],
+        ];
+    }
+
+    /**
+     * @dataProvider digestLookalikeProvider
+     */
+    #[DataProvider('digestLookalikeProvider')]
+    public function test_digest_lookalikes_are_still_keys(string $value): void
+    {
+        $tempDir = $this->createTempDirectory(['app/Services/CacheService.php' => $this->urlPropertyFixture($value)]);
+
+        $analyzer = $this->createAnalyzer();
+        $analyzer->setBasePath($tempDir);
+        $analyzer->setPaths(['.']);
+
+        $result = $analyzer->analyze();
+
+        $this->assertFailed($result);
+        $this->assertIssueCount(1, $result);
+        $this->assertHasIssueContaining('API key', $result);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function digestLookalikeProvider(): array
+    {
+        return [
+            '57 hex characters' => [hash('sha224', 'invoice-archive').'e'],
+            '95 hex characters' => [substr(hash('sha384', 'invoice-archive'), 0, 95)],
+            'Subresource Integrity, sha384 one character short' => ['sha384-'.substr(self::sriSha384Digest(), 0, 63)],
+            'Subresource Integrity, unknown algorithm' => ['sha999-'.self::sriSha384Digest()],
+            'Subresource Integrity, sha256 without its padding' => ['sha256-'.substr(str_repeat('Xq73mB2nLk9pRw4TzV0cHs6Jd8Fy5G1a', 2), 0, 44)],
+        ];
+    }
+
+    /**
+     * A base64 sha384 digest with no + or /, so the whole integrity value passes the
+     * analyzer's character gate. About one digest in eight qualifies; the loop finds one.
+     */
+    private static function sriSha384Digest(): string
+    {
+        for ($i = 0; ; $i++) {
+            $digest = base64_encode(hash('sha384', "invoice-archive-{$i}", true));
+
+            if (strpbrk($digest, '+/') === false) {
+                return $digest;
+            }
+        }
     }
 
     public function test_null_excluded_domain_entry_does_not_error(): void
